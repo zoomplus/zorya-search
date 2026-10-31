@@ -33,19 +33,23 @@ export function tokenizeCode(text: string): string[] {
 
 export function rankLexical<T extends LexicalRow>(rows: T[], query: string): LexicalRank<T>[] {
   const queryTokens = tokenizeCode(query)
+  const prepared = rows.map((row) => {
+    const bodyTerms = tokenizeCode(row.text)
+    const terms = [...tokenizeCode(`${row.path} ${row.symbol ?? ''}`), ...bodyTerms]
+    const frequencies = new Map<string, number>()
+    for (const term of terms) frequencies.set(term, (frequencies.get(term) ?? 0) + 1)
+    return { row, terms, bodyLength: bodyTerms.length, frequencies, uniqueTerms: new Set(terms) }
+  })
   const documentFrequency = new Map<string, number>()
-  for (const row of rows)
-    for (const token of new Set(tokenizeCode(`${row.path} ${row.symbol ?? ''} ${row.text}`)))
+  for (const item of prepared)
+    for (const token of item.uniqueTerms)
       documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1)
   const averageLength =
-    rows.reduce((sum, row) => sum + tokenizeCode(row.text).length, 0) / Math.max(1, rows.length)
-  return rows
-    .map((row) => {
-      const terms = tokenizeCode(`${row.path} ${row.symbol ?? ''} ${row.text}`)
-      const frequency = new Map<string, number>()
-      for (const term of terms) frequency.set(term, (frequency.get(term) ?? 0) + 1)
+    prepared.reduce((sum, item) => sum + item.bodyLength, 0) / Math.max(1, prepared.length)
+  return prepared
+    .map(({ row, terms, frequencies }) => {
       const score = queryTokens.reduce((sum, term) => {
-        const termFrequency = frequency.get(term) ?? 0
+        const termFrequency = frequencies.get(term) ?? 0
         if (!termFrequency) return sum
         const documents = documentFrequency.get(term) ?? 0
         const inverseDocumentFrequency = Math.log(

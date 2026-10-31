@@ -18,7 +18,7 @@ import {
   chunkCode,
   CODE_CHUNKER_VERSION,
   CODE_PARSER_VERSION,
-  resolveLocalImport,
+  createLocalImportResolver,
 } from './chunker.js'
 import { initializeCodeIndex } from './schema.js'
 import { rankLexical, reciprocalRankFusion } from './ranking.js'
@@ -125,6 +125,10 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     JSON.stringify([
       CODE_CHUNKER_VERSION,
       CODE_PARSER_VERSION,
+      limits.maxFiles,
+      limits.maxFileBytes,
+      limits.maxTotalBytes,
+      limits.maxChunks,
       limits.maxChunkChars,
       pathPolicy.id,
     ]),
@@ -171,13 +175,80 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const { files, treeHash } = await enumerateCode(root, limits, signal, pathPolicy.excludes)
     const identity = await identifyRoot(root, treeHash, signal)
     const worktreeId = identity.worktreeId
+    identity.snapshotId = sha(`${identity.snapshotId}\0${profileId ?? 'lexical'}\0${chunkConfigId}`)
+    type CurrentIndexRow = {
+      current_snapshot: string | null
+      root: string
+      branch: string | null
+      head: string | null
+      content_hash: string | null
+      profile_id: string | null
+      chunk_config_id: string | null
+      indexed_at: string | Date | null
+      file_count: number | null
+      chunk_count: number | null
+    }
+    const matchesCurrent = (
+      row: CurrentIndexRow | undefined,
+    ): row is CurrentIndexRow & {
+      current_snapshot: string
+      indexed_at: string | Date
+    } =>
+      Boolean(
+        row?.current_snapshot === identity.snapshotId &&
+          row.root === root &&
+          row.branch === identity.branch &&
+          row.head === identity.head &&
+          row.content_hash === treeHash &&
+          row.profile_id === profileId &&
+          row.chunk_config_id === chunkConfigId &&
+          row.indexed_at,
+      )
+    const previous = await database.query<CurrentIndexRow>(
+      `SELECT w.current_snapshot,w.root,w.branch,w.head,w.content_hash,w.profile_id,w.chunk_config_id,w.indexed_at,s.file_count,s.chunk_count
+       FROM zorya_code_worktrees w LEFT JOIN zorya_code_snapshots s ON s.snapshot_id=w.current_snapshot
+       WHERE w.worktree_id=$1`,
+      [worktreeId],
+    )
+    const previousRow = previous.rows[0]
+    if (matchesCurrent(previousRow)) {
+      const verified = await enumerateCode(root, limits, signal, pathPolicy.excludes)
+      const verifiedIdentity = await identifyRoot(root, verified.treeHash, signal)
+      if (
+        verified.treeHash !== treeHash ||
+        sha(`${verifiedIdentity.snapshotId}\0${profileId ?? 'lexical'}\0${chunkConfigId}`) !==
+          identity.snapshotId
+      )
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+      const confirmed = await database.query<CurrentIndexRow>(
+        `SELECT w.current_snapshot,w.root,w.branch,w.head,w.content_hash,w.profile_id,w.chunk_config_id,w.indexed_at,s.file_count,s.chunk_count
+         FROM zorya_code_worktrees w LEFT JOIN zorya_code_snapshots s ON s.snapshot_id=w.current_snapshot
+         WHERE w.worktree_id=$1`,
+        [worktreeId],
+      )
+      checkAbort(signal)
+      const confirmedRow = confirmed.rows[0]
+      if (
+        matchesCurrent(confirmedRow) &&
+        confirmedRow.current_snapshot === previousRow.current_snapshot
+      ) {
+        return statusFrom(
+          identity,
+          new Date(confirmedRow.indexed_at).toISOString(),
+          confirmedRow.file_count ?? 0,
+          confirmedRow.chunk_count ?? 0,
+          profileId,
+          null,
+          profileId,
+        )
+      }
+    }
     const generationResult = await database.query<{ generation: string | number }>(
       `INSERT INTO zorya_code_worktrees(worktree_id,repo_id,root,generation) VALUES($1,$2,$3,1)
       ON CONFLICT(worktree_id) DO UPDATE SET repo_id=EXCLUDED.repo_id,root=EXCLUDED.root,generation=zorya_code_worktrees.generation+1 RETURNING generation`,
       [worktreeId, identity.repoId, identity.root],
     )
     const generation = Number(generationResult.rows[0]?.generation)
-    identity.snapshotId = sha(`${identity.snapshotId}\0${profileId ?? 'lexical'}\0${chunkConfigId}`)
     const chunks: CodeChunk[] = []
     const imports: { from: string; to: string; specifier: string }[] = []
     const known = new Set(files.map((file) => file.path))
@@ -201,20 +272,13 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           ),
         )
     }
+    const resolveImport = createLocalImportResolver(root, known, contents, pathMappings, baseUrl)
     for (const file of files) {
       checkAbort(signal)
       const parsed = chunkCode(file, limits.maxChunkChars)
       chunks.push(...parsed.chunks.filter((chunk) => chunk.text.trim().length > 0))
       for (const specifier of parsed.imports) {
-        const to = resolveLocalImport(
-          root,
-          file.path,
-          specifier,
-          known,
-          contents,
-          pathMappings,
-          baseUrl,
-        )
+        const to = resolveImport(file.path, specifier)
         if (to) imports.push({ from: file.path, to, specifier })
       }
       if (chunks.length > limits.maxChunks) throw new CodeIndexError('CODE_INDEX_CHUNK_LIMIT')

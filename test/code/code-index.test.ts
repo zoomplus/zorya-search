@@ -2,13 +2,16 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, relative, resolve, sep } from 'node:path'
+import ts from 'typescript'
 import { afterEach, test } from 'node:test'
 import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
 import { createCodeIndex } from '../../src/code/index.js'
 import { CodeIndexError } from '../../src/code/errors.js'
-import { chunkCode } from '../../src/code/chunker.js'
+import { chunkCode, createLocalImportResolver } from '../../src/code/chunker.js'
+import { rankLexical, tokenizeCode } from '../../src/code/ranking.js'
 import type { CodeIndexLimits } from '../../src/code/types.js'
+import type { QueryableDatabase } from '../../src/storage/database.js'
 
 const roots: string[] = []
 const databases: { close(): Promise<void> }[] = []
@@ -64,6 +67,29 @@ async function index(
     ...(exclude ? { exclude } : {}),
   })
   return { database, code }
+}
+
+function countCodeWrites(database: QueryableDatabase) {
+  let writes = 0
+  const wrap = (client: QueryableDatabase): QueryableDatabase => ({
+    query(sql, values) {
+      if (/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?zorya_code_/iu.test(sql)) writes++
+      return client.query(sql, values)
+    },
+    exec(sql) {
+      return client.exec(sql)
+    },
+    transaction(operation, signal) {
+      return client.transaction((transaction) => operation(wrap(transaction)), signal)
+    },
+  })
+  return {
+    database: wrap(database),
+    writes: () => writes,
+    reset: () => {
+      writes = 0
+    },
+  }
 }
 
 test('excludes tracked lockfiles by default while retaining ordinary JSON documentation', async () => {
@@ -210,6 +236,288 @@ async function commit(root: string, message: string): Promise<void> {
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', message)
 }
+
+function referenceResolveLocalImport(
+  root: string,
+  fromPath: string,
+  specifier: string,
+  knownPaths: Set<string>,
+  contents: Map<string, string>,
+  paths?: Record<string, string[]>,
+  baseUrl = '.',
+): string | null {
+  const canonicalPath = (path: string) =>
+    process.platform === 'win32' ? resolve(path).toLocaleLowerCase() : resolve(path)
+  const absolutePaths = new Set([...knownPaths].map((path) => canonicalPath(resolve(root, path))))
+  const host: ts.ModuleResolutionHost = {
+    fileExists: (path) => absolutePaths.has(canonicalPath(path)),
+    readFile: (path) => {
+      const absolute = resolve(path)
+      if (!absolutePaths.has(canonicalPath(absolute))) return undefined
+      return contents.get(relative(root, absolute).split('\\').join('/'))
+    },
+    directoryExists: (path) =>
+      [...absolutePaths].some((candidate) => candidate.startsWith(`${canonicalPath(path)}${sep}`)),
+    getCurrentDirectory: () => root,
+    realpath: (path) => resolve(path),
+  }
+  const resolved = ts.resolveModuleName(
+    specifier,
+    resolve(root, fromPath),
+    {
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      module: ts.ModuleKind.NodeNext,
+      allowJs: true,
+      baseUrl: resolve(root, baseUrl),
+      ...(paths ? { paths } : {}),
+    },
+    host,
+  ).resolvedModule?.resolvedFileName
+  if (resolved) {
+    const relativePath = relative(root, resolve(resolved)).split('\\').join('/')
+    if (knownPaths.has(relativePath) && !relativePath.startsWith('../')) return relativePath
+  }
+  if (!specifier.startsWith('.')) return null
+  const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier))
+  const candidates = [
+    base,
+    ...['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'].map(
+      (ext) => `${base}${ext}`,
+    ),
+    ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map((name) => posix.join(base, name)),
+  ]
+  const stripped = base.replace(/\.(?:mjs|cjs|js|jsx)$/u, '')
+  candidates.push(...['.ts', '.tsx', '.mts', '.cts'].map((ext) => `${stripped}${ext}`))
+  return candidates.find((candidate) => knownPaths.has(candidate)) ?? null
+}
+
+function referenceRankLexical<
+  T extends { id: string; path: string; symbol: string | null; text: string; lineStart: number },
+>(rows: T[], query: string) {
+  const queryTokens = tokenizeCode(query)
+  const documentFrequency = new Map<string, number>()
+  for (const row of rows)
+    for (const token of new Set(tokenizeCode(`${row.path} ${row.symbol ?? ''} ${row.text}`)))
+      documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1)
+  const averageLength =
+    rows.reduce((sum, row) => sum + tokenizeCode(row.text).length, 0) / Math.max(1, rows.length)
+  return rows
+    .map((row) => {
+      const terms = tokenizeCode(`${row.path} ${row.symbol ?? ''} ${row.text}`)
+      const frequency = new Map<string, number>()
+      for (const term of terms) frequency.set(term, (frequency.get(term) ?? 0) + 1)
+      const score = queryTokens.reduce((sum, term) => {
+        const termFrequency = frequency.get(term) ?? 0
+        if (!termFrequency) return sum
+        const documents = documentFrequency.get(term) ?? 0
+        const inverseDocumentFrequency = Math.log(
+          1 + (rows.length - documents + 0.5) / (documents + 0.5),
+        )
+        return (
+          sum +
+          (inverseDocumentFrequency * (termFrequency * 2.2)) /
+            (termFrequency + 1.2 * (0.25 + (0.75 * terms.length) / Math.max(1, averageLength)))
+        )
+      }, 0)
+      return { row, score }
+    })
+    .filter((item) => item.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.row.path.localeCompare(right.row.path) ||
+        left.row.lineStart - right.row.lineStart,
+    )
+}
+
+test('scoped import resolver matches prior alias, relative, missing, add, and delete outcomes', () => {
+  const root = '/virtual/search-fixture'
+  const initialPaths = new Set(['src/main.ts', 'src/lib/target.ts', 'src/lib/entry/index.ts'])
+  const initialContents = new Map([...initialPaths].map((path) => [path, 'export const value = 1']))
+  const paths = { '@lib/*': ['src/lib/*'] }
+  const compare = (knownPaths: Set<string>, contents: Map<string, string>, specifier: string) => {
+    const scoped = createLocalImportResolver(root, knownPaths, contents, paths, '.')
+    assert.equal(
+      scoped('src/main.ts', specifier),
+      referenceResolveLocalImport(root, 'src/main.ts', specifier, knownPaths, contents, paths, '.'),
+      specifier,
+    )
+  }
+
+  for (const specifier of [
+    '@lib/target',
+    './lib/target.js',
+    './lib/entry',
+    './missing.js',
+    'external-package',
+  ])
+    compare(initialPaths, initialContents, specifier)
+  assert.equal(
+    createLocalImportResolver(
+      root,
+      initialPaths,
+      initialContents,
+      paths,
+    )('src/main.ts', '@lib/target'),
+    'src/lib/target.ts',
+  )
+  assert.equal(
+    createLocalImportResolver(root, initialPaths, initialContents)('src/main.ts', './missing.js'),
+    null,
+  )
+
+  const addedPaths = new Set([...initialPaths, 'src/new.ts'])
+  const addedContents = new Map([...initialContents, ['src/new.ts', 'export const newValue = 1']])
+  compare(addedPaths, addedContents, './new.js')
+  assert.equal(
+    createLocalImportResolver(root, addedPaths, addedContents)('src/main.ts', './new.js'),
+    'src/new.ts',
+  )
+
+  const deletedPaths = new Set(addedPaths)
+  deletedPaths.delete('src/new.ts')
+  const deletedContents = new Map(addedContents)
+  deletedContents.delete('src/new.ts')
+  compare(deletedPaths, deletedContents, './new.js')
+  assert.equal(
+    createLocalImportResolver(root, deletedPaths, deletedContents)('src/main.ts', './new.js'),
+    null,
+  )
+})
+
+test('prepared lexical ranking matches the prior BM25 scores and order exactly', () => {
+  const rows = [
+    {
+      id: '1',
+      path: 'src/fetchDocument.ts',
+      symbol: 'fetchDocument',
+      text: 'fetch data from источника',
+      lineStart: 3,
+    },
+    {
+      id: '2',
+      path: 'docs/document.md',
+      symbol: null,
+      text: 'document fetch fetch from cache',
+      lineStart: 1,
+    },
+    {
+      id: '3',
+      path: 'src/fetch.ts',
+      symbol: 'fetch',
+      text: 'document response source',
+      lineStart: 8,
+    },
+    {
+      id: '4',
+      path: 'src/fetch.ts',
+      symbol: 'fetch',
+      text: 'document response source',
+      lineStart: 12,
+    },
+    {
+      id: '5',
+      path: 'lib/unrelated.ts',
+      symbol: 'otherThing',
+      text: 'ничего общего',
+      lineStart: 1,
+    },
+  ]
+  for (const query of ['fetch document', 'fetchDocument', 'источника', 'nonexistent'])
+    assert.deepEqual(rankLexical(rows, query), referenceRankLexical(rows, query), query)
+})
+
+test('unchanged reindex validates current identity without parsing, embedding, or publishing again', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'service.ts'), 'export function unchangedTarget() { return 1 }')
+  await commit(root, 'fixture')
+  const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
+  roots.push(dataDir)
+  const database = await openEmbeddedDatabase(dataDir)
+  databases.push(database)
+  const tracked = countCodeWrites(database)
+  const profile = {
+    provider: 'fixture',
+    space: 'perf-stable-v1',
+    model: 'perf-stable',
+    dimensions: 2,
+    inputType: 'text' as const,
+    chunkerVersion: 'ts-ast-symbol-v1',
+  }
+  let embeddingCalls = 0
+  const code = createCodeIndex({
+    database: tracked.database,
+    profile,
+    models: {
+      async embed({ texts }) {
+        embeddingCalls++
+        return texts.map(() => [1, 0])
+      },
+    },
+  })
+  await code.indexRepository({ root })
+  const before = await code.indexStatus(root)
+  assert.ok(embeddingCalls > 0)
+  const beforeEmbeddingCalls = embeddingCalls
+  tracked.reset()
+  const repeated = await code.indexRepository({ root })
+  const after = await code.indexStatus(root)
+  assert.equal(repeated.identity?.snapshotId, before.identity?.snapshotId)
+  assert.equal(repeated.indexedAt, before.indexedAt)
+  assert.equal(after.indexedAt, before.indexedAt)
+  assert.equal(embeddingCalls, beforeEmbeddingCalls)
+  assert.equal(tracked.writes(), 0)
+  await code.close()
+})
+
+test('abort during unchanged-index confirmation prevents a successful return', async () => {
+  const root = await repository()
+  await writeFile(
+    join(root, 'service.ts'),
+    'export function abortConfirmationTarget() { return 1 }',
+  )
+  await commit(root, 'fixture')
+  const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
+  roots.push(dataDir)
+  const rawDatabase = await openEmbeddedDatabase(dataDir)
+  databases.push(rawDatabase)
+  let waitingForConfirmation = false
+  let queryNumber = 0
+  let resolveStarted: (() => void) | undefined
+  let releaseQuery: (() => void) | undefined
+  const started = new Promise<void>((resolvePromise) => {
+    resolveStarted = resolvePromise
+  })
+  const delayedDatabase: QueryableDatabase = {
+    query: async (sql, values) => {
+      if (waitingForConfirmation && /SELECT w\.current_snapshot/iu.test(sql)) {
+        queryNumber++
+        if (queryNumber === 2) {
+          resolveStarted?.()
+          await new Promise<void>((resolvePromise) => {
+            releaseQuery = resolvePromise
+          })
+        }
+      }
+      return rawDatabase.query(sql, values)
+    },
+    exec: (sql) => rawDatabase.exec(sql),
+    transaction: (operation, signal) => rawDatabase.transaction(operation, signal),
+  }
+  const code = createCodeIndex({ database: delayedDatabase })
+  await code.indexRepository({ root })
+  waitingForConfirmation = true
+  const controller = new AbortController()
+  const result = code.indexRepository({ root, signal: controller.signal })
+  await started
+  controller.abort()
+  releaseQuery?.()
+  await assert.rejects(
+    result,
+    (error: unknown) => error instanceof Error && error.name === 'AbortError',
+  )
+  await code.close()
+})
 
 test('indexes AST symbols and import edges, searches offline, and returns provenance-bound source lines', async () => {
   const root = await repository()

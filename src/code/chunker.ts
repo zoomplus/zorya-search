@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { extname, posix, relative, resolve, sep } from 'node:path'
+import { dirname, extname, posix, relative, resolve } from 'node:path'
 import ts from 'typescript'
 import type { CodeChunk } from './types.js'
 import type { EnumeratedFile } from './enumerate.js'
@@ -182,6 +182,84 @@ export function chunkCode(
   return { chunks, imports: [...new Set(imports)] }
 }
 
+export type LocalImportResolver = (fromPath: string, specifier: string) => string | null
+
+export function createLocalImportResolver(
+  root: string,
+  knownPaths: Set<string>,
+  contents: Map<string, string>,
+  paths?: Record<string, string[]>,
+  baseUrl = '.',
+): LocalImportResolver {
+  const canonicalPath = (path: string) =>
+    process.platform === 'win32' ? resolve(path).toLocaleLowerCase() : resolve(path)
+  const pathByAbsolute = new Map<string, string>()
+  const directories = new Set<string>()
+  const rootAbsolute = resolve(root)
+  const canonicalRoot = canonicalPath(rootAbsolute)
+  for (const knownPath of knownPaths) {
+    const absolutePath = resolve(rootAbsolute, knownPath)
+    pathByAbsolute.set(canonicalPath(absolutePath), knownPath)
+    let directory = dirname(absolutePath)
+    while (true) {
+      const canonicalDirectory = canonicalPath(directory)
+      directories.add(canonicalDirectory)
+      if (canonicalDirectory === canonicalRoot) break
+      const parent = dirname(directory)
+      if (parent === directory) break
+      directory = parent
+    }
+  }
+  const compilerOptions: ts.CompilerOptions = {
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    module: ts.ModuleKind.NodeNext,
+    allowJs: true,
+    baseUrl: resolve(rootAbsolute, baseUrl),
+    ...(paths ? { paths } : {}),
+  }
+  const resolutionCache = ts.createModuleResolutionCache(
+    rootAbsolute,
+    canonicalPath,
+    compilerOptions,
+  )
+  const host: ts.ModuleResolutionHost = {
+    fileExists: (path) => pathByAbsolute.has(canonicalPath(path)),
+    readFile: (path) => {
+      const logicalPath = pathByAbsolute.get(canonicalPath(path))
+      return logicalPath === undefined ? undefined : contents.get(logicalPath)
+    },
+    directoryExists: (path) => directories.has(canonicalPath(path)),
+    getCurrentDirectory: () => rootAbsolute,
+    realpath: (path) => resolve(path),
+  }
+  return (fromPath, specifier) => {
+    const resolved = ts.resolveModuleName(
+      specifier,
+      resolve(rootAbsolute, fromPath),
+      compilerOptions,
+      host,
+      resolutionCache,
+    ).resolvedModule?.resolvedFileName
+    if (resolved) {
+      const relativePath = relative(rootAbsolute, resolve(resolved)).split('\\').join('/')
+      if (knownPaths.has(relativePath) && !relativePath.startsWith('../')) return relativePath
+    }
+    if (!specifier.startsWith('.')) return null
+    const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier))
+    const candidates = [
+      base,
+      ...['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'].map(
+        (ext) => `${base}${ext}`,
+      ),
+      ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map((name) => posix.join(base, name)),
+    ]
+    // В исходниках TypeScript спецификатор .js может указывать на соответствующий файл .ts.
+    const stripped = base.replace(/\.(?:mjs|cjs|js|jsx)$/u, '')
+    candidates.push(...['.ts', '.tsx', '.mts', '.cts'].map((ext) => `${stripped}${ext}`))
+    return candidates.find((candidate) => knownPaths.has(candidate)) ?? null
+  }
+}
+
 export function resolveLocalImport(
   root: string,
   fromPath: string,
@@ -191,48 +269,5 @@ export function resolveLocalImport(
   paths?: Record<string, string[]>,
   baseUrl = '.',
 ): string | null {
-  const canonicalPath = (path: string) =>
-    process.platform === 'win32' ? resolve(path).toLocaleLowerCase() : resolve(path)
-  const absolutePaths = new Set([...knownPaths].map((path) => canonicalPath(resolve(root, path))))
-  const host: ts.ModuleResolutionHost = {
-    fileExists: (path) => absolutePaths.has(canonicalPath(path)),
-    readFile: (path) => {
-      const absolute = resolve(path)
-      if (!absolutePaths.has(canonicalPath(absolute))) return undefined
-      return contents.get(relative(root, absolute).split('\\').join('/'))
-    },
-    directoryExists: (path) =>
-      [...absolutePaths].some((candidate) => candidate.startsWith(`${canonicalPath(path)}${sep}`)),
-    getCurrentDirectory: () => root,
-    realpath: (path) => resolve(path),
-  }
-  const resolved = ts.resolveModuleName(
-    specifier,
-    resolve(root, fromPath),
-    {
-      moduleResolution: ts.ModuleResolutionKind.NodeNext,
-      module: ts.ModuleKind.NodeNext,
-      allowJs: true,
-      baseUrl: resolve(root, baseUrl),
-      ...(paths ? { paths } : {}),
-    },
-    host,
-  ).resolvedModule?.resolvedFileName
-  if (resolved) {
-    const relativePath = relative(root, resolve(resolved)).split('\\').join('/')
-    if (knownPaths.has(relativePath) && !relativePath.startsWith('../')) return relativePath
-  }
-  if (!specifier.startsWith('.')) return null
-  const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier))
-  const candidates = [
-    base,
-    ...['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'].map(
-      (ext) => `${base}${ext}`,
-    ),
-    ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map((name) => posix.join(base, name)),
-  ]
-  // В исходниках TypeScript спецификатор .js может указывать на соответствующий файл .ts.
-  const stripped = base.replace(/\.(?:mjs|cjs|js|jsx)$/u, '')
-  candidates.push(...['.ts', '.tsx', '.mts', '.cts'].map((ext) => `${stripped}${ext}`))
-  return candidates.find((candidate) => knownPaths.has(candidate)) ?? null
+  return createLocalImportResolver(root, knownPaths, contents, paths, baseUrl)(fromPath, specifier)
 }
