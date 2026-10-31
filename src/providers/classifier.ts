@@ -15,6 +15,10 @@ import {
   UsageLedger,
   type HttpConfig,
 } from "./http.js";
+import {
+  validateClassificationInput,
+  validateClassificationResult,
+} from "./classification-validation.js";
 
 export interface OpenRouterClassifierConfig extends HttpConfig {
   model: string;
@@ -49,7 +53,7 @@ export function createOpenRouterClassifier(
     profile,
     usage: () => usage.snapshot(),
     async classify(input: ClassificationInput): Promise<ClassificationResult> {
-      validateInput(input, lim.maxItems, lim.maxInputBytes);
+      validateClassificationInput(input, lim.maxItems, lim.maxInputBytes);
       return queue.run(
         input.signal,
         async (operationSignal) => {
@@ -183,34 +187,6 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function validateInput(
-  input: ClassificationInput,
-  maxItems: number,
-  maxBytes: number,
-): void {
-  if (input.signal.aborted) throw new ProviderError("cancel");
-  if (
-    !input.text.trim() ||
-    Buffer.byteLength(input.text) > maxBytes ||
-    !input.criteria.trim() ||
-    Buffer.byteLength(input.criteria) > maxBytes ||
-    input.labels.length < 2 ||
-    input.labels.length > maxItems ||
-    input.labels.some((label) => !label.trim() || label.length > 160) ||
-    new Set(input.labels).size !== input.labels.length
-  )
-    throw new ProviderError("budget");
-  if (
-    input.examples &&
-    (input.examples.length > 20 ||
-      input.examples.some(
-        (e) =>
-          !input.labels.includes(e.label) || Buffer.byteLength(e.text) > 2000,
-      ))
-  )
-    throw new ProviderError("budget");
-}
-
 function validateResponse(
   body: unknown,
   input: ClassificationInput,
@@ -220,68 +196,5 @@ function validateResponse(
   )?.choices;
   const content = choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.length > 32_000) throw new Error();
-  const value = JSON.parse(content) as ClassificationResult;
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !exactKeys(value, ["labels", "abstained", "uncertainty"]) ||
-    !Array.isArray(value.labels) ||
-    !Array.isArray(value.uncertainty) ||
-    typeof value.abstained !== "boolean" ||
-    value.labels.length > (input.allowMultiple ? input.labels.length : 1) ||
-    value.uncertainty.length > 5
-  )
-    throw new Error();
-  if (input.allowAbstain === false && value.abstained) throw new Error();
-  if (value.abstained && value.labels.length) throw new Error();
-  if (!value.abstained && !value.labels.length) throw new Error();
-  const used = new Set<string>();
-  for (const item of value.labels) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      !exactKeys(item, ["label", "confidence", "evidence"]) ||
-      typeof item.label !== "string" ||
-      !input.labels.includes(item.label) ||
-      used.has(item.label)
-    )
-      throw new Error();
-    used.add(item.label);
-    if (
-      item.confidence !== undefined &&
-      item.confidence !== null &&
-      (typeof item.confidence !== "number" ||
-        !Number.isFinite(item.confidence) ||
-        item.confidence < 0 ||
-        item.confidence > 1)
-    )
-      throw new Error();
-    if (
-      item.evidence !== undefined &&
-      item.evidence !== null &&
-      (!Array.isArray(item.evidence) ||
-        item.evidence.length > 5 ||
-        item.evidence.some(
-          (excerpt) =>
-            typeof excerpt !== "string" ||
-            excerpt.length > 500 ||
-            !input.text.includes(excerpt),
-        ))
-    )
-      throw new Error();
-  }
-  if (
-    value.uncertainty.some(
-      (item) => typeof item !== "string" || item.length > 500,
-    )
-  )
-    throw new Error();
-  return value;
-}
-
-function exactKeys(value: object, allowed: string[]): boolean {
-  return (
-    Object.keys(value).every((key) => allowed.includes(key)) &&
-    allowed.every((key) => Object.hasOwn(value, key))
-  );
+  return validateClassificationResult(JSON.parse(content), input);
 }
