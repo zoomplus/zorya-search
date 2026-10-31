@@ -20,6 +20,22 @@
     "./providers": {
       "types": "./dist/providers/index.d.ts",
       "import": "./dist/providers/index.js"
+    },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "import": "./dist/context/index.js"
+    },
+    "./context/web": {
+      "types": "./dist/context/web.d.ts",
+      "import": "./dist/context/web.js"
+    },
+    "./context/classify": {
+      "types": "./dist/context/classify.d.ts",
+      "import": "./dist/context/classify.js"
+    },
+    "./visual": {
+      "types": "./dist/visual/index.d.ts",
+      "import": "./dist/visual/index.js"
     }
   },
   "main": "./dist/index.js",
