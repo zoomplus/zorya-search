@@ -4,6 +4,8 @@ CLI предоставляет команды для локальной наст
 
 ## Быстрый старт
 
+Приведённые ниже `npx` команды предназначены для запуска после публикации. Пакет пока не опубликован. Для полученного локального `.tgz` используй установку из [README](../README.md); она запускает `node_modules/.bin/zorya-search` только в текущем проекте.
+
 ```sh
 npx --yes @zorya/search setup --root "$PWD"
 npx --yes @zorya/search doctor
@@ -31,7 +33,7 @@ Watch включается только явным `--watch`; `--watch-interval-
 
 Визуальный preset независим и включается только явным `--visual-env NAME`: `voyageai/voyage-multimodal-3.5`, 1024 dimensions, top 5. Он сохраняется в `mechanism.visual.secret` и не влияет на кодовый профиль; TTY-мастер также предлагает visual-only режим. Generic OpenAI-compatible endpoint доступен только как явно заданный custom profile: `--custom-embedding-endpoint HTTPS_URL --custom-embedding-profile ID --custom-embedding-model MODEL --custom-embedding-dimensions N --custom-embedding-env NAME`. Такой профиль конфликтует с code preset, чтобы не смешивать отдельные embedding spaces.
 
-Существующий top-level reranker можно задать отдельно для web retrieval через `--web-reranker-model MODEL --web-reranker-env NAME`; classifier — через `--classifier-model MODEL --classifier-env NAME`; web discovery key — `--web-env NAME`. Все они сохраняются как environment references. Перед настройкой TTY-мастер сообщает, какие данные могут покинуть машину и что могут возникнуть расходы; сами ключи через prompt не принимаются. Каталожные модели сверены с сохранёнными официальными документами, live доступ, billing и данные реального провайдера не проверялись.
+Существующий top-level reranker можно задать отдельно для web retrieval через `--web-reranker-model MODEL --web-reranker-env NAME`; classifier — через `--classifier-model MODEL --classifier-env NAME`; web discovery key — `--web-env NAME`. Все они сохраняются как имена переменных окружения. Перед настройкой TTY-мастер сообщает, какие данные могут покинуть машину и что могут возникнуть расходы; сами ключи через prompt не принимаются. В отдельном smoke через установленный Search получено восемь успешных ответов OpenRouter на синтетическом коде и сгенерированном изображении. Известная суммарная стоимость — $0.00011708. Smoke подтверждает эти конкретные вызовы, но не доступность всех API или стоимость иных запросов.
 
 Пути конфигурации и данных по умолчанию находятся в пользовательских каталогах ОС и вне индексируемого корня. Для явного профиля службы задайте `--config PATH`, `--root PATH` и при необходимости `--data PATH`. Перед записью конфигурация проверяется общей строгой runtime-схемой; CLI не поддерживает отдельную схему credentials. Если конфигурация уже существует, setup завершится явной ошибкой и не заменит её; выберите новый путь либо отредактируйте профиль отдельно. Повторная установка пакета не удаляет индекс.
 
