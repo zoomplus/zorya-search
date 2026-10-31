@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 20.19.0
+          - os: ubuntu-latest
+            node: 22
+          - os: ubuntu-latest
+            node: 24
+          - os: windows-latest
+            node: 22
+          - os: windows-latest
+            node: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - name: PostgreSQL integration scope
+        run: node -e "console.log('PostgreSQL integration tests are skipped in this matrix job because ELEMENT_DATABASE_URL is unset; the postgres job runs them against pgvector/pg16.')"
+      - run: pnpm test
+
+  postgres:
+    name: Linux PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: zorya_search_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zorya_search_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ELEMENT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/zorya_search_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  packed-consumer:
+    name: Installed package on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Pack, install, and exercise the published entry points
+        run: |
+          node -e '
+          const { execFileSync, execSync } = require("node:child_process");
+          const { mkdtempSync } = require("node:fs");
+          const { tmpdir } = require("node:os");
+          const { join, resolve } = require("node:path");
+          const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+          const packed = JSON.parse(execFileSync(npm, ["pack", "--json"], { encoding: "utf8", shell: process.platform === "win32" }));
+          if (packed.length !== 1 || !packed[0].filename) throw new Error("npm pack did not return exactly one archive");
+          const consumer = mkdtempSync(join(tmpdir(), "zorya-search-consumer-"));
+          const archive = resolve(packed[0].filename);
+          execSync(`npm install --prefix "${consumer}" "${archive}" --no-audit --no-fund`, { stdio: "inherit", shell: true });
+          const imports = ["@zorya/search", "@zorya/search/code", "@zorya/search/providers", "@zorya/search/context", "@zorya/search/context/web", "@zorya/search/context/classify", "@zorya/search/visual", "@zorya/search/runtime", "@zorya/search/mcp", "@zorya/search/daemon"];
+          const importCode = `for (const name of ${JSON.stringify(imports)}) await import(name);`;
+          execFileSync(process.execPath, ["--input-type=module", "-e", importCode], { cwd: consumer, stdio: "inherit" });
+          execSync(`npm exec --prefix "${consumer}" -- zorya-search --help`, { stdio: "inherit", shell: true });
+          '

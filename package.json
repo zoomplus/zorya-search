@@ -93,5 +93,13 @@
   },
   "bin": {
     "zorya-search": "./dist/cli/entry.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zoomplus/zorya-search.git"
+  },
+  "homepage": "https://github.com/zoomplus/zorya-search",
+  "bugs": {
+    "url": "https://github.com/zoomplus/zorya-search/issues"
   }
 }
