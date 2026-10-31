@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, chmod, rename, symlink, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rm, writeFile, chmod, rename, symlink, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -161,6 +161,77 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })
   }
+})
+
+test('runtime rejects database locations inside indexed roots before creating state', async () => {
+  const f = await fixture()
+  const nestedExisting = join(f.a, 'already-existing')
+  const rootAlias = join(f.dir, 'source-alias')
+  const ancestorAlias = join(f.dir, 'workspace-alias')
+  const danglingAlias = join(f.dir, 'dangling-alias')
+  await mkdir(nestedExisting)
+  await symlink(f.a, rootAlias, 'dir')
+  await symlink(f.dir, ancestorAlias, 'dir')
+  await symlink(join(f.dir, 'absent-target'), danglingAlias, 'dir')
+  const notDirectory = join(f.dir, 'not-a-directory')
+  await writeFile(notDirectory, 'file')
+
+  const rejectedPaths = [
+    f.a,
+    join(f.a, 'not-yet-created', 'deep', 'state'),
+    nestedExisting,
+    join(rootAlias, 'not-yet-created', 'state'),
+    join(ancestorAlias, 'root-a', 'not-yet-created', 'state'),
+    f.b,
+    join(danglingAlias, 'new', 'state'),
+    join(notDirectory, 'new', 'state'),
+  ]
+  for (const dataDir of rejectedPaths) {
+    await assert.rejects(
+      openSearchRuntime({ config: { ...f.config, dataDir } }),
+      (error: unknown) => error instanceof RuntimeConfigError && error.code === 'CONFIG_INVALID',
+    )
+  }
+  assert.deepEqual((await readdir(f.a)).sort(), ['alpha.ts', 'already-existing'])
+  assert.deepEqual(await readdir(f.b), ['beta.ts'])
+  await assert.rejects(readdir(join(f.a, 'not-yet-created')))
+  await assert.rejects(readdir(join(rootAlias, 'not-yet-created')))
+  assert.equal(await readFile(join(f.a, 'alpha.ts'), 'utf8'), 'export function alphaFeature() { return "alpha" }\n')
+  await rm(f.dir, { recursive: true, force: true })
+})
+
+test('runtime permits same-prefix sibling database directories and can reopen them', async () => {
+  const f = await fixture()
+  const dataDir = join(f.dir, 'root-a-sibling')
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const runtime = await openSearchRuntime({ config: { ...f.config, dataDir } })
+    await runtime.indexRepository({ rootId: 'a' })
+    await runtime.close()
+  }
+  assert.equal(await readFile(join(f.a, 'alpha.ts'), 'utf8'), 'export function alphaFeature() { return "alpha" }\n')
+  await rm(f.dir, { recursive: true, force: true })
+})
+
+test('runtime rejects a database parent of an indexed root before creating state', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'zorya-runtime-ancestor-'))
+  const dataDir = join(dir, 'data')
+  const root = join(dataDir, 'base')
+  const alias = join(dir, 'data-alias')
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, 'sentinel.ts'), 'export const source = true\n')
+  await symlink(dataDir, alias, 'dir')
+
+  for (const candidate of [dataDir, alias]) {
+    await assert.rejects(
+      openSearchRuntime({
+        config: { version: 1, dataDir: candidate, roots: [{ id: 'nested', path: root }] },
+      }),
+      (error: unknown) => error instanceof RuntimeConfigError && error.code === 'CONFIG_INVALID',
+    )
+  }
+  assert.deepEqual(await readdir(root), ['sentinel.ts'])
+  assert.equal(await readFile(join(root, 'sentinel.ts'), 'utf8'), 'export const source = true\n')
+  await rm(dir, { recursive: true, force: true })
 })
 
 test('unconfigured roots reject before source access and a second owner fails closed', async () => {
