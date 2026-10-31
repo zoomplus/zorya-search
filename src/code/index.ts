@@ -252,6 +252,38 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       [worktreeId, identity.repoId, identity.root],
     )
     const generation = Number(generationResult.rows[0]?.generation)
+    const resumeScopeId = sha(JSON.stringify([
+      worktreeId,
+      identity.repoId,
+      identity.root,
+      identity.branch,
+      identity.head,
+      treeHash,
+      identity.snapshotId,
+      profileId,
+      chunkConfigId,
+    ]))
+    await database.transaction(async (tx) => {
+      checkAbort(signal)
+      const currentGeneration = await tx.query<{ generation: string | number }>(
+        'SELECT generation FROM zorya_code_worktrees WHERE worktree_id=$1 FOR UPDATE',
+        [worktreeId],
+      )
+      if (Number(currentGeneration.rows[0]?.generation) !== generation)
+        throw new CodeIndexError('CODE_INDEX_STALE_GENERATION')
+      const session = await tx.query<{ scope_id: string }>(
+        'SELECT scope_id FROM zorya_code_resume_sessions WHERE worktree_id=$1 FOR UPDATE',
+        [worktreeId],
+      )
+      if (session.rows[0]?.scope_id !== resumeScopeId) {
+        await tx.query('DELETE FROM zorya_code_resume_sessions WHERE worktree_id=$1', [worktreeId])
+      }
+      await tx.query(
+        `INSERT INTO zorya_code_resume_sessions(worktree_id,scope_id,generation) VALUES($1,$2,$3)
+         ON CONFLICT(worktree_id) DO UPDATE SET scope_id=EXCLUDED.scope_id,generation=EXCLUDED.generation,updated_at=now()`,
+        [worktreeId, resumeScopeId, generation],
+      )
+    }, signal)
     const chunks: CodeChunk[] = []
     const imports: { from: string; to: string; specifier: string }[] = []
     const known = new Set(files.map((file) => file.path))
@@ -303,6 +335,19 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         : null,
     )
     if (models) {
+      const staged = await database.query<{ id: string; content_hash: string; vector_json: unknown }>(
+        `SELECT id,content_hash,vector_json FROM zorya_code_resume_chunks
+         WHERE worktree_id=$1 AND scope_id=$2`,
+        [worktreeId, resumeScopeId],
+      )
+      const stagedVectors = new Map(staged.rows.map((row) => [row.id + ':' + row.content_hash, row.vector_json]))
+      vectors = vectors.map((value, index) => value ?? (
+        stagedVectors.has(`${chunks[index]!.id}:${chunks[index]!.contentHash}`)
+          ? vector(stagedVectors.get(`${chunks[index]!.id}:${chunks[index]!.contentHash}`), profile!.dimensions)
+          : null
+      ))
+    }
+    if (models) {
       const missingIndexes = vectors.flatMap((value, index) => (value ? [] : [index]))
       for (let cursor = 0; cursor < missingIndexes.length; cursor += 32) {
         checkAbort(signal)
@@ -313,8 +358,35 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         })
         if (!Array.isArray(embedded) || embedded.length !== indexes.length)
           throw new CodeIndexError('CODE_INDEX_VECTOR_INVALID')
-        for (let offset = 0; offset < indexes.length; offset++)
-          vectors[indexes[offset]!] = vector(embedded[offset], profile!.dimensions)
+        const batch = indexes.map((index, offset) => ({
+          index,
+          value: vector(embedded[offset], profile!.dimensions),
+        }))
+        await database.transaction(async (tx) => {
+          checkAbort(signal)
+          const current = await tx.query<{ generation: string | number }>(
+            'SELECT generation FROM zorya_code_worktrees WHERE worktree_id=$1 FOR UPDATE',
+            [worktreeId],
+          )
+          const session = await tx.query<{ generation: string | number; scope_id: string }>(
+            'SELECT generation,scope_id FROM zorya_code_resume_sessions WHERE worktree_id=$1 FOR UPDATE',
+            [worktreeId],
+          )
+          if (Number(current.rows[0]?.generation) !== generation ||
+              Number(session.rows[0]?.generation) !== generation ||
+              session.rows[0]?.scope_id !== resumeScopeId)
+            throw new CodeIndexError('CODE_INDEX_STALE_GENERATION')
+          for (const item of batch) {
+            const chunk = chunks[item.index]!
+            await tx.query(
+              `INSERT INTO zorya_code_resume_chunks(worktree_id,scope_id,id,content_hash,vector_json)
+               VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(worktree_id,id) DO UPDATE SET
+               scope_id=EXCLUDED.scope_id,content_hash=EXCLUDED.content_hash,vector_json=EXCLUDED.vector_json`,
+              [worktreeId, resumeScopeId, chunk.id, chunk.contentHash, JSON.stringify(item.value)],
+            )
+            vectors[item.index] = item.value
+          }
+        }, signal)
       }
     }
     checkAbort(signal)
@@ -412,6 +484,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         `DELETE FROM zorya_code_snapshots WHERE worktree_id=$1 AND snapshot_id<>$2 AND snapshot_id NOT IN (SELECT snapshot_id FROM zorya_code_snapshots WHERE worktree_id=$1 ORDER BY created_at DESC LIMIT 2)`,
         [worktreeId, identity.snapshotId],
       )
+      await tx.query('DELETE FROM zorya_code_resume_sessions WHERE worktree_id=$1 AND scope_id=$2 AND generation=$3', [worktreeId, resumeScopeId, generation])
     }, signal)
     await job
     return statusFrom(

@@ -35,6 +35,20 @@ CREATE INDEX IF NOT EXISTS zorya_code_chunks_snapshot_path ON zorya_code_chunks(
 CREATE INDEX IF NOT EXISTS zorya_code_chunks_snapshot_language ON zorya_code_chunks(snapshot_id,language);
 `
 
+const resumeMigration = `
+CREATE TABLE IF NOT EXISTS zorya_code_resume_sessions (
+ worktree_id text PRIMARY KEY, scope_id text NOT NULL, generation bigint NOT NULL,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS zorya_code_resume_chunks (
+ worktree_id text NOT NULL, scope_id text NOT NULL, id text NOT NULL,
+ content_hash text NOT NULL, vector_json jsonb NOT NULL,
+ PRIMARY KEY(worktree_id,id),
+ FOREIGN KEY(worktree_id) REFERENCES zorya_code_resume_sessions(worktree_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS zorya_code_resume_chunks_scope ON zorya_code_resume_chunks(worktree_id,scope_id);
+`
+
 export async function initializeCodeIndex(database: QueryableDatabase): Promise<void> {
   const checksum = codeSha256(schema)
   await database.transaction(async (tx) => {
@@ -50,5 +64,19 @@ export async function initializeCodeIndex(database: QueryableDatabase): Promise<
         'code_001',
         checksum,
       ])
+    const resumeChecksum = codeSha256(resumeMigration)
+    const resume = await tx.query<{ checksum: string }>(
+      'SELECT checksum FROM zorya_code_migrations WHERE id=$1',
+      ['code_002_index_resume'],
+    )
+    if (resume.rows[0] && resume.rows[0].checksum !== resumeChecksum)
+      throw new CodeIndexError('CODE_INDEX_MIGRATION_CHECKSUM_MISMATCH')
+    if (!resume.rows[0]) {
+      await tx.exec(resumeMigration)
+      await tx.query('INSERT INTO zorya_code_migrations(id,checksum) VALUES($1,$2)', [
+        'code_002_index_resume',
+        resumeChecksum,
+      ])
+    }
   })
 }
