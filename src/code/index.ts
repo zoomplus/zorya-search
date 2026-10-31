@@ -101,6 +101,9 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const profile = validatedProfile ? Object.freeze({ ...validatedProfile }) : undefined
   if (options.models && typeof options.models.embed !== 'function')
     throw new CodeIndexError('CODE_INDEX_MODELS_INVALID')
+  const rerankCandidateLimit = options.rerankCandidateLimit ?? 0
+  if (!Number.isInteger(rerankCandidateLimit) || rerankCandidateLimit < 0 || rerankCandidateLimit > 200)
+    throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID')
   const models = options.models
     ? Object.freeze({
         embed: options.models.embed.bind(options.models),
@@ -603,12 +606,13 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     } else if (mode === 'hybrid' && models)
       degradedReason = denseReason(snapshot.profileId, true, profileId) ?? undefined
     const ranked = reciprocalRankFusion(filtered, lexicalRanks, denseRanks)
-    let result = ranked.slice(0, cap)
+    let result = ranked.slice(0, mode === 'hybrid' && models?.rerank ? (rerankCandidateLimit || cap) : cap)
     let rerankRanks = new Map<string, number>()
     if (mode === 'hybrid' && models?.rerank && profile && !degradedReason && result.length) {
       const reranked = await models.rerank({
         query: input.query,
         documents: result.map((item) => item.row.text),
+        ...(rerankCandidateLimit > 0 ? { topN: Math.min(cap, rerankCandidateLimit) } : {}),
         signal: input.signal ?? new AbortController().signal,
       })
       if (
@@ -637,6 +641,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         })
         .concat(result.filter((item) => !rerankRanks.has(item.row.id)))
     }
+    result = result.slice(0, cap)
     const hits: CodeHit[] = result.map(({ row, lexicalRank, denseRank, score }) => ({
       id: row.id,
       path: row.path,

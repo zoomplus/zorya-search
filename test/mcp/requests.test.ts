@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   classifyRequest,
+  visualSearchRequest,
   contextRequest,
   readRequest,
   searchRequest,
@@ -46,4 +47,15 @@ test('shared MCP/runtime schemas keep owner paths and credentials out of tool in
     }).success,
     false,
   )
+})
+
+test('visual request accepts bounded caller-supplied bytes and rejects URL or path access', () => {
+  const valid = {
+    references: [{ id: 'button', contentHash: 'a'.repeat(64), image: { mimeType: 'image/png', dataBase64: 'AQID' } }],
+    queryText: 'save button',
+  }
+  assert.equal(visualSearchRequest.safeParse(valid).success, true)
+  assert.equal(visualSearchRequest.safeParse({ ...valid, queryImage: { mimeType: 'image/png', dataBase64: 'AQID' } }).success, false)
+  assert.equal(visualSearchRequest.safeParse({ ...valid, references: [{ ...valid.references[0], image: undefined, text: 'save', url: 'https://example.test/image.png' }] }).success, false)
+  assert.equal(visualSearchRequest.safeParse({ ...valid, queryText: undefined, queryImage: { mimeType: 'image/svg+xml', dataBase64: 'AQID' } }).success, false)
 })

@@ -113,7 +113,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
   const localAccess: SearchMcpAccess & { principalId: string } = {
     principalId: 'local-owner',
     rootIds: runtime.listRoots().map((root) => root.id),
-    operations: ['read', 'index', 'web', 'classify'],
+    operations: ['read', 'index', 'web', 'classify', ...(runtime.capabilities().visual ? ['visual' as const] : [])],
   }
   const closeSession = async (session: LegacySession) => {
     if (session.transport.sessionId) sessions.delete(session.transport.sessionId)
@@ -425,7 +425,7 @@ function snapshotAccess(
     !Array.isArray(candidate.rootIds) ||
     candidate.rootIds.length > 32 ||
     !Array.isArray(candidate.operations) ||
-    candidate.operations.length > 4
+    candidate.operations.length > 5
   )
     return undefined
   const rootIds = [...candidate.rootIds]
@@ -438,7 +438,7 @@ function snapshotAccess(
         !availableRoots.includes(id),
     ) ||
     new Set(rootIds).size !== rootIds.length ||
-    operations.some((operation) => !['read', 'index', 'web', 'classify'].includes(operation)) ||
+    operations.some((operation) => !['read', 'index', 'web', 'classify', 'visual'].includes(operation)) ||
     new Set(operations).size !== operations.length
   )
     return undefined

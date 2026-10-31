@@ -89,6 +89,12 @@ const classifier = z
     limits: providerLimits.optional(),
   })
   .strict()
+const mechanism = z.object({
+  code: z.object({ secret: secretRef, limits: providerLimits.optional() }).strict().optional(),
+  visual: z.object({ secret: secretRef, limits: providerLimits.optional() }).strict().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.code && !value.visual) ctx.addIssue({ code: 'custom', message: 'At least one Mechanism modality is required' })
+})
 const root = z
   .object({
     id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/),
@@ -120,6 +126,7 @@ export const runtimeConfigSchema = z
     embedding: embedding.optional(),
     reranker: reranker.optional(),
     classifier: classifier.optional(),
+    mechanism: mechanism.optional(),
     web: z
       .object({
         discovery: z
@@ -140,6 +147,8 @@ export const runtimeConfigSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.mechanism?.code && value.embedding)
+      ctx.addIssue({ code: 'custom', path: ['embedding'], message: 'Legacy embedding cannot be combined with mechanism.code' })
     const ids = new Set<string>()
     for (const item of value.roots) {
       if (ids.has(item.id))

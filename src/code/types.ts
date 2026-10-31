@@ -32,6 +32,7 @@ export interface CodeIndexOptions {
   profile?: CodeEmbeddingProfile
   limits?: Partial<CodeIndexLimits>
   exclude?: string[]
+  rerankCandidateLimit?: number
 }
 
 export interface CodeSourceIdentity {

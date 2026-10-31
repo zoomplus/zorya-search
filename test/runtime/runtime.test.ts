@@ -11,6 +11,7 @@ import {
   SearchRuntimeError,
 } from '../../src/runtime/index.js'
 import { readBoundedRegularFile } from '../../src/runtime/config.js'
+import { createHash } from 'node:crypto'
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'zorya-runtime-'))
@@ -50,6 +51,10 @@ test('strict versioned owner configuration rejects unsafe extras and snapshots i
     () => parseRuntimeConfig({ ...config, roots: [{ id: 'r', path: 'relative/root' }] }),
     RuntimeConfigError,
   )
+  const mechanismCode = parseRuntimeConfig({ ...config, mechanism: { code: { secret: { kind: 'env', name: 'VOYAGE_KEY' } } } })
+  assert.equal(mechanismCode.mechanism?.code?.secret.kind, 'env')
+  assert.throws(() => parseRuntimeConfig({ ...config, mechanism: {} }), RuntimeConfigError)
+  assert.throws(() => parseRuntimeConfig({ ...config, mechanism: { code: { secret: { kind: 'env', name: 'VOYAGE_KEY' } } }, embedding: { provider: 'openrouter', model: 'legacy', dimensions: 1024, secret: { kind: 'env', name: 'OTHER_KEY' } } }), RuntimeConfigError)
   assert.doesNotThrow(() =>
     parseRuntimeConfig({
       ...config,
@@ -102,6 +107,7 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
       classification: false,
       visual: false,
     })
+    await assert.rejects(runtime.searchVisualReferences({ references: [{ id: 'provided', contentHash: 'a'.repeat(64), text: 'reference' }], queryText: 'anything' }), isCode('CAPABILITY_DISABLED'))
     await runtime.indexRepository({ rootId: 'a' })
     await runtime.indexRepository({ rootId: 'b' })
     const result = await runtime.searchCode({ rootId: 'a', query: 'alphaFeature', mode: 'lexical' })
@@ -157,6 +163,45 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
       (error: unknown) =>
         error instanceof SearchRuntimeError && error.code === 'CAPABILITY_DISABLED',
     )
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('configured visual profile uses the isolated multimodal space and temporary caller references', async () => {
+  const f = await fixture()
+  const image = Uint8Array.from([1, 2, 3])
+  const contentHash = createHash('sha256').update(image).digest('hex')
+  const bodies: Array<Record<string, unknown>> = []
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+    const embedding = Array.from({ length: 1024 }, (_, i) => i === 0 ? 1 : 0)
+    return new Response(JSON.stringify({ model: 'voyageai/voyage-multimodal-3.5', data: [{ index: 0, embedding }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config: { ...f.config, mechanism: { visual: { secret: { kind: 'env', name: 'VOYAGE_VISUAL_KEY' } } } }, testDependencies: { env: { VOYAGE_VISUAL_KEY: 'fixture-only' }, fetch } })
+    assert.equal(runtime.capabilities().visual, true)
+    assert.equal(runtime.profiles().visual?.model, 'voyageai/voyage-multimodal-3.5')
+    await assert.rejects(runtime.searchVisualReferences({
+      references: [
+        { id: 'valid-first', contentHash, image: { mimeType: 'image/png', dataBase64: Buffer.from(image).toString('base64') } },
+        { id: 'invalid-second', contentHash: 'f'.repeat(64), image: { mimeType: 'image/png', dataBase64: Buffer.from(image).toString('base64') } },
+      ],
+      queryText: 'query',
+    }), isCode('INVALID_REQUEST'))
+    assert.equal(bodies.length, 0)
+    const result = await runtime.searchVisualReferences({
+      references: [{ id: 'provided-image', contentHash, image: { mimeType: 'image/png', dataBase64: Buffer.from(image).toString('base64') } }],
+      queryText: 'find the supplied control',
+    })
+    assert.equal(result.results[0]?.reference.id, 'provided-image')
+    assert.equal(result.ephemeral, true)
+    assert.equal(bodies.length, 2)
+    assert.equal(bodies[0]?.model, 'voyageai/voyage-multimodal-3.5')
+    assert.equal('input_type' in bodies[0]!, false)
+    assert.equal(JSON.stringify(result).includes('AQID'), false)
   } finally {
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })

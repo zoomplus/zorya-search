@@ -20,12 +20,13 @@ import {
   statusRequest,
   webReadRequest,
   webSearchRequest,
+  visualSearchRequest,
 } from '../runtime/requests.js'
 
 export type SearchMcpRuntime = Awaited<ReturnType<typeof openSearchRuntime>>
 export interface SearchMcpAccess {
   rootIds: readonly string[]
-  operations: readonly ('read' | 'index' | 'web' | 'classify')[]
+  operations: readonly ('read' | 'index' | 'web' | 'classify' | 'visual')[]
 }
 
 const annotationsFor = (name: string): ToolAnnotations => ({
@@ -39,6 +40,7 @@ const annotationsFor = (name: string): ToolAnnotations => ({
     'search_web',
     'read_web_source',
     'classify',
+    'search_visual_references',
   ].includes(name),
 })
 
@@ -106,9 +108,14 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
     schema: classifyRequest,
     annotations: annotationsFor('classify'),
   },
+  search_visual_references: {
+    description: 'Compare caller supplied reference text or image bytes with a query. Inputs are temporary and are not persisted; Search does not capture screens or fetch image URLs.',
+    schema: visualSearchRequest,
+    annotations: annotationsFor('search_visual_references'),
+  },
 } as const
 
-const requiredOperation: Record<string, 'read' | 'index' | 'web' | 'classify'> = {
+const requiredOperation: Record<string, 'read' | 'index' | 'web' | 'classify' | 'visual'> = {
   list_roots: 'read',
   capabilities: 'read',
   index_status: 'read',
@@ -120,6 +127,7 @@ const requiredOperation: Record<string, 'read' | 'index' | 'web' | 'classify'> =
   search_web: 'web',
   read_web_source: 'web',
   classify: 'classify',
+  search_visual_references: 'visual',
 }
 
 export function createSearchMcpServer(
@@ -129,10 +137,10 @@ export function createSearchMcpServer(
 ) {
   const roots = new Set([...access.rootIds])
   const operationValues = [...access.operations]
-  const validOperation = (value: string) => ['read', 'index', 'web', 'classify'].includes(value)
+  const validOperation = (value: string) => ['read', 'index', 'web', 'classify', 'visual'].includes(value)
   if (
     access.rootIds.length > 32 ||
-    operationValues.length > 4 ||
+    operationValues.length > 5 ||
     roots.size > 32 ||
     [...roots].some((id) => !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(id)) ||
     operationValues.some((operation) => !validOperation(operation))
@@ -224,6 +232,10 @@ export function createSearchMcpServer(
       typeof runtime.classify
     >[0]),
   )
+  if (runtime.capabilities().visual && operations.has('visual'))
+    add('search_visual_references', (input, signal) =>
+      runtime.searchVisualReferences({ ...input, ...(signal ? { signal } : {}) } as Parameters<typeof runtime.searchVisualReferences>[0]),
+    )
   return server
 }
 

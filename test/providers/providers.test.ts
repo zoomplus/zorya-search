@@ -6,7 +6,9 @@ import {
   createOpenRouterEmbedding,
   createOpenRouterModels,
   createOpenRouterReranker,
+  createOpenRouterMultimodalEmbedding,
 } from "../../src/providers/openrouter.js";
+import { MECHANISM_RETRIEVAL_PRESETS } from '../../src/providers/voyage.js'
 import { createOpenRouterClassifier } from "../../src/providers/classifier.js";
 import {
   assertPublicAddresses,
@@ -22,6 +24,34 @@ function jsonResponse(value: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+test('Mechanism presets stay pinned and multimodal OpenRouter embedding sends only bounded caller bytes', async () => {
+  assert.deepEqual(MECHANISM_RETRIEVAL_PRESETS.code, {
+    model: 'voyageai/voyage-code-4', dimensions: 1024, candidateLimit: 30,
+    reranker: 'voyageai/rerank-2.5-lite', defaultLimit: 8,
+  })
+  assert.deepEqual(MECHANISM_RETRIEVAL_PRESETS.visual, {
+    model: 'voyageai/voyage-multimodal-3.5', dimensions: 1024, defaultLimit: 5,
+  })
+  let payload: Record<string, unknown> | undefined
+  const model = createOpenRouterMultimodalEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: MECHANISM_RETRIEVAL_PRESETS.visual.model,
+    dimensions: 2, fetch: async (_url, init) => {
+      payload = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return jsonResponse({ model: MECHANISM_RETRIEVAL_PRESETS.visual.model, data: [{ index: 0, embedding: [1, 0] }] })
+    },
+  })
+  assert.deepEqual(await model.embed({ images: [{ bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/png' }], signal: new AbortController().signal }), [[1, 0]])
+  assert.equal(payload?.model, MECHANISM_RETRIEVAL_PRESETS.visual.model)
+  assert.equal(payload?.dimensions, 2)
+  assert.equal('input_type' in payload!, false)
+  const input = (payload?.input as Array<{ content: Array<{ image_url: { url: string } }> }>)[0]!
+  assert.equal(input.content[0]!.image_url.url, 'data:image/png;base64,AQID')
+  const largeImage = new Uint8Array(1_100_000).fill(7)
+  await model.embed({ images: [{ bytes: largeImage, mimeType: 'image/png' }], signal: new AbortController().signal })
+  const mismatch = createOpenRouterMultimodalEmbedding({ baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: 'voyageai/voyage-multimodal-3.5', dimensions: 2, fetch: async () => jsonResponse({ model: 'other/model', data: [{ index: 0, embedding: [1, 0] }] }) })
+  await assert.rejects(mismatch.embed({ texts: ['query'], signal: new AbortController().signal }), (error: unknown) => error instanceof ProviderError && error.code === 'malformed')
+})
 
 test("embeddings reorder by index and reject duplicates, omissions, dimensions and zero vectors", async () => {
   const model = createOpenRouterEmbedding({
@@ -124,6 +154,21 @@ test("reranker rejects duplicate or out of range indexes and non-finite scores",
     );
   }
 });
+
+test('reranker honors a per-call topN override without exceeding its configured ceiling', async () => {
+  let topN: number | undefined
+  const model = createOpenRouterReranker({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'secret', model: 'voyageai/rerank-2.5-lite', maxResults: 30,
+    fetch: async (_input, init) => {
+      topN = (JSON.parse(String(init?.body)) as { top_n?: number }).top_n
+      return jsonResponse({ results: [{ index: 29, relevance_score: 1 }] })
+    },
+  })
+  const result = await model.rerank({ query: 'needle', documents: Array.from({ length: 30 }, (_, i) => `doc ${i}`), topN: 8, signal: new AbortController().signal })
+  assert.equal(topN, 8)
+  assert.deepEqual(result, [{ index: 29, score: 1 }])
+  await assert.rejects(model.rerank({ query: 'needle', documents: ['x'], topN: 201, signal: new AbortController().signal }), (error: unknown) => error instanceof ProviderError && error.code === 'budget')
+})
 
 test("embedding and reranker have separate model profiles and OpenAI-compatible config adds no assumed rerank or judge", async () => {
   const payloads: Array<{ path: string; body: Record<string, unknown> }> = [];
