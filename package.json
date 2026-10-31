@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Portable search, retrieval, and indexing core for Zorya services",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "files": [
     "dist",
     "LICENSE"
@@ -23,6 +23,9 @@
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {
+    "htmlparser2": "12.0.0",
+    "ignore": "7.0.14",
+    "typescript": "5.9.3",
     "zod": "4.6.6"
   },
   "optionalDependencies": {
@@ -33,10 +36,9 @@
   "devDependencies": {
     "@types/node": "24.10.0",
     "@types/pg": "8.15.5",
-    "tsx": "4.20.6",
-    "typescript": "5.9.3"
+    "tsx": "4.20.6"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   }
 }
