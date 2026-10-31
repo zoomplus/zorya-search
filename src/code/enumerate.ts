@@ -1,5 +1,5 @@
 import { lstat, realpath, open, stat, opendir } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep, join } from 'node:path'
+import { isAbsolute, posix, relative, resolve, sep, win32, join } from 'node:path'
 import ignore from 'ignore'
 import { CodeIndexError } from './errors.js'
 import type { CodeIndexLimits } from './types.js'
@@ -8,6 +8,15 @@ import { runGit } from './git.js'
 
 const forbidden =
   /(^|\/)(?:\.git|node_modules|build|dist|coverage|\.cache|\.next|vendor|\.idea|\.vscode)(?:\/|$)|(^|\/)(?:\.env(?:\..*)?|[^/]*(?:secret|credential|private[-_]?key)[^/]*|id_(?:rsa|ed25519))(?:$|\/)/iu
+export const CODE_EXCLUSION_POLICY_VERSION = 'code-exclusions-v1'
+export const DEFAULT_CODE_EXCLUSIONS = Object.freeze([
+  '**/pnpm-lock.yaml',
+  '**/package-lock.json',
+  '**/npm-shrinkwrap.json',
+  '**/yarn.lock',
+])
+const MAX_EXCLUSION_PATTERNS = 128
+const MAX_EXCLUSION_PATTERN_LENGTH = 512
 const textExtensions = new Set([
   '.ts',
   '.tsx',
@@ -50,6 +59,48 @@ function isIndexablePath(path: string): boolean {
   )
 }
 
+export function createCodePathPolicy(input: string[] | undefined): {
+  patterns: readonly string[]
+  id: string
+  excludes(path: string): boolean
+} {
+  if (input !== undefined && (!Array.isArray(input) || input.length > MAX_EXCLUSION_PATTERNS))
+    throw new CodeIndexError('CODE_INDEX_EXCLUSION_POLICY_INVALID')
+  const explicit = (input ?? []).map((pattern) => {
+    if (
+      typeof pattern !== 'string' ||
+      !pattern.length ||
+      pattern.length > MAX_EXCLUSION_PATTERN_LENGTH ||
+      pattern.trim() !== pattern ||
+      pattern.startsWith('!') ||
+      /[\p{Cc}\u2028\u2029]/u.test(pattern) ||
+      /^[a-z]:/iu.test(pattern) ||
+      pattern.includes('\\') ||
+      pattern.includes('\0') ||
+      isAbsolute(pattern) ||
+      pattern.split('/').some((part) => part === '..')
+    )
+      throw new CodeIndexError('CODE_INDEX_EXCLUSION_POLICY_INVALID')
+    return pattern
+  })
+  const patterns = Object.freeze([...DEFAULT_CODE_EXCLUSIONS, ...new Set(explicit)])
+  let matcher: ReturnType<typeof ignore>
+  try {
+    matcher = ignore().add([...patterns])
+  } catch {
+    throw new CodeIndexError(
+      'CODE_INDEX_EXCLUSION_POLICY_INVALID',
+      'CODE_INDEX_EXCLUSION_POLICY_INVALID',
+    )
+  }
+  const id = codeSha256(JSON.stringify([CODE_EXCLUSION_POLICY_VERSION, patterns]))
+  return Object.freeze({
+    patterns,
+    id,
+    excludes: (path: string) => matcher.test(path.replaceAll('\\', '/')).ignored,
+  })
+}
+
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
@@ -60,6 +111,7 @@ async function readBoundedFile(
   maxBytes: number,
   errorCode: string,
   signal?: AbortSignal,
+  diagnostics?: { path: string; allowedBytes: number },
 ): Promise<Buffer> {
   signal?.throwIfAborted()
   const pathStat = await lstat(path)
@@ -67,13 +119,9 @@ async function readBoundedFile(
   const handle = await open(path, 'r')
   try {
     const info = await handle.stat()
-    if (
-      !info.isFile() ||
-      info.dev !== pathStat.dev ||
-      info.ino !== pathStat.ino ||
-      info.size > maxBytes
-    )
+    if (!info.isFile() || info.dev !== pathStat.dev || info.ino !== pathStat.ino)
       throw new CodeIndexError(errorCode)
+    if (info.size > maxBytes) throw sizeLimitError(errorCode, diagnostics, info.size, maxBytes)
     const buffer = Buffer.allocUnsafe(maxBytes + 1)
     let offset = 0
     while (offset < buffer.length) {
@@ -82,11 +130,28 @@ async function readBoundedFile(
       if (result.bytesRead === 0) break
       offset += result.bytesRead
     }
-    if (offset > maxBytes) throw new CodeIndexError(errorCode)
+    if (offset > maxBytes) {
+      const actualBytes = (await handle.stat()).size
+      throw sizeLimitError(errorCode, diagnostics, actualBytes, maxBytes)
+    }
     return buffer.subarray(0, offset)
   } finally {
     await handle.close()
   }
+}
+
+function sizeLimitError(
+  code: string,
+  diagnostics: { path: string; allowedBytes: number } | undefined,
+  actualBytes: number,
+  allowedBytes: number,
+): CodeIndexError {
+  if (!diagnostics) return new CodeIndexError(code)
+  return new CodeIndexError(code, code, undefined, {
+    path: diagnostics.path.replace(/[\p{Cc}\u2028\u2029]/gu, '�').slice(0, 1024),
+    actualBytes,
+    allowedBytes,
+  })
 }
 
 async function gitFiles(
@@ -102,7 +167,12 @@ async function gitFiles(
   return output?.split('\0').filter(Boolean) ?? null
 }
 
-async function walkNonGit(root: string, maxFiles: number, signal?: AbortSignal): Promise<string[]> {
+async function walkNonGit(
+  root: string,
+  maxFiles: number,
+  signal?: AbortSignal,
+  excludes: (path: string) => boolean = () => false,
+): Promise<string[]> {
   const files: string[] = []
   const maxEntries = Math.min(maxFiles * 20, 250_000)
   let entryCount = 0
@@ -143,6 +213,7 @@ async function walkNonGit(root: string, maxFiles: number, signal?: AbortSignal):
       const absolute = join(directory, entry.name)
       const relativePath = relative(root, absolute).split(sep).join('/')
       if (forbidden.test(relativePath) || entry.name === '.git') continue
+      if (excludes(relativePath + (entry.isDirectory() ? '/' : ''))) continue
       let ignored = false
       for (const { base, matcher } of inherited) {
         const candidate = base ? relative(base, relativePath).split(sep).join('/') : relativePath
@@ -176,6 +247,7 @@ export async function enumerateCode(
   root: string,
   limits: CodeIndexLimits,
   signal?: AbortSignal,
+  excludes: (path: string) => boolean = () => false,
 ): Promise<{ files: EnumeratedFile[]; treeHash: string; ignoredMode: 'git' | 'non-git' }> {
   signal?.throwIfAborted()
   const rootReal = await realpath(root)
@@ -184,17 +256,24 @@ export async function enumerateCode(
     Math.min(limits.maxFiles * 4096, 64 * 1024 * 1024),
     signal,
   )
-  const listed = gitListed ?? (await walkNonGit(rootReal, limits.maxFiles, signal))
+  const listed = gitListed ?? (await walkNonGit(rootReal, limits.maxFiles, signal, excludes))
   const files: EnumeratedFile[] = []
   let totalBytes = 0
   for (const path of listed.sort()) {
     signal?.throwIfAborted()
-    if (!isIndexablePath(path)) continue
+    const normalizedPath = path.replaceAll('\\', '/')
+    if (!isIndexablePath(normalizedPath) || excludes(normalizedPath)) continue
     const absolutePath = resolve(rootReal, path)
     if (!inside(rootReal, absolutePath)) continue
     const info = await lstat(absolutePath).catch(() => null)
     if (!info?.isFile()) continue
-    if (info.size > limits.maxFileBytes) throw new CodeIndexError('CODE_INDEX_FILE_SIZE_LIMIT')
+    if (info.size > limits.maxFileBytes)
+      throw sizeLimitError(
+        'CODE_INDEX_FILE_SIZE_LIMIT',
+        { path: normalizedPath, allowedBytes: limits.maxFileBytes },
+        info.size,
+        limits.maxFileBytes,
+      )
     const real = await realpath(absolutePath).catch(() => null)
     if (!real || !inside(rootReal, real)) continue
     const bytes = await readBoundedFile(
@@ -202,6 +281,7 @@ export async function enumerateCode(
       limits.maxFileBytes,
       'CODE_INDEX_FILE_SIZE_LIMIT',
       signal,
+      { path: normalizedPath, allowedBytes: limits.maxFileBytes },
     )
     const checkedReal = await realpath(real).catch(() => null)
     if (
@@ -233,8 +313,16 @@ export async function readScopedFile(
   path: string,
   maxBytes: number,
   signal?: AbortSignal,
+  excludes: (path: string) => boolean = () => false,
 ): Promise<{ text: string; hash: string; bytes: number }> {
-  if (isAbsolute(path) || path.split(/[\\/]/u).includes('..') || forbidden.test(path))
+  const normalizedPath = posix.normalize(path.replaceAll('\\', '/'))
+  if (
+    isAbsolute(path) ||
+    win32.isAbsolute(path) ||
+    path.split(/[\\/]/u).includes('..') ||
+    forbidden.test(normalizedPath) ||
+    excludes(normalizedPath)
+  )
     throw new CodeIndexError('CODE_INDEX_PATH_OUTSIDE_ROOT')
   const rootReal = await realpath(root)
   const absolute = resolve(rootReal, path)
@@ -244,7 +332,13 @@ export async function readScopedFile(
     })
   })
   if (!inside(rootReal, real)) throw new CodeIndexError('CODE_INDEX_PATH_OUTSIDE_ROOT')
-  const bytes = await readBoundedFile(real, maxBytes, 'CODE_INDEX_SOURCE_SIZE_LIMIT', signal)
+  const canonicalPath = relative(rootReal, real).split(sep).join('/')
+  if (forbidden.test(canonicalPath) || excludes(canonicalPath))
+    throw new CodeIndexError('CODE_INDEX_PATH_OUTSIDE_ROOT')
+  const bytes = await readBoundedFile(real, maxBytes, 'CODE_INDEX_SOURCE_SIZE_LIMIT', signal, {
+    path: normalizedPath,
+    allowedBytes: maxBytes,
+  })
   const checkedReal = await realpath(real).catch(() => null)
   if (bytes.length > maxBytes || checkedReal !== real || !inside(rootReal, checkedReal))
     throw new CodeIndexError('CODE_INDEX_PATH_OUTSIDE_ROOT')

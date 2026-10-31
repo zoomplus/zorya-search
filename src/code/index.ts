@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { posix, resolve } from 'node:path'
 import type {
   CodeIndex,
   CodeIndexOptions,
@@ -12,7 +12,7 @@ import type {
   CodeEmbeddingProfile,
 } from './types.js'
 import { CodeIndexError } from './errors.js'
-import { enumerateCode, readScopedFile } from './enumerate.js'
+import { createCodePathPolicy, enumerateCode, readScopedFile } from './enumerate.js'
 import { identifyRoot } from './identity.js'
 import {
   chunkCode,
@@ -97,6 +97,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     if (!Number.isInteger(value) || value < 1 || value > HARD_LIMITS[key as keyof CodeIndexLimits])
       throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID', `Invalid code index limit: ${key}`)
   const validatedProfile = options.models ? validateProfile(options.profile) : undefined
+  const pathPolicy = createCodePathPolicy(options.exclude)
   const profile = validatedProfile ? Object.freeze({ ...validatedProfile }) : undefined
   if (options.models && typeof options.models.embed !== 'function')
     throw new CodeIndexError('CODE_INDEX_MODELS_INVALID')
@@ -121,7 +122,12 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       )
     : null
   const chunkConfigId = sha(
-    JSON.stringify([CODE_CHUNKER_VERSION, CODE_PARSER_VERSION, limits.maxChunkChars]),
+    JSON.stringify([
+      CODE_CHUNKER_VERSION,
+      CODE_PARSER_VERSION,
+      limits.maxChunkChars,
+      pathPolicy.id,
+    ]),
   )
   const database = options.database
   let initialization: Promise<void> | undefined
@@ -162,7 +168,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     checkAbort(signal)
     await ensureSchema()
     const root = await realpath(resolve(inputRoot))
-    const { files, treeHash } = await enumerateCode(root, limits, signal)
+    const { files, treeHash } = await enumerateCode(root, limits, signal, pathPolicy.excludes)
     const identity = await identifyRoot(root, treeHash, signal)
     const worktreeId = identity.worktreeId
     const generationResult = await database.query<{ generation: string | number }>(
@@ -245,7 +251,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       }
     }
     checkAbort(signal)
-    const beforePublish = await enumerateCode(root, limits, signal)
+    const beforePublish = await enumerateCode(root, limits, signal, pathPolicy.excludes)
     if (beforePublish.treeHash !== treeHash)
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
     const reidentified = await identifyRoot(root, treeHash, signal)
@@ -313,7 +319,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       )
       if (Number(current.rows[0]?.generation) !== generation)
         throw new CodeIndexError('CODE_INDEX_STALE_GENERATION')
-      const finalFiles = await enumerateCode(root, limits, signal)
+      const finalFiles = await enumerateCode(root, limits, signal, pathPolicy.excludes)
       const finalIdentity = await identifyRoot(root, finalFiles.treeHash, signal)
       if (
         finalFiles.treeHash !== treeHash ||
@@ -377,7 +383,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     checkAbort(signal)
     await ensureSchema()
     const root = await realpath(resolve(rootInput))
-    const { files, treeHash } = await enumerateCode(root, limits, signal)
+    const { files, treeHash } = await enumerateCode(root, limits, signal, pathPolicy.excludes)
     const identity = await identifyRoot(root, treeHash, signal)
     const result = await database.query<{
       current_snapshot: string | null
@@ -613,6 +619,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       input.path,
       limits.maxFileBytes,
       input.signal,
+      pathPolicy.excludes,
     )
     const stored = await database.query<{ content_hash: string }>(
       'SELECT content_hash FROM zorya_code_files WHERE snapshot_id=$1 AND path=$2',
@@ -659,22 +666,25 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       input.path.split(/[\\/]/u).includes('..')
     )
       throw new CodeIndexError('CODE_INDEX_PATH_FILTER_INVALID')
+    const canonicalPath = posix.normalize(input.path.replaceAll('\\', '/'))
+    if (pathPolicy.excludes(canonicalPath))
+      throw new CodeIndexError('CODE_INDEX_SOURCE_UNAVAILABLE')
     const present = await database.query(
       'SELECT 1 FROM zorya_code_files WHERE snapshot_id=$1 AND path=$2',
-      [snapshot.snapshot, input.path.replaceAll('\\', '/')],
+      [snapshot.snapshot, canonicalPath],
     )
     if (!present.rows.length) throw new CodeIndexError('CODE_INDEX_SOURCE_UNAVAILABLE')
     const imports = await database.query<{ to_path: string }>(
       'SELECT to_path FROM zorya_code_imports WHERE snapshot_id=$1 AND from_path=$2 ORDER BY to_path',
-      [snapshot.snapshot, input.path.replaceAll('\\', '/')],
+      [snapshot.snapshot, canonicalPath],
     )
     const importedBy = await database.query<{ from_path: string }>(
       'SELECT from_path FROM zorya_code_imports WHERE snapshot_id=$1 AND to_path=$2 ORDER BY from_path',
-      [snapshot.snapshot, input.path.replaceAll('\\', '/')],
+      [snapshot.snapshot, canonicalPath],
     )
     const query =
       input.symbol ??
-      input.path
+      canonicalPath
         .split('/')
         .at(-1)!
         .replace(/\.[^.]+$/u, '')
@@ -691,7 +701,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const after = await current(input.root, input.signal)
     if (after.snapshot !== snapshot.snapshot)
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
-    const similar = found.hits.filter((hit) => hit.path !== input.path)
+    const similar = found.hits.filter((hit) => hit.path !== canonicalPath)
     return {
       identity: snapshot.identity,
       imports: imports.rows.map((row) => row.to_path),
