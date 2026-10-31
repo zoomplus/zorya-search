@@ -6,9 +6,15 @@ import {
   contextRequest,
   readRequest,
   searchRequest,
+  cancelIndexingRequest,
 } from '../../src/runtime/requests.js'
+import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
 
 test('shared MCP/runtime schemas keep owner paths and credentials out of tool inputs', () => {
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.start_indexing.annotations.openWorldHint, true)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.cancel_indexing.annotations.openWorldHint, false)
+  assert.equal(cancelIndexingRequest.safeParse({ rootId: 'repo', jobId: '00000000-0000-4000-8000-000000000000' }).success, true)
+  assert.equal(cancelIndexingRequest.safeParse({ rootId: 'repo', jobId: '00000000-0000-4000-8000-000000000000', pid: 1 }).success, false)
   assert.equal(
     searchRequest.safeParse({ rootId: 'repo', query: 'needle', mode: 'lexical' }).success,
     true,

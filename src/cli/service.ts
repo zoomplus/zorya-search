@@ -27,24 +27,10 @@ import {
 } from "./files.js";
 
 const DEFAULT_OWNER_START_TIMEOUT_MS = 15_000;
-const MAX_OWNER_START_TIMEOUT_MS = 45 * 60_000;
-export async function ownerReadinessTimeoutMs(configPath: string) {
-  const config = (await readConfig(configPath)).config;
-  const watched = config.roots.filter((root) => root.watch);
-  if (!watched.length) return DEFAULT_OWNER_START_TIMEOUT_MS;
-  const workUnits = watched.reduce((total, root) => {
-    const limits = root.limits;
-    return (
-      total +
-      (limits?.maxFiles ?? 5_000) +
-      (limits?.maxChunks ?? 10_000) +
-      (limits?.maxScanChunks ?? 10_000)
-    );
-  }, 0);
-  return Math.min(
-    MAX_OWNER_START_TIMEOUT_MS,
-    Math.max(DEFAULT_OWNER_START_TIMEOUT_MS, 60_000 + workUnits * 20),
-  );
+export async function ownerReadinessTimeoutMs(_configPath: string) {
+  // Readiness means validated runtime + authenticated MCP endpoint. Index jobs
+  // continue under runtime ownership and are observed through index_status.
+  return DEFAULT_OWNER_START_TIMEOUT_MS;
 }
 
 interface Owner {
@@ -254,9 +240,8 @@ export async function ensureOwner(configPath: string) {
       child.once("close", () => resolvePromise()),
     );
     if (!child.pid) throw new Error("OWNER_START_FAILED");
-    // Watch-enabled profiles perform their initial full index before the
-    // runtime starts serving MCP. Give large projects a bounded cold-start
-    // window; on expiry, terminate and join only the ChildProcess we spawned.
+    // Watch-enabled profiles index in the background after runtime validation.
+    // Readiness waits only for the authenticated MCP endpoint.
     const deadline = Date.now() + (await ownerReadinessTimeoutMs(configPath));
     while (Date.now() < deadline) {
       const candidate = await ownerRecord(configPath);

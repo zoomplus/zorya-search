@@ -29,7 +29,7 @@ const help = `Zorya Search — локальный поиск по коду и и
 Команды:
   setup          создать локальную конфигурацию (можно задать --code-env NAME)
   doctor         проверить конфигурацию и локальный владелец
-  index          построить индекс настроенного корня
+  index          построить индекс настроенного корня (--background вернёт job id)
   search         искать в коде (--query ТЕКСТ)
   context        собрать контекст (--query ТЕКСТ)
   serve          запустить владельца службы в foreground
@@ -38,7 +38,7 @@ const help = `Zorya Search — локальный поиск по коду и и
   root-add       добавить разрешённый корень в конфигурацию
   service        проверить службу или остановить только подтверждённого владельца
 
-Параметры: --config ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid
+Параметры: --config ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
 
 По умолчанию поиск lexical локален. Включение облачных embeddings отправляет выбранные
 фрагменты кода при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
@@ -292,7 +292,7 @@ async function withOwnerStartupLock<T>(
 
 async function withClient(
   configPath: string,
-  fn: (client: Client, rootId: string) => Promise<unknown>,
+  fn: (client: Client, rootId: string, jobTimeoutMs: number) => Promise<unknown>,
 ) {
   const { owner, token } = await ensureOwner(configPath);
   const config = await readConfig(configPath);
@@ -313,7 +313,7 @@ async function withClient(
         },
       ),
     );
-    return await fn(client, rootId);
+    return await fn(client, rootId, config.config.indexing?.jobTimeoutMs ?? 900_000);
   } finally {
     await client.close();
   }
@@ -365,7 +365,7 @@ async function main() {
     "root-add": ["config", "root-id", "root", "watch", "watch-interval-ms"],
     service: ["config", "stop"],
     mcp: ["config"],
-    index: ["config", "root-id"],
+    index: ["config", "root-id", "background"],
     search: ["config", "root-id", "query", "mode"],
     context: ["config", "root-id", "query"],
   };
@@ -525,13 +525,53 @@ async function main() {
   if (["index", "search", "context"].includes(command)) {
     const result = await withClient(
       configPath,
-      async (client, defaultRootId) => {
+      async (client, defaultRootId, jobTimeoutMs) => {
         const rootId = String(opts["root-id"] ?? defaultRootId);
-        if (command === "index")
-          return client.callTool({
-            name: "index_repository",
-            arguments: { rootId },
-          });
+        if (command === "index") {
+          const admission = await client.callTool({ name: "start_indexing", arguments: { rootId } });
+          if (admission.isError || opts.background === true) return admission;
+          const payload = admission.structuredContent as { created?: boolean; job?: { jobId?: string; state?: string } } | undefined;
+          const jobId = payload?.job?.jobId;
+          if (!jobId) return admission;
+          let interrupted = false;
+          const onSignal = () => { interrupted = true; };
+          process.once("SIGINT", onSignal);
+          process.once("SIGTERM", onSignal);
+          let previous = "";
+          const deadline = Date.now() + jobTimeoutMs + 10_000;
+          try {
+            for (;;) {
+              if (Date.now() >= deadline) {
+                if (payload?.created) await client.callTool({ name: "cancel_indexing", arguments: { rootId, jobId } });
+                process.exitCode = 1;
+                return { error: "INDEX_JOB_WAIT_EXPIRED", jobId, cancelledByThisInvocation: Boolean(payload?.created) };
+              }
+              if (interrupted) {
+                if (payload?.created) await client.callTool({ name: "cancel_indexing", arguments: { rootId, jobId } });
+                process.exitCode = 130;
+                return { interrupted: true, jobId, cancelledByThisInvocation: Boolean(payload?.created) };
+              }
+              await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
+              const status = await client.callTool({ name: "index_status", arguments: { rootId, jobId } });
+              if (status.isError) { process.exitCode = 1; return status; }
+              const current = (status.structuredContent as { indexingJob?: { jobId?: string; state?: string; errorCode?: string; attempt?: number; totalChunks?: number | null; checkpointChunks?: number } } | undefined)?.indexingJob;
+              if (!current || current.jobId !== jobId) continue;
+              const key = `${current.state}:${JSON.stringify(status.structuredContent)}`;
+              if (key !== previous) {
+                const total = current.totalChunks === null ? "?" : String(current.totalChunks ?? "?");
+                stderr.write(`Индексация ${rootId} — ${current.state}, попытка ${current.attempt ?? 0}, сохранено ${current.checkpointChunks ?? 0}/${total} фрагментов\n`);
+                previous = key;
+              }
+              if (["completed", "failed", "cancelled"].includes(current.state ?? "")) {
+                if (current.state !== "completed") process.exitCode = 1;
+                return status;
+              }
+            }
+          } finally {
+            process.removeListener("SIGINT", onSignal);
+            process.removeListener("SIGTERM", onSignal);
+          }
+        }
         if (command === "search")
           return client.callTool({
             name: "search_code",

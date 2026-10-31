@@ -107,7 +107,7 @@ test("adjacent config profiles receive distinct local owner endpoints", async ()
   }
 });
 
-test("watch startup readiness is bounded from validated root budgets", async () => {
+test("owner readiness waits for the service endpoint, not background indexing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zorya-cli-watch-budget-"));
   try {
     const root = join(directory, "root");
@@ -130,7 +130,7 @@ test("watch startup readiness is bounded from validated root budgets", async () 
         ],
       }),
     );
-    assert.equal(await ownerReadinessTimeoutMs(config), 61_800);
+    assert.equal(await ownerReadinessTimeoutMs(config), 15_000);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

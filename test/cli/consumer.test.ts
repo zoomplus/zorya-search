@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  realpath,
   readFile,
   rm,
   symlink,
@@ -138,7 +139,7 @@ test(
         JSON.parse(await readFile(watchConfig, "utf8")).roots[0],
         {
           id: "project",
-          path: repo,
+          path: await realpath(repo),
           watch: true,
           watchIntervalMs: 1500,
         },
@@ -354,6 +355,9 @@ test(
       assert.ok(coldTools.tools.some((tool) => tool.name === "search_code"));
       const coldIndexResult = await coldIndex;
       assert.equal(coldIndexResult.code, 0, JSON.stringify(coldIndexResult));
+      const backgroundIndex = await run(["index", "--background", ...common]);
+      assert.equal(backgroundIndex.code, 0, backgroundIndex.err);
+      assert.match(backgroundIndex.out, /"jobId"\s*:/u);
       await coldClient.close();
       await coldTransport.close();
       r = await run(["search", "--query", "searchableMarker", ...common]);

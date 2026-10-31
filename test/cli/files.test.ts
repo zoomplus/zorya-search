@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,7 +32,7 @@ test("owner state is unique per config file and future config paths resolve syml
     await symlink(target, alias, "dir");
     assert.equal(
       await canonicalConfigPath(join(alias, "new", "config.json")),
-      join(target, "new", "config.json"),
+      join(await realpath(target), "new", "config.json"),
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -41,7 +41,7 @@ test("owner state is unique per config file and future config paths resolve syml
 test("private state writes are exclusive, bounded, and reject symlinks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zorya-cli-test-"));
   try {
-    const file = join(dir, "private.json");
+    const file = join(await realpath(dir), "private.json");
     await writePrivateFile(file, "{}");
     assert.equal(await readPrivateFile(file), "{}");
     if (process.platform !== "win32")

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readdir, rm, writeFile, chmod, rename, symlink, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rm, writeFile, chmod, rename, symlink, readFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -112,7 +112,7 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
     await runtime.indexRepository({ rootId: 'b' })
     const result = await runtime.searchCode({ rootId: 'a', query: 'alphaFeature', mode: 'lexical' })
     assert.equal(result.hits[0]?.path, 'alpha.ts')
-    assert.equal(result.identity.root, f.a)
+    assert.equal(result.identity.root, await realpath(f.a))
     assert.ok(result.identity.snapshotId)
     const mutableRequest = { rootId: 'a', query: 'alphaFeature', mode: 'lexical' as const }
     const captured = runtime.searchCode(mutableRequest)
@@ -163,6 +163,704 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
       (error: unknown) =>
         error instanceof SearchRuntimeError && error.code === 'CAPABILITY_DISABLED',
     )
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('runtime background indexing deduplicates admissions and exposes a terminal status', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config: f.config })
+    const preCancelled = new AbortController()
+    preCancelled.abort()
+    assert.throws(() => runtime!.startIndexing({ rootId: 'a', signal: preCancelled.signal }), isCode('CANCELLED'))
+    const first = runtime.startIndexing({ rootId: 'a' })
+    const second = runtime.startIndexing({ rootId: 'a' })
+    assert.equal(first.created, true)
+    assert.equal(second.created, false)
+    assert.equal(second.job.jobId, first.job.jobId)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a' })).indexingJob?.state === 'completed')
+    const status = await runtime.indexStatus({ rootId: 'a' })
+    assert.equal(status.fileCount, 1)
+    assert.equal(status.indexingJob?.jobId, first.job.jobId)
+    assert.equal(status.indexingJob?.state, 'completed')
+    assert.equal(runtime.watchStatus({ rootId: 'a' }).job?.jobId, first.job.jobId)
+    await assert.rejects(runtime.indexStatus({ rootId: 'a', jobId: '00000000-0000-4000-8000-000000000000' }), isCode('JOB_NOT_FOUND'))
+    const next = runtime.startIndexing({ rootId: 'a' })
+    assert.equal(next.created, true)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: next.job.jobId })).indexingJob?.state === 'completed')
+    assert.equal((await runtime.indexStatus({ rootId: 'a', jobId: first.job.jobId })).indexingJob?.jobId, first.job.jobId)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('background watch startup returns before embedding settles and cancellation joins the owned job', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  let observedAbort = false
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    init?.signal?.addEventListener('abort', () => { observedAbort = true }, { once: true })
+    startedResolve?.()
+    await new Promise<void>((resolve) => { release = resolve })
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    roots: [{ ...f.config.roots[0]!, watch: true }, f.config.roots[1]!],
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, backgroundWatchStartup: true, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await awaitBounded(started)
+    const during = await runtime.indexStatus({ rootId: 'a' })
+    assert.equal(during.indexingJob?.state, 'running')
+    assert.equal(runtime.watchStatus({ rootId: 'a' }).enabled, true)
+    let cancelDone = false
+    const cancelling = runtime.cancelIndexing({ rootId: 'a', jobId: during.indexingJob!.jobId }).then((job) => { cancelDone = true; return job })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(observedAbort, true)
+    assert.equal(cancelDone, false)
+    release?.()
+    assert.equal((await cancelling).state, 'cancelled')
+    await runtime.close()
+    runtime = undefined
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('cancelled watched startup stays paused until source changes', async () => {
+  const f = await fixture()
+  await mkdir(join(f.a, 'nested'))
+  let calls = 0
+  let startedResolve: (() => void) | undefined
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) {
+      startedResolve?.()
+      await new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true })
+      })
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 250 }, f.config.roots[1]!],
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, backgroundWatchStartup: true, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await awaitBounded(started)
+    const running = (await runtime.indexStatus({ rootId: 'a' })).indexingJob!
+    const cancelled = await runtime.cancelIndexing({ rootId: 'a', jobId: running.jobId })
+    assert.equal(cancelled.state, 'cancelled')
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).active)
+    assert.equal(runtime.watchStatus({ rootId: 'a' }).retryOnChange, true)
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    assert.equal(calls, 1)
+    await writeFile(join(f.a, 'nested', 'changed-after-cancel.ts'), 'export const resumedAfterActualChange = true\n')
+    await waitFor(async () => calls === 2, 5000)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a' })).indexingJob?.state === 'completed', 5000)
+    const result = await runtime.searchCode({ rootId: 'a', query: 'resumedAfterActualChange', mode: 'lexical' })
+    assert.equal(result.hits[0]?.path, 'nested/changed-after-cancel.ts')
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('sync and background indexing serialize per root without changing the synchronous result', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  let calls = 0
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) {
+      startedResolve?.()
+      await new Promise<void>((resolve) => { release = resolve })
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = { ...f.config, embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } } }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const admission = runtime.startIndexing({ rootId: 'a' })
+    await awaitBounded(started)
+    let syncDone = false
+    const sync = runtime.indexRepository({ rootId: 'a' }).then((status) => { syncDone = true; return status })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(syncDone, false)
+    release?.()
+    const status = await sync
+    assert.equal(syncDone, true)
+    assert.equal(status.fileCount, 1)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'completed')
+    assert.equal(calls, 1)
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('a cancelled lane waiter keeps its reservation until the prior index settles', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  let active = 0
+  let maximumActive = 0
+  let calls = 0
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    active++
+    maximumActive = Math.max(maximumActive, active)
+    try {
+      if (calls === 1) {
+        startedResolve?.()
+        await new Promise<void>((resolve) => { release = resolve })
+      }
+      const body = JSON.parse(String(init?.body)) as { input?: string[] }
+      return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+    } finally {
+      active--
+    }
+  }
+  const config = { ...f.config, embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } } }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const first = runtime.indexRepository({ rootId: 'a' })
+    await awaitBounded(started)
+    const waiterController = new AbortController()
+    const waiter = runtime.indexRepository({ rootId: 'a', signal: waiterController.signal })
+    waiterController.abort()
+    await assert.rejects(waiter, isCode('CANCELLED'))
+    const third = runtime.indexRepository({ rootId: 'a' })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(calls, 1)
+    release?.()
+    assert.equal((await first).fileCount, 1)
+    assert.equal((await third).fileCount, 1)
+    assert.equal(maximumActive, 1)
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('queued watched roots settle in order and a source edit during startup is retried once boundedly', async () => {
+  const f = await fixture()
+  let firstResolve: (() => void) | undefined
+  let releaseFirst: (() => void) | undefined
+  let calls = 0
+  const firstStarted = new Promise<void>((resolve) => { firstResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) {
+      firstResolve?.()
+      await new Promise<void>((resolve) => { releaseFirst = resolve })
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 250 }, { id: 'b', path: f.b, watch: true, watchIntervalMs: 250 }],
+    indexing: { maxConcurrentRoots: 1, maxAttempts: 4, retryDelayMs: 100 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, backgroundWatchStartup: true, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await awaitBounded(firstStarted)
+    const queued = await runtime.indexStatus({ rootId: 'b' })
+    assert.equal(queued.indexingJob?.state, 'queued')
+    assert.equal(runtime.watchStatus({ rootId: 'b' }).active, false)
+    await writeFile(join(f.a, 'alpha.ts'), 'export const changedWhileStartupRuns = "latest"\n')
+    releaseFirst?.()
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a' })).indexingJob?.state === 'completed')
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'b' })).indexingJob?.state === 'completed')
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).active && runtime!.watchStatus({ rootId: 'b' }).active)
+    const final = await runtime.searchCode({ rootId: 'a', query: 'changedWhileStartupRuns', mode: 'lexical' })
+    assert.equal(final.hits[0]?.path, 'alpha.ts')
+    assert.ok((await runtime.indexStatus({ rootId: 'a' })).indexingJob!.attempt >= 2)
+  } finally {
+    releaseFirst?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('job timeout retries only after durable checkpoints and exposes exact batch progress', async () => {
+  const f = await fixture()
+  await writeFile(
+    join(f.a, 'units.ts'),
+    Array.from({ length: 65 }, (_, index) => `export function unit${index}() { return ${index} }`).join('\n') + '\n',
+  )
+  let calls = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 2) {
+      await new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true })
+      })
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    limits: { timeoutMs: 2000 },
+    indexing: { maxAttempts: 3, jobTimeoutMs: 20_000, retryDelayMs: 100 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const admission = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => {
+      const job = (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob
+      return job?.state === 'completed' || job?.state === 'failed'
+    }, 25_000)
+    const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
+    assert.equal(job.state, 'completed', JSON.stringify(job))
+    assert.ok(job.attempt >= 2)
+    assert.equal(job.totalChunks, 66)
+    assert.equal(job.checkpointChunks, 66)
+    assert.equal(calls, 4)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('background indexing stops after a no-progress timeout or provider auth failure', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    const config = {
+      ...f.config,
+      limits: { timeoutMs: 300 },
+      indexing: { maxAttempts: 5, jobTimeoutMs: 5000, retryDelayMs: 100 },
+      embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+    }
+    let timeoutCalls = 0
+    const timeoutFetch: typeof globalThis.fetch = async (_input, init) => {
+      timeoutCalls++
+      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true }))
+      throw new Error('unreachable')
+    }
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch: timeoutFetch } })
+    const noProgress = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: noProgress.job.jobId })).indexingJob?.state === 'failed', 5000)
+    let job = (await runtime.indexStatus({ rootId: 'a', jobId: noProgress.job.jobId })).indexingJob!
+    assert.equal(job.attempt, 1)
+    assert.equal(job.checkpointChunks, 0)
+    assert.equal(timeoutCalls, 1)
+    await runtime.close()
+    runtime = undefined
+
+    let authCalls = 0
+    const authFetch: typeof globalThis.fetch = async () => {
+      authCalls++
+      return new Response(JSON.stringify({ error: { message: 'private provider detail' } }), { status: 401 })
+    }
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch: authFetch } })
+    const auth = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: auth.job.jobId })).indexingJob?.state === 'failed', 5000)
+    job = (await runtime.indexStatus({ rootId: 'a', jobId: auth.job.jobId })).indexingJob!
+    assert.equal(job.attempt, 1)
+    assert.equal(job.errorCode, 'PROVIDER_AUTH')
+    assert.equal(authCalls, 1)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('three timeout attempts each retry after their own new durable batches', async () => {
+  const f = await fixture()
+  await writeFile(
+    join(f.a, 'units.ts'),
+    Array.from({ length: 130 }, (_, index) => `export function repeated${index}() { return ${index} }`).join('\n') + '\n',
+  )
+  let calls = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 2 || calls === 4) {
+      await new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true })
+      })
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    limits: { timeoutMs: 400 },
+    indexing: { maxAttempts: 4, jobTimeoutMs: 10_000, retryDelayMs: 100 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const admission = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'completed', 12_000)
+    const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
+    assert.equal(job.attempt, 3)
+    assert.equal(job.totalChunks, 131)
+    assert.equal(job.checkpointChunks, 131)
+    assert.equal(calls, 7)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('overall deadlines fail queued and running jobs while owner cancellation stays cancelled', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  let calls = 0
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) {
+      startedResolve?.()
+      await new Promise<void>((resolve) => { release = resolve })
+    }
+    init?.signal?.throwIfAborted()
+    return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    limits: { timeoutMs: 2000, maxConcurrency: 1 },
+    indexing: { maxConcurrentRoots: 1, jobTimeoutMs: 1200, maxAttempts: 2, retryDelayMs: 100 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const running = runtime.startIndexing({ rootId: 'a' })
+    await awaitBounded(started)
+    const queued = runtime.startIndexing({ rootId: 'b' })
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    release?.()
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'b', jobId: queued.job.jobId })).indexingJob?.state === 'failed')
+    const queuedStatus = (await runtime.indexStatus({ rootId: 'b', jobId: queued.job.jobId })).indexingJob!
+    assert.equal(queuedStatus.errorCode, 'TIMEOUT')
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: running.job.jobId })).indexingJob?.state === 'failed')
+    const runningStatus = (await runtime.indexStatus({ rootId: 'a', jobId: running.job.jobId })).indexingJob!
+    assert.equal(runningStatus.errorCode, 'TIMEOUT')
+    await runtime.close()
+    runtime = undefined
+
+    const neverStarted = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      await new Promise<void>((resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }))
+      throw new Error('unreachable')
+    }
+    runtime = await openSearchRuntime({
+      config: { ...config, indexing: { ...config.indexing, jobTimeoutMs: 5000 } },
+      testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch: neverStarted },
+    })
+    const owned = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: owned.job.jobId })).indexingJob?.state === 'running')
+    const cancelled = await runtime.cancelIndexing({ rootId: 'a', jobId: owned.job.jobId })
+    assert.equal(cancelled.state, 'cancelled')
+    assert.equal(cancelled.errorCode, 'CANCELLED')
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('cancelled queued jobs release queue capacity for later admissions', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  let calls = 0
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) {
+      startedResolve?.()
+      await new Promise<void>((resolve) => { release = resolve })
+    }
+    init?.signal?.throwIfAborted()
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    indexing: { maxConcurrentRoots: 1, maxAttempts: 1, jobTimeoutMs: 30_000 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const active = runtime.startIndexing({ rootId: 'a' })
+    await awaitBounded(started)
+    for (let index = 0; index < 80; index++) {
+      const queued = runtime.startIndexing({ rootId: 'b' })
+      const cancelled = await runtime.cancelIndexing({ rootId: 'b', jobId: queued.job.jobId })
+      assert.equal(cancelled.state, 'cancelled')
+    }
+    const finalQueued = runtime.startIndexing({ rootId: 'b' })
+    assert.equal(finalQueued.job.state, 'queued')
+    release?.()
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: active.job.jobId })).indexingJob?.state === 'completed')
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const finalStatus = (await runtime.indexStatus({ rootId: 'b', jobId: finalQueued.job.jobId })).indexingJob!
+    assert.equal(finalStatus.state, 'completed', JSON.stringify(finalStatus))
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('retry progress counts only checkpoint writes made during that attempt', async () => {
+  const f = await fixture()
+  await writeFile(join(f.a, 'units.ts'), Array.from({ length: 65 }, (_, index) => `export function stage${index}() { return ${index} }`).join('\n') + '\n')
+  let calls = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 2 || calls === 3) {
+      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true }))
+    }
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    limits: { timeoutMs: 400 },
+    indexing: { maxAttempts: 5, jobTimeoutMs: 5000, retryDelayMs: 100 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    const admission = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'failed', 7000)
+    const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
+    assert.equal(job.attempt, 2)
+    assert.equal(job.state, 'failed')
+    assert.equal(job.errorCode, 'TIMEOUT')
+    assert.ok(job.checkpointChunks > 0)
+    assert.equal(calls, 3)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('runtime close aborts and joins bounded index status control work', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config: f.config,
+      testDependencies: { beforeIndexStatus: async () => { startedResolve?.(); await new Promise<void>((resolve) => { release = resolve }) } },
+    })
+    const status = runtime.indexStatus({ rootId: 'a' })
+    await awaitBounded(started)
+    let closeDone = false
+    const closing = runtime.close().then(() => { closeDone = true })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(closeDone, false)
+    release?.()
+    await assert.rejects(status, isCode('RUNTIME_CLOSED'))
+    await closing
+    runtime = undefined
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('runtime close waits for a watcher source fingerprint scan to settle', async () => {
+  const f = await fixture()
+  let startedResolve: (() => void) | undefined
+  let release: (() => void) | undefined
+  const started = new Promise<void>((resolve) => { startedResolve = resolve })
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config: {
+        ...f.config,
+        roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 250 }],
+      },
+      testDependencies: {
+        beforeSourceFingerprint: async () => {
+          startedResolve?.()
+          await new Promise<void>((resolve) => { release = resolve })
+        },
+      },
+    })
+    await awaitBounded(started)
+    let closeDone = false
+    const closing = runtime.close().then(() => { closeDone = true })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(closeDone, false)
+    release?.()
+    await closing
+    runtime = undefined
+    assert.equal(closeDone, true)
+  } finally {
+    release?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('a cancelled queued watcher callback cannot start after runtime close', async () => {
+  const f = await fixture()
+  let indexingStarted: (() => void) | undefined
+  let fingerprintStarted: (() => void) | undefined
+  let releaseFingerprint: (() => void) | undefined
+  let watchSetupCalls = 0
+  const indexing = new Promise<void>((resolve) => { indexingStarted = resolve })
+  const fingerprint = new Promise<void>((resolve) => { fingerprintStarted = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    indexingStarted?.()
+    await new Promise<void>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true })
+    })
+    throw new Error('unreachable')
+  }
+  const config = {
+    ...f.config,
+    roots: [
+      { ...f.config.roots[0]!, watch: true, watchIntervalMs: 250 },
+      { id: 'b', path: f.b, watch: true, watchIntervalMs: 250 },
+    ],
+    indexing: { maxConcurrentRoots: 1, jobTimeoutMs: 30_000 },
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config,
+      backgroundWatchStartup: true,
+      testDependencies: {
+        env: { EMBED_KEY: 'fixture-key' },
+        fetch,
+        beforeWatchSetup: async () => { watchSetupCalls++ },
+        beforeSourceFingerprint: async () => {
+          fingerprintStarted?.()
+          await new Promise<void>((resolve) => { releaseFingerprint = resolve })
+        },
+      },
+    })
+    await awaitBounded(indexing)
+    const queued = (await runtime.indexStatus({ rootId: 'b' })).indexingJob!
+    assert.equal(queued.state, 'queued')
+    await runtime.cancelIndexing({ rootId: 'b', jobId: queued.jobId })
+    await awaitBounded(fingerprint)
+    let closeDone = false
+    const closing = runtime.close().then(() => { closeDone = true })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(closeDone, false)
+    releaseFingerprint?.()
+    await closing
+    runtime = undefined
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(watchSetupCalls, 0)
+  } finally {
+    releaseFingerprint?.()
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('watch pauses after a permanent provider failure and resumes after explicit retry', async () => {
+  const f = await fixture()
+  let calls = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 2) return new Response(JSON.stringify({ error: { message: 'redacted' } }), { status: 401 })
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 250 }, f.config.roots[1]!],
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await writeFile(join(f.a, 'alpha.ts'), 'export const retryAfterSourceChange = true\n')
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).retryOnChange)
+    assert.equal(runtime.watchStatus({ rootId: 'a' }).errorCode, 'PROVIDER_AUTH')
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    assert.equal(calls, 2)
+    const retry = runtime.startIndexing({ rootId: 'a' })
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: retry.job.jobId })).indexingJob?.state === 'completed', 5000)
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).errorCode === null, 5000)
+    assert.equal(calls, 3)
+    const result = await runtime.searchCode({ rootId: 'a', query: 'retryAfterSourceChange', mode: 'lexical' })
+    assert.equal(result.hits[0]?.path, 'alpha.ts')
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('paused watcher probes the indexed source and ignores unrelated events', async () => {
+  const f = await fixture()
+  await mkdir(join(f.a, 'nested'))
+  let calls = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    calls++
+    if (calls === 1) return new Response(JSON.stringify({ error: { message: 'redacted' } }), { status: 401 })
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  const config = {
+    ...f.config,
+    roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 250 }, f.config.roots[1]!],
+    embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({ config, backgroundWatchStartup: true, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).retryOnChange)
+    await mkdir(join(f.a, '.git'))
+    await writeFile(join(f.a, '.git', 'untracked'), 'ignored')
+    await new Promise((resolve) => setTimeout(resolve, 650))
+    assert.equal(calls, 1)
+    await writeFile(join(f.a, 'nested', 'missed-event.ts'), 'export const recoveredFromNestedEdit = true\n')
+    await waitFor(async () => calls === 2, 5000)
+    await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).errorCode === null, 5000)
+    const result = await runtime.searchCode({ rootId: 'a', query: 'recoveredFromNestedEdit', mode: 'lexical' })
+    assert.equal(result.hits[0]?.path, 'nested/missed-event.ts')
   } finally {
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })
@@ -322,6 +1020,8 @@ test('watch is single per root, reconciles rename/delete, reports failure then r
       enabled: true,
       active: true,
       errorCode: null,
+      retryOnChange: false,
+      job: null,
     })
     const before = await runtime.indexStatus({ rootId: 'a' })
     await writeFile(join(f.a, 'gamma.ts'), 'export const gammaSignal = "fresh"\n')
@@ -375,11 +1075,16 @@ test('secret references are bounded, file secrets require private regular files,
     const runtime = await openSearchRuntime({ config, configDir: f.dir })
     await runtime.close()
     await chmod(secretPath, 0o644)
-    await assert.rejects(
-      openSearchRuntime({ config, configDir: f.dir }),
-      (error: unknown) =>
-        error instanceof RuntimeConfigError && error.code === 'SECRET_FILE_INVALID',
-    )
+    if (process.platform === 'win32') {
+      const windowsAclRuntime = await openSearchRuntime({ config, configDir: f.dir })
+      await windowsAclRuntime.close()
+    } else {
+      await assert.rejects(
+        openSearchRuntime({ config, configDir: f.dir }),
+        (error: unknown) =>
+          error instanceof RuntimeConfigError && error.code === 'SECRET_FILE_INVALID',
+      )
+    }
     await chmod(secretPath, 0o600)
     await rm(secretPath)
     await symlink(join(f.dir, 'absent.json'), secretPath)
@@ -482,23 +1187,42 @@ test('startup failure preserves a foreign ownership lock and root replacement fa
 
 test('watcher rejects a replaced configured root and close releases its owner', async () => {
   const f = await fixture()
+  let providerCalls = 0
+  let fingerprintScans = 0
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    providerCalls++
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
   try {
     const config = {
       ...f.config,
       roots: [{ id: 'a', path: f.a, watch: true, watchIntervalMs: 300 }],
+      embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
     }
-    runtime = await openSearchRuntime({ config })
+    runtime = await openSearchRuntime({
+      config,
+      testDependencies: {
+        env: { EMBED_KEY: 'fixture-key' },
+        fetch,
+        beforeSourceFingerprint: async () => { fingerprintScans++ },
+      },
+    })
+    assert.equal(providerCalls, 1)
     const moved = `${f.a}-moved`
     await rename(f.a, moved)
     await mkdir(f.a)
     await writeFile(join(f.a, 'replacement.ts'), 'export const replacement = true\n')
     await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).errorCode === 'ROOT_CHANGED')
     assert.equal(runtime.watchStatus({ rootId: 'a' }).errorCode, 'ROOT_CHANGED')
+    assert.equal(providerCalls, 1)
+    assert.equal(fingerprintScans, 0)
     await runtime.close()
     runtime = undefined
     const reopened = await openSearchRuntime({
       config: { ...config, roots: [{ id: 'a', path: moved }] },
+      testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch },
     })
     await reopened.close()
   } finally {

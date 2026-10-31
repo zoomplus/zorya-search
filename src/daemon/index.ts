@@ -72,8 +72,8 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
   )
     throw new Error('DAEMON_OWNER_TOKEN_REQUIRED')
   const runtime = options.configPath
-    ? await openSearchRuntimeFromFile(options.configPath, options.runtimeOptions)
-    : await openSearchRuntime({ ...(options.runtimeOptions ?? {}), config: options.config })
+    ? await openSearchRuntimeFromFile(options.configPath, { backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}) })
+    : await openSearchRuntime({ backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}), config: options.config })
   const path = options.path ?? '/mcp'
   if (!/^\/[A-Za-z0-9/_-]{1,127}$/.test(path) || path.includes('//')) {
     await runtime.close()

@@ -1,5 +1,5 @@
 import { realpath, stat } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import { createCodeIndex } from '../code/index.js'
@@ -41,6 +41,7 @@ import type { OwnedDatabase } from '../storage/database.js'
 import type { WebSource } from '../core/contracts.js'
 import {
   statusRequest,
+  indexStatusRequest,
   indexRequest,
   searchRequest,
   readRequest,
@@ -50,6 +51,8 @@ import {
   webReadRequest,
   classifyRequest,
   visualSearchRequest,
+  startIndexingRequest,
+  cancelIndexingRequest,
 } from './requests.js'
 import {
   loadRuntimeConfig,
@@ -96,16 +99,33 @@ export interface RuntimeCapabilities {
 export interface RuntimeIndexStatus extends CodeIndexStatus {
   watcherError: string | null
   watching: boolean
+  indexingJob: RuntimeIndexJobStatus | null
+}
+export interface RuntimeIndexJobStatus {
+  jobId: string
+  rootId: string
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+  errorCode?: string
+  attempt: number
+  totalChunks: number | null
+  checkpointChunks: number
 }
 export interface RuntimeWatchStatus {
   enabled: boolean
   active: boolean
   errorCode: string | null
+  retryOnChange: boolean
+  job: RuntimeIndexJobStatus | null
 }
 export interface RuntimeOptions {
   config: unknown
   configDir?: string
   signal?: AbortSignal
+  /** Return after storage validation while opt-in watched roots index under runtime ownership. */
+  backgroundWatchStartup?: boolean
   /** SDK-only injection point for deterministic adapter tests. Never accepted by config or transport inputs. */
   testDependencies?: {
     env?: NodeJS.ProcessEnv
@@ -113,6 +133,8 @@ export interface RuntimeOptions {
     webSource?: WebSource
     beforeDatabaseReady?: (signal: AbortSignal) => Promise<void>
     beforeWatchSetup?: (signal: AbortSignal) => Promise<void>
+    beforeIndexStatus?: (signal: AbortSignal) => Promise<void>
+    beforeSourceFingerprint?: (signal: AbortSignal) => Promise<void>
   }
 }
 
@@ -170,6 +192,9 @@ export async function openSearchRuntime(options: RuntimeOptions) {
       providers,
       options.signal,
       options.testDependencies?.beforeWatchSetup,
+      options.backgroundWatchStartup ?? false,
+      options.testDependencies?.beforeIndexStatus,
+      options.testDependencies?.beforeSourceFingerprint,
     )
   } catch (error) {
     if (!database) throw sanitize(error, options.signal)
@@ -338,17 +363,233 @@ async function createOwnedRuntime(
   providers: ReturnType<typeof createProviders>,
   startupSignal?: AbortSignal,
   beforeWatchSetup?: (signal: AbortSignal) => Promise<void>,
+  optionsBackgroundWatchStartup = false,
+  beforeIndexStatus?: (signal: AbortSignal) => Promise<void>,
+  beforeSourceFingerprint?: (signal: AbortSignal) => Promise<void>,
 ) {
   const indexes = new Map<string, CodeIndex>()
   const contexts = new Map<string, ReturnType<typeof createCodeContext>>()
   const watchers = new Map<string, { close(): Promise<void> }>()
   const watcherErrors = new Map<string, string>()
+  const watcherPaused = new Set<string>()
+  const watcherFailedFingerprints = new Map<string, string>()
+  const watcherIndexedFingerprints = new Map<string, string>()
+  const watcherFailures = new Map<string, number>()
   const watcherStarts = new Map<string, Promise<void>>()
   const watcherControllers = new Map<string, AbortController>()
   const operations = new Set<Operation>()
+  const controlOperations = new Set<Operation>()
+  const rootIndexTails = new Map<string, Promise<void>>()
   const maxConcurrency = config.limits?.maxConcurrency ?? 8
+  const maxControlOperations = 8
   let closed = false
   let closing: Promise<void> | undefined
+  type IndexJob = Omit<RuntimeIndexJobStatus, 'jobId'> & {
+    id: string
+    controller: AbortController
+    promise: Promise<void>
+    resolveCompletion: () => void
+    cancelRequested: boolean
+    deadlineAt: number
+    deadlineTimer: NodeJS.Timeout
+    checkpointScope?: string
+    checkpointWrites: number
+  }
+  const jobs = new Map<string, IndexJob>()
+  const jobsByRoot = new Map<string, IndexJob>()
+  const jobQueue: IndexJob[] = []
+  const maxJobs = config.indexing?.maxConcurrentRoots ?? 1
+  let activeJobs = 0
+  let runtimeJobClose = false
+  const publishJob = (job: IndexJob): RuntimeIndexJobStatus => ({
+    jobId: job.id,
+    rootId: job.rootId,
+    state: job.state,
+    createdAt: job.createdAt,
+    ...(job.startedAt ? { startedAt: job.startedAt } : {}),
+    ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
+    ...(job.errorCode ? { errorCode: job.errorCode } : {}),
+    attempt: job.attempt,
+    totalChunks: job.totalChunks,
+    checkpointChunks: job.checkpointChunks,
+  })
+  const settleJob = (job: IndexJob) => {
+    if (!job.finishedAt) job.finishedAt = new Date().toISOString()
+    clearTimeout(job.deadlineTimer)
+    job.resolveCompletion()
+  }
+  const pumpJobs = () => {
+    while (!runtimeJobClose && activeJobs < maxJobs && jobQueue.length) {
+      const job = jobQueue.shift()!
+      if (job.state !== 'queued') continue
+      activeJobs++
+      job.state = 'running'
+      job.startedAt = new Date().toISOString()
+      void (async () => {
+        const maxAttempts = config.indexing?.maxAttempts ?? 12
+        try {
+          while (true) {
+            if (job.controller.signal.aborted) throw job.controller.signal.reason
+            const remaining = job.deadlineAt - Date.now()
+            if (remaining <= 0) throw new SearchRuntimeError('TIMEOUT')
+            job.attempt++
+            job.checkpointWrites = 0
+            const attemptSignal = AbortSignal.any([
+              job.controller.signal,
+              AbortSignal.timeout(Math.min(config.limits?.timeoutMs ?? 60_000, remaining)),
+            ])
+            try {
+              await runIndexExclusive(job.rootId, attemptSignal, (progress) => {
+                job.totalChunks = progress.totalChunks
+                if (progress.snapshotId !== job.checkpointScope) {
+                  job.checkpointScope = progress.snapshotId
+                  job.checkpointChunks = 0
+                }
+                job.checkpointChunks = progress.checkpointChunks
+                job.checkpointWrites = progress.checkpointWrites
+              })
+              job.state = 'completed'
+              break
+            } catch (error) {
+              const safe = attemptSignal.aborted && !job.controller.signal.aborted
+                ? new SearchRuntimeError('TIMEOUT')
+                : sanitize(error, undefined, job.controller.signal)
+              const checkpointAdvanced = job.checkpointWrites > 0
+              const changedWatchedSource =
+                safe.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_INDEX' &&
+                getRoot(job.rootId).config.watch === true
+              if (!(safe.code === 'TIMEOUT' && checkpointAdvanced) && !changedWatchedSource) throw safe
+              if (job.attempt >= maxAttempts || job.deadlineAt - Date.now() <= 0) throw safe
+              await new Promise<void>((resolvePromise, reject) => {
+                const delay = config.indexing?.retryDelayMs ?? 300
+                const timeout = setTimeout(() => {
+                  job.controller.signal.removeEventListener('abort', abort)
+                  resolvePromise()
+                }, Math.min(delay, Math.max(1, job.deadlineAt - Date.now())))
+                const abort = () => {
+                  clearTimeout(timeout)
+                  reject(job.controller.signal.reason)
+                }
+                job.controller.signal.addEventListener('abort', abort, { once: true })
+              })
+            }
+          }
+        } catch (error) {
+          const timedOut =
+            job.controller.signal.reason instanceof SearchRuntimeError &&
+            job.controller.signal.reason.code === 'TIMEOUT'
+          const cancelled = job.cancelRequested || job.controller.signal.aborted
+          if (timedOut) {
+            job.state = 'failed'
+            job.errorCode = 'TIMEOUT'
+          } else if (cancelled) {
+            job.state = 'cancelled'
+            job.errorCode = 'CANCELLED'
+          } else {
+            job.state = 'failed'
+            job.errorCode = sanitize(error).code
+          }
+        } finally {
+          settleJob(job)
+          activeJobs--
+          pumpJobs()
+        }
+      })()
+    }
+  }
+  const admitIndexJob = (rootId: string) => {
+    if (closed) throw new SearchRuntimeError('RUNTIME_CLOSED')
+    const existing = jobsByRoot.get(rootId)
+    if (existing && (existing.state === 'queued' || existing.state === 'running'))
+      return { created: false, job: publishJob(existing) }
+    if (jobQueue.length >= roots.length) throw new SearchRuntimeError('RUNTIME_BUSY')
+    let resolveCompletion = () => {}
+    const completion = new Promise<void>((resolvePromise) => { resolveCompletion = resolvePromise })
+    const controller = new AbortController()
+    const deadlineAt = Date.now() + (config.indexing?.jobTimeoutMs ?? 900_000)
+    const job: IndexJob = {
+      id: randomUUID(),
+      rootId,
+      state: 'queued',
+      createdAt: new Date().toISOString(),
+      controller,
+      promise: completion,
+      resolveCompletion,
+      cancelRequested: false,
+      deadlineAt,
+      deadlineTimer: setTimeout(
+        () => controller.abort(new SearchRuntimeError('TIMEOUT')),
+        Math.max(1, deadlineAt - Date.now()),
+      ),
+      attempt: 0,
+      totalChunks: null,
+      checkpointChunks: 0,
+      checkpointWrites: 0,
+    }
+    job.deadlineTimer.unref?.()
+    controller.signal.addEventListener('abort', () => {
+      if (job.state !== 'queued') return
+      const queuedIndex = jobQueue.indexOf(job)
+      if (queuedIndex >= 0) jobQueue.splice(queuedIndex, 1)
+      const timedOut =
+        controller.signal.reason instanceof SearchRuntimeError &&
+        controller.signal.reason.code === 'TIMEOUT'
+      job.state = timedOut ? 'failed' : 'cancelled'
+      job.errorCode = timedOut ? 'TIMEOUT' : 'CANCELLED'
+      settleJob(job)
+    }, { once: true })
+    jobs.set(job.id, job)
+    jobsByRoot.set(rootId, job)
+    jobQueue.push(job)
+    const terminal = (item: IndexJob) =>
+      item.state === 'completed' || item.state === 'failed' || item.state === 'cancelled'
+    while ([...jobs.values()].filter(terminal).length > 64) {
+      const old = [...jobs.values()].find(terminal)
+      if (!old) break
+      jobs.delete(old.id)
+    }
+    if (getRoot(rootId).config.watch) {
+      void job.promise.then(async () => {
+        const isCurrentJob = () => !closed && jobsByRoot.get(rootId) === job
+        if (!isCurrentJob()) return
+        if (job.state === 'completed') {
+          watcherPaused.delete(rootId)
+          watcherFailures.delete(rootId)
+          watcherFailedFingerprints.delete(rootId)
+          watcherErrors.delete(rootId)
+          if (job.checkpointScope) watcherIndexedFingerprints.set(rootId, job.checkpointScope)
+        } else if (job.state === 'failed') {
+          if (job.checkpointScope) watcherFailedFingerprints.set(rootId, job.checkpointScope)
+          watcherPaused.add(rootId)
+        } else if (job.state === 'cancelled') {
+          watcherPaused.add(rootId)
+          if (job.checkpointScope) {
+            watcherFailedFingerprints.set(rootId, job.checkpointScope)
+          } else {
+            try {
+              const fingerprint = await executeControl(undefined, async (signal) => {
+                const checkedRoot = await assertRoot(rootId)
+                return getIndex(rootId).sourceFingerprint(checkedRoot.path, signal)
+              })
+              if (!isCurrentJob()) return
+              watcherFailedFingerprints.set(rootId, fingerprint)
+            } catch {
+              if (!isCurrentJob()) return
+              watcherFailedFingerprints.delete(rootId)
+            }
+          }
+        }
+        if (!isCurrentJob()) return
+        if (!watchers.has(rootId)) {
+          void startWatcherInternal(rootId).catch((error) => {
+            watcherErrors.set(rootId, sanitize(error).code)
+          })
+        }
+      })
+    }
+    pumpJobs()
+    return { created: true, job: publishJob(job) }
+  }
 
   const getRoot = (id: string) => {
     const root = roots.find((entry) => entry.config.id === id)
@@ -361,6 +602,80 @@ async function createOwnedRuntime(
     if (!info || !info.isDirectory() || info.dev !== root.dev || info.ino !== root.ino)
       throw new SearchRuntimeError('ROOT_CHANGED')
     return root
+  }
+  const executeControl = <T>(
+    callerSignal: AbortSignal | undefined,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
+    if (closed) return Promise.reject(new SearchRuntimeError('RUNTIME_CLOSED'))
+    if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal))
+      return Promise.reject(new SearchRuntimeError('INVALID_REQUEST'))
+    if (controlOperations.size >= maxControlOperations)
+      return Promise.reject(new SearchRuntimeError('RUNTIME_BUSY'))
+    const controller = new AbortController()
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, controller.signal])
+      : controller.signal
+    const timer = setTimeout(
+      () => controller.abort(new SearchRuntimeError('TIMEOUT')),
+      config.limits?.timeoutMs ?? 60_000,
+    )
+    const promise = Promise.resolve().then(() => {
+      signal.throwIfAborted()
+      return work(signal)
+    })
+    const operation: Operation = { controller, promise }
+    controlOperations.add(operation)
+    return promise
+      .catch((error: unknown) => {
+        throw sanitize(error, callerSignal, signal)
+      })
+      .finally(() => {
+        clearTimeout(timer)
+        controlOperations.delete(operation)
+      })
+  }
+  const runIndexExclusive = async (
+    rootId: string,
+    signal: AbortSignal,
+    onProgress?: (progress: {
+      snapshotId: string
+      totalChunks: number
+      checkpointChunks: number
+      checkpointWrites: number
+    }) => void,
+  ): Promise<CodeIndexStatus> => {
+    if (closed) throw new SearchRuntimeError('RUNTIME_CLOSED')
+    signal.throwIfAborted()
+    const prior = rootIndexTails.get(rootId) ?? Promise.resolve()
+    let release = () => {}
+    const turn = new Promise<void>((resolvePromise) => { release = resolvePromise })
+    const tail = prior.then(() => turn)
+    rootIndexTails.set(rootId, tail)
+    try {
+      await new Promise<void>((resolvePromise, reject) => {
+        const onAbort = () => {
+          signal.removeEventListener('abort', onAbort)
+          reject(signal.reason)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        prior.then(() => {
+          signal.removeEventListener('abort', onAbort)
+          if (signal.aborted) reject(signal.reason)
+          else resolvePromise()
+        }, reject)
+      })
+      signal.throwIfAborted()
+      const root = await assertRoot(rootId)
+      return await getIndex(rootId).indexRepository({ root: root.path, signal, ...(onProgress ? { onProgress } : {}) })
+    } catch (error) {
+      throw sanitize(error, signal)
+    } finally {
+      release()
+      void tail.then(() => {
+        if (rootIndexTails.get(rootId) === tail) rootIndexTails.delete(rootId)
+      })
+    }
   }
   const execute = <T>(
     callerSignal: AbortSignal | undefined,
@@ -421,6 +736,7 @@ async function createOwnedRuntime(
       ...(modelSet && profile ? { models: modelSet, profile } : {}),
       ...(root.config.exclude ? { exclude: [...root.config.exclude] } : {}),
       ...(limits ? { limits } : {}),
+      ...(beforeSourceFingerprint ? { beforeSourceFingerprint } : {}),
       ...(config.mechanism?.code ? { rerankCandidateLimit: MECHANISM_RETRIEVAL_PRESETS.code.candidateLimit } : {}),
     })
     indexes.set(id, index)
@@ -442,15 +758,35 @@ async function createOwnedRuntime(
     closed = true
     for (const operation of operations)
       operation.controller.abort(new SearchRuntimeError('RUNTIME_CLOSED'))
+    runtimeJobClose = true
+    for (const job of jobs.values()) {
+      if (job.state === 'queued' || job.state === 'running') {
+        job.cancelRequested = true
+        job.controller.abort(new SearchRuntimeError('RUNTIME_CLOSED'))
+      }
+    }
     for (const controller of watcherControllers.values())
       controller.abort(new SearchRuntimeError('RUNTIME_CLOSED'))
+    for (const operation of controlOperations)
+      operation.controller.abort(new SearchRuntimeError('RUNTIME_CLOSED'))
     closing = (async () => {
       const failures: unknown[] = []
       const startupPromises = [...watcherStarts.values()]
       const operationPromises = [...operations].map((item) => item.promise)
+      const controlPromises = [...controlOperations].map((item) => item.promise)
+      jobQueue.length = 0
+      for (const job of jobs.values()) if (job.state === 'queued') {
+        job.state = 'cancelled'
+        job.errorCode = 'CANCELLED'
+        settleJob(job)
+      }
+      jobQueue.length = 0
+      const jobPromises = [...jobs.values()].filter((job) => job.state === 'running').map((job) => job.promise)
       await Promise.allSettled(startupPromises)
       await Promise.allSettled([...watchers.values()].map((watcher) => watcher.close()))
       await Promise.allSettled(operationPromises)
+      await Promise.allSettled(controlPromises)
+      await Promise.allSettled(jobPromises)
       const lifecycle = await Promise.allSettled([
         ...[...contexts.values()].map((context) => context.close()),
         ...[...indexes.values()].map((index) => index.close()),
@@ -491,16 +827,46 @@ async function createOwnedRuntime(
         root: root.path,
         signal: ownerController.signal,
         intervalMs: root.config.watchIntervalMs ?? 5000,
-        reconcile: async () => {
+        reconcile: async (_cause: 'event' | 'interval') => {
+          let attemptedFingerprint: string | undefined
           try {
-            await execute(ownerController.signal, async (signal) => {
-              const currentRoot = await assertRoot(id)
-              await getIndex(id).indexRepository({ root: currentRoot.path, signal })
+            const currentFingerprint = await executeControl(ownerController.signal, async (signal) => {
+              const checkedRoot = await assertRoot(id)
+              return getIndex(id).sourceFingerprint(checkedRoot.path, signal)
             })
+            if (watcherPaused.has(id)) {
+              if (currentFingerprint === watcherFailedFingerprints.get(id)) return
+              watcherPaused.delete(id)
+              watcherFailures.delete(id)
+            }
+            if (currentFingerprint === watcherIndexedFingerprints.get(id)) {
+              watcherPaused.delete(id)
+              watcherFailedFingerprints.delete(id)
+              watcherErrors.delete(id)
+              watcherFailures.delete(id)
+              return
+            }
+            attemptedFingerprint = currentFingerprint
+            const admission = admitIndexJob(id)
+            const job = jobs.get(admission.job.jobId)
+            if (!job) throw new SearchRuntimeError('JOB_NOT_FOUND')
+            await job.promise
+            if (job.state !== 'completed') throw new SearchRuntimeError(job.errorCode ?? 'OPERATION_FAILED')
+            watcherIndexedFingerprints.set(id, currentFingerprint)
+            watcherFailedFingerprints.delete(id)
             watcherErrors.delete(id)
+            watcherFailures.delete(id)
           } catch (error) {
-            if (!ownerController.signal.aborted)
-              watcherErrors.set(id, sanitize(error, undefined, ownerController.signal).code)
+            if (!ownerController.signal.aborted) {
+              const safe = sanitize(error, undefined, ownerController.signal)
+              watcherErrors.set(id, safe.code)
+              const failures = (watcherFailures.get(id) ?? 0) + 1
+              watcherFailures.set(id, failures)
+              if (isPermanentIndexError(safe.code) || failures >= 3) {
+                watcherPaused.add(id)
+                if (attemptedFingerprint) watcherFailedFingerprints.set(id, attemptedFingerprint)
+              }
+            }
             throw error
           }
         },
@@ -580,27 +946,52 @@ async function createOwnedRuntime(
     },
     async indexStatus(input: {
       rootId: string
+      jobId?: string
       signal?: AbortSignal
     }): Promise<RuntimeIndexStatus> {
-      const { request, signal } = captureRequest(statusRequest, input)
-      return execute(signal, async (operationSignal) => {
+      const { request, signal } = captureRequest(indexStatusRequest, input)
+      return executeControl(signal, async (controlSignal) => {
+        await beforeIndexStatus?.(controlSignal)
+        controlSignal.throwIfAborted()
         const root = await assertRoot(request.rootId)
-        const status = await getIndex(request.rootId).indexStatus(root.path, operationSignal)
+        const status = await getIndex(request.rootId).indexStatus(root.path, controlSignal)
+        const job = request.jobId ? jobs.get(request.jobId) : jobsByRoot.get(request.rootId)
+        if (request.jobId && (!job || job.rootId !== request.rootId)) throw new SearchRuntimeError('JOB_NOT_FOUND')
         return {
           ...status,
           watcherError: watcherErrors.get(request.rootId) ?? null,
           watching: watchers.has(request.rootId),
+          indexingJob: job ? publishJob(job) : null,
         }
       })
+    },
+    startIndexing(input: { rootId: string; signal?: AbortSignal }) {
+      const { request, signal } = captureRequest(startIndexingRequest, input)
+      if (signal?.aborted) throw new SearchRuntimeError('CANCELLED')
+      getRoot(request.rootId)
+      return admitIndexJob(request.rootId)
+    },
+    async cancelIndexing(input: { rootId: string; jobId: string }) {
+      const { request } = captureRequest(cancelIndexingRequest, input)
+      getRoot(request.rootId)
+      const job = jobs.get(request.jobId)
+      if (!job || job.rootId !== request.rootId) throw new SearchRuntimeError('INVALID_REQUEST')
+      if (job.state === 'queued' || job.state === 'running') {
+        job.cancelRequested = true
+        job.controller.abort(new SearchRuntimeError('CANCELLED'))
+        if (job.state === 'queued') {
+          job.state = 'cancelled'
+          job.errorCode = 'CANCELLED'
+          settleJob(job)
+        }
+      }
+      await job.promise
+      return publishJob(job)
     },
     async indexRepository(input: { rootId: string; signal?: AbortSignal }) {
       const { request, signal } = captureRequest(indexRequest, input)
       return execute(signal, async (operationSignal) => {
-        const root = await assertRoot(request.rootId)
-        return getIndex(request.rootId).indexRepository({
-          root: root.path,
-          signal: operationSignal,
-        })
+        return runIndexExclusive(request.rootId, operationSignal)
       })
     },
     async searchCode(input: Omit<CodeSearchInput, 'root'> & { rootId: string }) {
@@ -842,6 +1233,8 @@ async function createOwnedRuntime(
         enabled: root.config.watch ?? false,
         active: watchers.has(request.rootId),
         errorCode: watcherErrors.get(request.rootId) ?? null,
+        retryOnChange: watcherPaused.has(request.rootId),
+        job: jobsByRoot.has(request.rootId) ? publishJob(jobsByRoot.get(request.rootId)!) : null,
       }
     },
     close: shutdown,
@@ -850,9 +1243,11 @@ async function createOwnedRuntime(
   try {
     for (const root of roots)
       if (root.config.watch) {
-        await execute(startupSignal, async (signal) => {
-          const configuredRoot = await assertRoot(root.config.id)
-          await getIndex(root.config.id).indexRepository({ root: configuredRoot.path, signal })
+        if (optionsBackgroundWatchStartup) {
+          admitIndexJob(root.config.id)
+        } else await execute(startupSignal, async (signal) => {
+          const indexed = await runIndexExclusive(root.config.id, signal)
+          if (indexed.identity) watcherIndexedFingerprints.set(root.config.id, indexed.identity.snapshotId)
           await startWatcherInternal(root.config.id, signal)
         })
       }
@@ -924,6 +1319,9 @@ function compact<T extends object>(value: T): { [K in keyof T]?: Exclude<T[K], u
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as {
     [K in keyof T]?: Exclude<T[K], undefined>
   }
+}
+function isPermanentIndexError(code: string): boolean {
+  return ['PROVIDER_AUTH', 'PROVIDER_QUOTA', 'PROVIDER_MALFORMED'].includes(code)
 }
 const knownCodes = new Set([
   'SEARCH_EMBEDDED_DIRECTORY_ALREADY_OWNED',
@@ -1000,6 +1398,7 @@ export const SEARCH_RUNTIME_ERROR_CODES: readonly string[] = Object.freeze([
   'ROOT_CHANGED',
   'RUNTIME_CLOSED',
   'RUNTIME_BUSY',
+  'JOB_NOT_FOUND',
   'TIMEOUT',
   'CANCELLED',
   'CAPABILITY_DISABLED',
