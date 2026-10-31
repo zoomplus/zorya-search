@@ -51,6 +51,7 @@ async function index(
     chunkerVersion: string
   },
   limits?: Partial<CodeIndexLimits>,
+  exclude?: string[],
 ) {
   const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
   roots.push(dataDir)
@@ -60,9 +61,151 @@ async function index(
     database,
     ...(models ? { models, profile } : {}),
     ...(limits ? { limits } : {}),
+    ...(exclude ? { exclude } : {}),
   })
   return { database, code }
 }
+
+test('excludes tracked lockfiles by default while retaining ordinary JSON documentation', async () => {
+  const root = await repository()
+  await mkdir(join(root, 'docs', 'evidence'), { recursive: true })
+  await mkdir(join(root, 'nested'), { recursive: true })
+  await writeFile(join(root, 'pnpm-lock.yaml'), 'x'.repeat(1_100_000))
+  await writeFile(join(root, 'nested', 'package-lock.json'), '{}')
+  await writeFile(join(root, 'docs', 'evidence', 'summary.json'), '{"meaningfulEvidence":true}')
+  await writeFile(join(root, 'src.ts'), 'export const visibleSource = true')
+  await commit(root, 'fixture')
+  const { code } = await index(root)
+  const indexed = await code.indexRepository({ root })
+  assert.equal(indexed.fileCount, 2)
+  assert.equal(
+    (await code.searchCode({ root, query: 'meaningfulEvidence' })).hits[0]?.path,
+    'docs/evidence/summary.json',
+  )
+  await assert.rejects(
+    code.readSource({ root, path: 'pnpm-lock.yaml' }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_PATH_OUTSIDE_ROOT',
+  )
+  await code.close()
+
+  const loose = await temp()
+  await mkdir(join(loose, 'docs', 'evidence'), { recursive: true })
+  await writeFile(join(loose, 'yarn.lock'), 'x'.repeat(1_100_000))
+  await writeFile(join(loose, 'docs', 'evidence', 'summary.json'), '{"meaningfulEvidence":true}')
+  await writeFile(join(loose, 'src.ts'), 'export const visibleSource = true')
+  const nonGit = await index(loose)
+  assert.equal((await nonGit.code.indexRepository({ root: loose })).fileCount, 2)
+  await nonGit.code.close()
+})
+
+test('explicit exclusions apply to tracked and non-git files and reject excluded reads and relations', async () => {
+  const tracked = await repository()
+  await mkdir(join(tracked, 'docs', 'evidence'), { recursive: true })
+  await writeFile(
+    join(tracked, 'docs', 'evidence', 'large-report.json'),
+    '{"shouldNotAppear":true}',
+  )
+  await writeFile(join(tracked, 'src.ts'), 'export function retainedTarget() { return true }')
+  await commit(tracked, 'fixture')
+  const gitIndex = await index(tracked, undefined, undefined, undefined, ['docs/evidence/**'])
+  assert.equal((await gitIndex.code.indexRepository({ root: tracked })).fileCount, 1)
+  await assert.rejects(
+    gitIndex.code.readSource({ root: tracked, path: 'docs/evidence/large-report.json' }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_PATH_OUTSIDE_ROOT',
+  )
+  await assert.rejects(
+    gitIndex.code.readSource({ root: tracked, path: './docs/evidence/large-report.json' }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_PATH_OUTSIDE_ROOT',
+  )
+  await assert.rejects(
+    gitIndex.code.relatedCode({ root: tracked, path: 'docs/evidence/large-report.json' }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_SOURCE_UNAVAILABLE',
+  )
+
+  const loose = await temp()
+  await mkdir(join(loose, 'docs', 'evidence'), { recursive: true })
+  await writeFile(join(loose, 'docs', 'evidence', 'large-report.json'), '{"shouldNotAppear":true}')
+  await writeFile(join(loose, 'src.ts'), 'export function retainedTarget() { return true }')
+  const nonGitIndex = await index(loose, undefined, undefined, undefined, ['docs/evidence/**'])
+  assert.equal((await nonGitIndex.code.indexRepository({ root: loose })).fileCount, 1)
+  assert.deepEqual(
+    (await nonGitIndex.code.searchCode({ root: loose, query: 'shouldNotAppear' })).hits,
+    [],
+  )
+  await gitIndex.code.close()
+  await nonGitIndex.code.close()
+})
+
+test('exclusion policy is copied, invalidates old snapshots, and cannot negate hard exclusions', async () => {
+  const root = await repository()
+  await mkdir(join(root, 'docs', 'evidence'), { recursive: true })
+  await writeFile(join(root, 'docs', 'evidence', 'summary.json'), '{"uniqueEvidenceNeedle":true}')
+  await writeFile(join(root, 'src.ts'), 'export function currentSource() { return true }')
+  await commit(root, 'fixture')
+  const first = await index(root)
+  await first.code.indexRepository({ root })
+
+  const exclusion = ['docs/evidence/**']
+  const second = createCodeIndex({ database: first.database, exclude: exclusion })
+  exclusion.splice(0, exclusion.length)
+  const pending = await second.indexStatus(root)
+  assert.equal(pending.identity, null)
+  await assert.rejects(
+    second.searchCode({ root, query: 'currentSource' }),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_STALE',
+  )
+  assert.equal((await second.indexRepository({ root })).fileCount, 1)
+  assert.deepEqual((await second.searchCode({ root, query: 'uniqueEvidenceNeedle' })).hits, [])
+  assert.throws(
+    () => createCodeIndex({ database: first.database, exclude: ['!**/.env'] }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_EXCLUSION_POLICY_INVALID',
+  )
+  await second.close()
+  await first.code.close()
+})
+
+test('oversized eligible files report bounded relative path and byte limits', async () => {
+  const root = await repository()
+  await mkdir(join(root, 'src'))
+  await writeFile(join(root, 'src', 'large.ts'), '0123456789')
+  await commit(root, 'fixture')
+  const { code } = await index(root, undefined, undefined, { maxFileBytes: 5 })
+  await assert.rejects(code.indexRepository({ root }), (error: unknown) => {
+    assert.ok(error instanceof CodeIndexError)
+    assert.equal(error.code, 'CODE_INDEX_FILE_SIZE_LIMIT')
+    assert.deepEqual(error.details, { path: 'src/large.ts', actualBytes: 10, allowedBytes: 5 })
+    assert.equal(error.message.includes('0123456789'), false)
+    return true
+  })
+  await code.close()
+})
+
+test('rejects malformed exclusion policies', async () => {
+  const root = await temp()
+  const { database, code } = await index(root)
+  for (const exclude of [
+    ['!src/**'],
+    ['!**/.env'],
+    ['unused\n!**/pnpm-lock.yaml'],
+    ['C:/absolute/**'],
+    ['/absolute/**'],
+    ['../outside/**'],
+    ['x'.repeat(513)],
+    Array.from({ length: 129 }, (_, index) => `pattern-${index}`),
+  ]) {
+    assert.throws(
+      () => createCodeIndex({ database, exclude }),
+      (error: unknown) =>
+        error instanceof CodeIndexError && error.code === 'CODE_INDEX_EXCLUSION_POLICY_INVALID',
+    )
+  }
+  await code.close()
+})
 async function commit(root: string, message: string): Promise<void> {
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', message)

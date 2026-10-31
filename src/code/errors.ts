@@ -1,9 +1,16 @@
 export class CodeIndexError extends Error {
   readonly code: string
-  constructor(code: string, message = code, options?: ErrorOptions) {
+  readonly details?: Readonly<Record<string, string | number>>
+  constructor(
+    code: string,
+    message = code,
+    options?: ErrorOptions,
+    details?: Readonly<Record<string, string | number>>,
+  ) {
     super(message, options)
     this.name = 'CodeIndexError'
     this.code = code
+    if (details) this.details = Object.freeze({ ...details })
   }
 }
 

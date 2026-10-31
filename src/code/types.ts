@@ -31,6 +31,7 @@ export interface CodeIndexOptions {
   models?: CodeIndexModels
   profile?: CodeEmbeddingProfile
   limits?: Partial<CodeIndexLimits>
+  exclude?: string[]
 }
 
 export interface CodeSourceIdentity {
@@ -125,9 +126,7 @@ export interface CodeWatchHandle {
 
 export interface CodeIndex {
   indexRepository(input: { root: string; signal?: AbortSignal }): Promise<CodeIndexStatus>
-  searchCode(
-    input: CodeSearchInput,
-  ): Promise<{
+  searchCode(input: CodeSearchInput): Promise<{
     hits: CodeHit[]
     identity: CodeSourceIdentity
     degraded: boolean
@@ -135,9 +134,7 @@ export interface CodeIndex {
   }>
   indexStatus(root: string, signal?: AbortSignal): Promise<CodeIndexStatus>
   readSource(input: CodeReadInput): Promise<CodeReadResult>
-  relatedCode(
-    input: CodeRelatedInput,
-  ): Promise<{
+  relatedCode(input: CodeRelatedInput): Promise<{
     identity: CodeSourceIdentity
     imports: string[]
     importedBy: string[]
