@@ -13,6 +13,10 @@ import {
   UsageLedger,
   type HttpConfig,
 } from "./http.js";
+import {
+  isVerifiedVoyageResponseModel,
+  isVerifiedVoyageVisualResponseModel,
+} from './voyage.js'
 
 export interface OpenRouterModelConfig extends HttpConfig {
   model: string;
@@ -86,7 +90,8 @@ export function createOpenRouterMultimodalEmbedding(
         dimensions: options.dimensions,
         encoding_format: 'float',
       }, signal, semaphore, lim, usage)
-      if (body.model !== undefined && body.model !== options.model) throw new ProviderError('malformed')
+      if (!multimodalResponseModelMatches(options, body.model))
+        throw new ProviderError('malformed')
       if (!Array.isArray(body.data) || body.data.length !== 1) throw new ProviderError('malformed')
       const row = body.data[0] as { index?: unknown; embedding?: unknown } | undefined
       if (row?.index !== undefined && row.index !== 0) throw new ProviderError('malformed')
@@ -203,7 +208,7 @@ export function createOpenRouterReranker(
         lim,
         usage,
       );
-      if (options.verifyReturnedModel && body.model !== undefined && body.model !== options.model)
+      if (!responseModelMatches(options, body.model))
         throw new ProviderError('malformed');
       if (!Array.isArray(body.results) || body.results.length > topN)
         throw new ProviderError("malformed");
@@ -276,7 +281,7 @@ function createEmbedding(
         lim,
         usage,
       );
-      if (options.verifyReturnedModel && body.model !== undefined && body.model !== options.model)
+      if (!responseModelMatches(options, body.model))
         throw new ProviderError('malformed');
       if (!Array.isArray(body.data) || body.data.length !== texts.length)
         throw new ProviderError("malformed");
@@ -372,6 +377,29 @@ async function requestJson(
     },
     limits.timeoutMs,
   );
+}
+
+function responseModelMatches(config: OpenRouterModelConfig, responseModel: unknown): boolean {
+  if (!config.verifyReturnedModel) return true
+  return (
+    responseModel === config.model ||
+    isVerifiedVoyageResponseModel(config.model, responseModel)
+  )
+}
+
+function multimodalResponseModelMatches(
+  config: OpenRouterModelConfig,
+  responseModel: unknown,
+): boolean {
+  const exactMatch =
+    typeof responseModel === 'string' && responseModel === config.model
+  const visualAlias = isVerifiedVoyageVisualResponseModel(config.model, responseModel)
+  if (config.verifyReturnedModel) return exactMatch || visualAlias
+  return (
+    responseModel === undefined ||
+    exactMatch ||
+    visualAlias
+  )
 }
 
 function validCount(value: unknown): number | undefined {
