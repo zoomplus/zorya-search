@@ -26,10 +26,25 @@ import {
   createOpenRouterEmbedding,
   createOpenRouterReranker,
 } from '../providers/openrouter.js'
-import { ProviderError, type ProviderLimits } from '../providers/contracts.js'
+import {
+  ProviderError,
+  type ProviderErrorCode,
+  type ProviderLimits,
+} from '../providers/contracts.js'
 import { openEmbeddedDatabase } from '../storage/embedded.js'
 import type { OwnedDatabase } from '../storage/database.js'
 import type { WebSource } from '../core/contracts.js'
+import {
+  statusRequest,
+  indexRequest,
+  searchRequest,
+  readRequest,
+  relatedRequest,
+  contextRequest,
+  webSearchRequest,
+  webReadRequest,
+  classifyRequest,
+} from './requests.js'
 import {
   loadRuntimeConfig,
   parseRuntimeConfig,
@@ -45,87 +60,6 @@ export {
   RuntimeConfigError,
 } from './config.js'
 export type { RuntimeConfig } from './config.js'
-
-const idField = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/)
-const statusRequest = z.object({ rootId: idField }).strict()
-const indexRequest = statusRequest
-const searchRequest = z
-  .object({
-    rootId: idField,
-    query: z.string().min(1).max(10_000),
-    paths: z.array(z.string().min(1).max(1024)).max(256).optional(),
-    language: z.string().min(1).max(64).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
-    mode: z.enum(['lexical', 'hybrid']).optional(),
-  })
-  .strict()
-const readRequest = z
-  .object({
-    rootId: idField,
-    path: z.string().min(1).max(1024),
-    lineStart: z.number().int().min(1).max(10_000_000).optional(),
-    lineEnd: z.number().int().min(1).max(10_000_000).optional(),
-    snapshotId: z.string().min(1).max(256).optional(),
-  })
-  .strict()
-const relatedRequest = z
-  .object({
-    rootId: idField,
-    path: z.string().min(1).max(1024),
-    symbol: z.string().min(1).max(512).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
-  })
-  .strict()
-const contextRequest = z
-  .object({
-    rootId: idField,
-    query: z.string().min(1).max(2000),
-    featureQueries: z.array(z.string().min(1).max(2000)).max(8).optional(),
-    mustInclude: z
-      .array(
-        z
-          .object({
-            path: z.string().min(1).max(1024),
-            lineStart: z.number().int().min(1).optional(),
-            lineEnd: z.number().int().min(1).optional(),
-          })
-          .strict(),
-      )
-      .max(16)
-      .optional(),
-    includeRelated: z.boolean().optional(),
-    maxChars: z.number().int().min(1).max(24_000).optional(),
-    limit: z.number().int().min(1).max(40).optional(),
-  })
-  .strict()
-const webSearchRequest = z
-  .object({
-    query: z.string().min(1).max(2000),
-    limit: z.number().int().min(1).max(100).optional(),
-    maxChars: z.number().int().min(1).max(100_000).optional(),
-  })
-  .strict()
-const webReadRequest = z
-  .object({
-    url: z.string().min(1).max(2048),
-    maxChars: z.number().int().min(1).max(1_000_000).optional(),
-  })
-  .strict()
-const classifyRequest = z
-  .object({
-    text: z.string().min(1).max(100_000),
-    labels: z.array(z.string().min(1).max(256)).min(2).max(100),
-    criteria: z.string().min(1).max(10_000),
-    examples: z
-      .array(
-        z.object({ text: z.string().min(1).max(4000), label: z.string().min(1).max(256) }).strict(),
-      )
-      .max(20)
-      .optional(),
-    allowMultiple: z.boolean().optional(),
-    allowAbstain: z.boolean().optional(),
-  })
-  .strict()
 
 export class SearchRuntimeError extends Error {
   constructor(
@@ -802,10 +736,10 @@ async function createOwnedRuntime(
   }
 }
 
-function captureRequest<T>(
-  schema: z.ZodType<T>,
+function captureRequest<S extends z.ZodType>(
+  schema: S,
   input: unknown,
-): { request: T; signal?: AbortSignal } {
+): { request: z.infer<S>; signal?: AbortSignal } {
   if (!input || typeof input !== 'object' || Array.isArray(input))
     throw new SearchRuntimeError('INVALID_REQUEST')
   const source = input as Record<string, unknown>
@@ -913,6 +847,35 @@ const knownCodes = new Set([
   'OPERATION_TIMEOUT',
   'ROOT_CHANGED',
 ])
+const providerRuntimeErrorCode = {
+  auth: 'PROVIDER_AUTH',
+  quota: 'PROVIDER_QUOTA',
+  rate_limit: 'PROVIDER_RATE_LIMIT',
+  timeout: 'PROVIDER_TIMEOUT',
+  cancel: 'PROVIDER_CANCEL',
+  malformed: 'PROVIDER_MALFORMED',
+  unavailable: 'PROVIDER_UNAVAILABLE',
+  budget: 'PROVIDER_BUDGET',
+} satisfies Record<ProviderErrorCode, string>
+
+export const SEARCH_RUNTIME_ERROR_CODES: readonly string[] = Object.freeze([
+  'INVALID_REQUEST',
+  'ROOT_NOT_CONFIGURED',
+  'ROOT_CHANGED',
+  'RUNTIME_CLOSED',
+  'RUNTIME_BUSY',
+  'TIMEOUT',
+  'CANCELLED',
+  'CAPABILITY_DISABLED',
+  'STARTUP_CLEANUP_FAILED',
+  'CLOSE_FAILED',
+  'OPERATION_FAILED',
+  'WATCH_DISABLED',
+  'SECRET_UNAVAILABLE',
+  'CONFIG_INVALID',
+  ...Object.values(providerRuntimeErrorCode),
+  ...knownCodes,
+])
 function sanitize(
   error: unknown,
   callerSignal?: AbortSignal,
@@ -928,7 +891,7 @@ function sanitize(
   if (error instanceof RuntimeConfigError) return new SearchRuntimeError(error.code)
   if (error instanceof ProviderError)
     return new SearchRuntimeError(
-      `PROVIDER_${error.code.toUpperCase()}`,
+      providerRuntimeErrorCode[error.code],
       error.status,
       error.retryAfterMs,
     )
