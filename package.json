@@ -1,0 +1,42 @@
+{
+  "name": "@zorya/search",
+  "version": "0.1.0",
+  "description": "Portable search, retrieval, and indexing core for Zorya services",
+  "type": "module",
+  "license": "UNLICENSED",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "zod": "4.6.6"
+  },
+  "optionalDependencies": {
+    "@electric-sql/pglite": "0.5.14",
+    "@electric-sql/pglite-pgvector": "0.0.15",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "@types/pg": "8.15.5",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
