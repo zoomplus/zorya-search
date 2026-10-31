@@ -46,6 +46,7 @@ export type {
   WebSearchResult,
 } from './context/web.js'
 export type { ClassificationLimits, ClassificationProfile } from './context/classify.js'
+export type { RuntimeConfig, RuntimeRoot, RuntimeCapabilities } from './runtime/index.js'
 export type { VisualReference, VisualLimits } from './visual/index.js'
 export { createCompatibleErrorFactory } from './compat/element-error-adapter.js'
 export type { CompatibleSearchErrorConstructor } from './compat/element-error-adapter.js'
