@@ -8,7 +8,7 @@ import {
   createOpenRouterReranker,
   createOpenRouterMultimodalEmbedding,
 } from "../../src/providers/openrouter.js";
-import { MECHANISM_RETRIEVAL_PRESETS } from '../../src/providers/voyage.js'
+import { isVerifiedVoyageResponseModel, MECHANISM_RETRIEVAL_PRESETS } from '../../src/providers/voyage.js'
 import { createOpenRouterClassifier } from "../../src/providers/classifier.js";
 import {
   assertPublicAddresses,
@@ -51,6 +51,106 @@ test('Mechanism presets stay pinned and multimodal OpenRouter embedding sends on
   await model.embed({ images: [{ bytes: largeImage, mimeType: 'image/png' }], signal: new AbortController().signal })
   const mismatch = createOpenRouterMultimodalEmbedding({ baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: 'voyageai/voyage-multimodal-3.5', dimensions: 2, fetch: async () => jsonResponse({ model: 'other/model', data: [{ index: 0, embedding: [1, 0] }] }) })
   await assert.rejects(mismatch.embed({ texts: ['query'], signal: new AbortController().signal }), (error: unknown) => error instanceof ProviderError && error.code === 'malformed')
+})
+
+test('verified Voyage adapters accept only the three exact observed response aliases', async () => {
+  const cases = [
+    { requested: MECHANISM_RETRIEVAL_PRESETS.code.model, response: 'voyage-code-4' },
+    { requested: MECHANISM_RETRIEVAL_PRESETS.code.reranker, response: 'rerank-2.5-lite' },
+    { requested: MECHANISM_RETRIEVAL_PRESETS.visual.model, response: 'voyage-multimodal-3.5' },
+  ] as const
+  for (const { requested, response } of cases) {
+    assert.equal(isVerifiedVoyageResponseModel(requested, response), true)
+    assert.equal(isVerifiedVoyageResponseModel(requested, requested), true)
+  }
+  for (const [requested, response] of [
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, 'other/voyage-code-4'],
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, 'rerank-2.5-lite'],
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, 'Voyage-code-4'],
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, 'voyage-code-4-1'],
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, 7],
+    [MECHANISM_RETRIEVAL_PRESETS.code.model, undefined],
+    ['vendor/custom-model', 'custom-model'],
+    ['constructor', 'constructor'],
+    ['__proto__', '__proto__'],
+  ] as const)
+    assert.equal(isVerifiedVoyageResponseModel(requested, response), false)
+
+  const code = createOpenRouterEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: MECHANISM_RETRIEVAL_PRESETS.code.model, dimensions: 2, verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'voyage-code-4', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.deepEqual(await code.embed({ texts: ['query'], signal: new AbortController().signal }), [[1, 0]])
+  assert.equal(code.profile.model, MECHANISM_RETRIEVAL_PRESETS.code.model)
+  const codeFullName = createOpenRouterEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: MECHANISM_RETRIEVAL_PRESETS.code.model, dimensions: 2, verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: MECHANISM_RETRIEVAL_PRESETS.code.model, data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.equal(code.profile.space, codeFullName.profile.space)
+  const codeReranker = createOpenRouterReranker({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: MECHANISM_RETRIEVAL_PRESETS.code.reranker, verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'rerank-2.5-lite', results: [{ index: 0, relevance_score: 1 }] }),
+  })
+  assert.deepEqual(await codeReranker.rerank({ query: 'q', documents: ['d'], signal: new AbortController().signal }), [{ index: 0, score: 1 }])
+  assert.equal(codeReranker.profile.model, MECHANISM_RETRIEVAL_PRESETS.code.reranker)
+  const visual = createOpenRouterMultimodalEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: MECHANISM_RETRIEVAL_PRESETS.visual.model, dimensions: 2, verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'voyage-multimodal-3.5', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.deepEqual(await visual.embed({ texts: ['query'], signal: new AbortController().signal }), [[1, 0]])
+  assert.equal(visual.profile.model, MECHANISM_RETRIEVAL_PRESETS.visual.model)
+
+  const strictCustomVisual = createOpenRouterMultimodalEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: 'vendor/custom-visual', dimensions: 2, verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'vendor/custom-visual', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.deepEqual(await strictCustomVisual.embed({ texts: ['query'], signal: new AbortController().signal }), [[1, 0]])
+  const wrongRoleVisualAlias = createOpenRouterMultimodalEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+    model: 'vendor/custom-visual', dimensions: 2,
+    fetch: async () => jsonResponse({ model: 'voyage-code-4', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  await assert.rejects(
+    wrongRoleVisualAlias.embed({ texts: ['query'], signal: new AbortController().signal }),
+    (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+  )
+
+  for (const responseModel of ['other/voyage-code-4', 'rerank-2.5-lite', 'Voyage-code-4', 'voyage-code-4-1', 7, null, undefined, 'vendor/custom-model']) {
+    const invalid = createOpenRouterEmbedding({
+      baseUrl: 'https://router.test/api/v1', apiKey: 'fixture',
+      model: MECHANISM_RETRIEVAL_PRESETS.code.model, dimensions: 2, verifyReturnedModel: true,
+      fetch: async () => jsonResponse({ model: responseModel, data: [{ index: 0, embedding: [1, 0] }] }),
+    })
+    await assert.rejects(
+      invalid.embed({ texts: ['query'], signal: new AbortController().signal }),
+      (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+    )
+  }
+  const strictCustom = createOpenRouterEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: 'vendor/custom-model', dimensions: 2,
+    verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'vendor/custom-model', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.deepEqual(await strictCustom.embed({ texts: ['query'], signal: new AbortController().signal }), [[1, 0]])
+  const mismatchedStrictCustom = createOpenRouterEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: 'vendor/custom-model', dimensions: 2,
+    verifyReturnedModel: true,
+    fetch: async () => jsonResponse({ model: 'vendor/other', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  await assert.rejects(
+    mismatchedStrictCustom.embed({ texts: ['query'], signal: new AbortController().signal }),
+    (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+  )
+  const generic = createOpenRouterEmbedding({
+    baseUrl: 'https://router.test/api/v1', apiKey: 'fixture', model: 'vendor/generic', dimensions: 2,
+    fetch: async () => jsonResponse({ model: 'other/vendor', data: [{ index: 0, embedding: [1, 0] }] }),
+  })
+  assert.deepEqual(await generic.embed({ texts: ['query'], signal: new AbortController().signal }), [[1, 0]])
 })
 
 test("embeddings reorder by index and reject duplicates, omissions, dimensions and zero vectors", async () => {
