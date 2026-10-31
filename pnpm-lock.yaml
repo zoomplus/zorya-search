@@ -8,6 +8,15 @@ importers:
 
   .:
     dependencies:
+      htmlparser2:
+        specifier: 12.0.0
+        version: 12.0.0
+      ignore:
+        specifier: 7.0.14
+        version: 7.0.14
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
       zod:
         specifier: 4.6.6
         version: 4.6.6
@@ -31,9 +40,6 @@ importers:
       tsx:
         specifier: 4.20.6
         version: 4.20.6
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
 
 packages:
 
@@ -207,6 +213,26 @@ packages:
   '@types/pg@8.15.5':
     resolution: {integrity: sha512-LF7lF6zWEKxuT3/OR8wAZGzkg4ENGXFNyiV/JeOt9z5B+0ZVwbql9McqX5c/WStFq1GaGso7H1AzP/qSzmlCKQ==}
 
+  dom-serializer@3.1.1:
+    resolution: {integrity: sha512-4MEa38/QexBob6gFNwu+EGdWvhJ1OKuNwdYY3Y3NyeWDQfnGeDYQUDfIRzWu5B5gsv03so2Uxd28YC6zrsx3Lw==}
+    engines: {node: '>=20.19.0'}
+
+  domelementtype@3.0.0:
+    resolution: {integrity: sha512-umCQid3jKbDmVjx8jGaW7uUykm4DEUeyV21hPxNMo2nV955DhUThwqyOIDtreepP31hl84X7G5U9ZfsWvIB3Pg==}
+    engines: {node: '>=20.19.0'}
+
+  domhandler@6.0.1:
+    resolution: {integrity: sha512-gYzvtM72ZtxQO0T048kd6HWSbbGCNOUwcnfQ01cqIJ4X2IYKFFHZ5mKvrQETcFXxsRObZulDaKmy//R7TPtsBg==}
+    engines: {node: '>=20.19.0'}
+
+  domutils@4.0.2:
+    resolution: {integrity: sha512-qI4JLRKnSzqFqr7hAlS5xQDusBCjKSEG4t4+7aNrIQMHBcsC2TGEhuyABJdYkgSewL57PNLYEiibY2iPKhKpaA==}
+    engines: {node: '>=20.19.0'}
+
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
+    engines: {node: '>=20.19.0'}
+
   esbuild@0.25.12:
     resolution: {integrity: sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==}
     engines: {node: '>=18'}
@@ -219,6 +245,14 @@ packages:
 
   get-tsconfig@4.14.3:
     resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
+
+  htmlparser2@12.0.0:
+    resolution: {integrity: sha512-Tz7u1i95/g2x2jz81+x0FBVhBhY5aRTvD3tXXdFaljuNdzDLJ8UGNRrTcj2cgQvAg3iW/h77Fz15nLW0L0CrZw==}
+    engines: {node: '>=20.19.0'}
+
+  ignore@7.0.14:
+    resolution: {integrity: sha512-wCBiZ77u1tuWde6G/nfOtLaCTYcFDU5yCzARzK10y+rLhzYoL7a7yEemcopcc2Mzow7gZOIjnV2ym1NYmdiJOQ==}
+    engines: {node: '>= 4'}
 
   pg-cloudflare@1.4.1:
     resolution: {integrity: sha512-6PQbsFWZcp9EmJEwy5cGQ2La+AMWpP46lgbb8X+U/XsHIUweYDNCpeuKck5RxL2MdVFi7krbbEi5nX4Zh7JhrQ==}
@@ -395,6 +429,26 @@ snapshots:
       pg-protocol: 1.16.1
       pg-types: 2.2.0
 
+  dom-serializer@3.1.1:
+    dependencies:
+      domelementtype: 3.0.0
+      domhandler: 6.0.1
+      entities: 8.1.0
+
+  domelementtype@3.0.0: {}
+
+  domhandler@6.0.1:
+    dependencies:
+      domelementtype: 3.0.0
+
+  domutils@4.0.2:
+    dependencies:
+      dom-serializer: 3.1.1
+      domelementtype: 3.0.0
+      domhandler: 6.0.1
+
+  entities@8.1.0: {}
+
   esbuild@0.25.12:
     optionalDependencies:
       '@esbuild/aix-ppc64': 0.25.12
@@ -430,6 +484,15 @@ snapshots:
   get-tsconfig@4.14.3:
     dependencies:
       resolve-pkg-maps: 1.0.0
+
+  htmlparser2@12.0.0:
+    dependencies:
+      domelementtype: 3.0.0
+      domhandler: 6.0.1
+      domutils: 4.0.2
+      entities: 8.1.0
+
+  ignore@7.0.14: {}
 
   pg-cloudflare@1.4.1:
     optional: true
