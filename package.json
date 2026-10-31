@@ -40,6 +40,14 @@
     "./runtime": {
       "types": "./dist/runtime/index.d.ts",
       "import": "./dist/runtime/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
+    "./daemon": {
+      "types": "./dist/daemon/index.d.ts",
+      "import": "./dist/daemon/index.js"
     }
   },
   "main": "./dist/index.js",
@@ -51,6 +59,9 @@
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "htmlparser2": "12.0.0",
     "ignore": "7.0.14",
     "typescript": "5.9.3",
