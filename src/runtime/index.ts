@@ -32,6 +32,7 @@ import {
   type ProviderLimits,
 } from '../providers/contracts.js'
 import { openEmbeddedDatabase } from '../storage/embedded.js'
+import { canonicalFuturePath, isSameOrDescendantPath } from './path.js'
 import type { OwnedDatabase } from '../storage/database.js'
 import type { WebSource } from '../core/contracts.js'
 import {
@@ -116,6 +117,7 @@ export async function openSearchRuntime(options: RuntimeOptions) {
   const config = parseRuntimeConfig(options.config)
   assertStartupActive(options.signal)
   const roots = await canonicalRoots(config)
+  const dataDir = await assertDataDirectoryOutsideRoots(config.dataDir, roots)
   assertStartupActive(options.signal)
   let configDir: string | undefined
   if (options.configDir) {
@@ -151,7 +153,7 @@ export async function openSearchRuntime(options: RuntimeOptions) {
   assertStartupActive(options.signal)
   let database: OwnedDatabase | undefined
   try {
-    database = await openEmbeddedDatabase(config.dataDir)
+    database = await openEmbeddedDatabase(dataDir)
     await options.testDependencies?.beforeDatabaseReady?.(
       options.signal ?? new AbortController().signal,
     )
@@ -174,6 +176,24 @@ export async function openSearchRuntime(options: RuntimeOptions) {
       })
     }
     throw sanitize(error, options.signal)
+  }
+}
+
+async function assertDataDirectoryOutsideRoots(dataDir: string, roots: RootEntry[]): Promise<string> {
+  try {
+    const candidate = await canonicalFuturePath(dataDir)
+    if (
+      roots.some(
+        (root) =>
+          isSameOrDescendantPath(root.path, candidate) ||
+          isSameOrDescendantPath(candidate, root.path),
+      )
+    )
+      throw new RuntimeConfigError('CONFIG_INVALID')
+    return candidate
+  } catch (error) {
+    if (error instanceof RuntimeConfigError) throw error
+    throw new RuntimeConfigError('CONFIG_INVALID')
   }
 }
 
