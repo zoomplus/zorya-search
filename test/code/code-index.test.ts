@@ -496,6 +496,57 @@ test('unchanged reindex validates current identity without parsing, embedding, o
   await code.close()
 })
 
+test('reuses only durably settled vectors after restart and publishes the complete snapshot', async () => {
+  const root = await repository()
+  await Promise.all(Array.from({ length: 84 }, (_, index) =>
+    writeFile(join(root, `resume-${index}.ts`), `export function resumeTarget${index}() { return ${index} }\n`),
+  ))
+  await commit(root, 'fixture')
+  const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
+  roots.push(dataDir)
+  const database = await openEmbeddedDatabase(dataDir)
+  databases.push(database)
+  const profile = {
+    provider: 'fixture', space: 'resume-v1', model: 'resume-model', dimensions: 2,
+    inputType: 'text' as const, chunkerVersion: 'ts-ast-symbol-v1',
+  }
+  const firstBatches: number[] = []
+  const first = createCodeIndex({
+    database, profile,
+    models: { async embed({ texts }) {
+      firstBatches.push(texts.length)
+      if (firstBatches.length === 2) throw new Error('fixture provider interruption')
+      return texts.map(() => [1, 0])
+    } },
+  })
+  await assert.rejects(first.indexRepository({ root }), /fixture provider interruption/u)
+  assert.deepEqual(firstBatches, [32, 32])
+  assert.equal((await first.indexStatus(root)).identity, null)
+  await assert.rejects(
+    first.searchCode({ root, query: 'resumeTarget' }),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_STALE',
+  )
+  await first.close()
+
+  const retryBatches: number[] = []
+  const retry = createCodeIndex({
+    database, profile,
+    models: { async embed({ texts }) {
+      retryBatches.push(texts.length)
+      return texts.map(() => [1, 0])
+    } },
+  })
+  const completed = await retry.indexRepository({ root })
+  assert.deepEqual(retryBatches, [32, 20])
+  assert.equal(completed.chunkCount, 84)
+  assert.equal((await retry.searchCode({ root, query: 'resumeTarget', limit: 100 })).hits.length, 84)
+  const staged = await database.query<{ count: string }>(
+    'SELECT count(*)::text AS count FROM zorya_code_resume_chunks',
+  )
+  assert.equal(Number(staged.rows[0]?.count), 0)
+  await retry.close()
+})
+
 test('abort during unchanged-index confirmation prevents a successful return', async () => {
   const root = await repository()
   await writeFile(

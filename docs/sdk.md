@@ -1,6 +1,6 @@
 # Справочник SDK
 
-Этот справочник описывает публичные API исходного baseline `c112e179ead154c9f5fa50d242f0dd5c7426f823` по соответствующим exports и типам. Интегрированная библиотека предоставляет SDK; наличие subpath не означает подключения к CLI, MCP-клиенту или текущему чату. Состояние остальных волн смотрите в [плане реализации](implementation-plan.md), а состав слоёв — в [архитектуре](architecture.md).
+Подробные сигнатуры базового SDK в этом справочнике сверены с исходным baseline `c112e179ead154c9f5fa50d242f0dd5c7426f823`. MCP/runtime subpaths сверены отдельно с принятым snapshot `fa3185ce364abcc9df2a65775cd31f9566e0e8f5` и локальной установкой архива в отдельный проект. Всегда сравнивай exports с установленным `package.json`: наличие SDK, daemon или CLI не означает подключения к конкретному MCP-клиенту или текущему чату. Состав слоёв описан в [архитектуре](architecture.md).
 
 ## Точки входа
 
@@ -15,8 +15,13 @@
 | `@zorya/search/context/classify` | `createClassificationTool` и его limits/profile |
 | `@zorya/search/providers` | OpenRouter/OpenAI-compatible model adapters, Brave web source и classifier |
 | `@zorya/search/visual` | opt-in `createVisualSearch` и visual DTO |
+| `@zorya/search/runtime` | runtime factory и конфигурация разрешённых roots |
+| `@zorya/search/mcp` | MCP server, tool contracts и stdio proxy |
+| `@zorya/search/daemon` | локальный HTTP daemon, владеющий runtime и transport |
 
 Корневой entry не импортирует runtime-модули этих специализированных поверхностей за потребителя. Текущий `package.json` задаёт ESM exports и требует Node.js `>=20.19.0`.
+
+Для большинства библиотечных потребителей начни с `@zorya/search` и нужных subpaths. Для локального MCP сценария используй daemon, который единолично владеет каталогом embedded database, и `@zorya/search/mcp` как transport adapter. Не запускай второй владелец того же data directory. Настройка конкретного клиента и CLI описана отдельно в [руководстве MCP](mcp.md) и [руководстве CLI](cli.md).
 
 ## Индекс кода и контекст
 
@@ -98,7 +103,7 @@ try {
 }
 ```
 
-Пример использует только lexical поиск, поэтому не вызывает embedding или rerank provider. Он показывает актуальные методы, но не является самостоятельной проверкой нового собранного tarball: основной оркестратор отдельно сверяет примеры со сборкой и package artifact.
+Пример использует только лексический поиск и не вызывает модели. Он показывает API базового SDK; для другой версии сверяй доступные методы с экспортами установленного пакета.
 
 ### Методы `CodeIndex`
 
@@ -124,7 +129,7 @@ type GetCodeContext = (input: CodeContextRequest) => Promise<CodeContextResult>
 
 ## Исключения и границы индексирования
 
-`CodeIndexOptions.exclude?: string[]` добавляет правила к встроенным исключениям lockfile. Встроенная политика также запрещает обход `.git`, `node_modules`, `build`, `dist`, `coverage`, `.cache`, `.next`, `vendor`, `.idea`, `.vscode`, файлов `.env*` и имён, похожих на секреты/ключи. Это защита известных типов путей и имён, но произвольная папка не исключается только потому, что в её имени есть `generated`. Фильтр по расширению ограничивает индексирование текстовыми типами из текущей реализации. Например, вызывающая сторона может передать `exclude: ['docs/evidence/**']`, чтобы не включать доказательства в индекс; это дополнительное правило, оно не заменяет встроенные исключения.
+`CodeIndexOptions.exclude?: string[]` добавляет правила к встроенным исключениям файлов блокировки. Встроенная политика также запрещает обход `.git`, `node_modules`, `build`, `dist`, `coverage`, `.cache`, `.next`, `vendor`, `.idea`, `.vscode`, файлов `.env*` и имён, похожих на секреты или ключи. Это защита известных типов путей и имён. Папка не исключается лишь потому, что её имя содержит `generated`. Фильтр по расширению ограничивает индексирование текстовыми типами текущей реализации. Вызывающая сторона может добавить собственные маски исключения; они дополняют встроенные правила.
 
 Фильтры и граница realpath ограничивают случайный доступ, но не гарантируют обнаружение всех секретов в остальных текстовых исходниках. До подключения облачных моделей вызывающая сторона отвечает за осознанный выбор передаваемого кода и конфигурации provider.
 
@@ -135,6 +140,8 @@ type GetCodeContext = (input: CodeContextRequest) => Promise<CodeContextResult>
 Lexical индекс не требует provider и работает офлайн. Dense-векторный путь задаётся совместными `models` и `profile`: профиль включает provider, space, model, dimensions, `inputType: 'text'` и текущий `chunkerVersion`. Вызов `searchCode({ mode: 'hybrid' })` без настроенных `models` явно деградирует к lexical; при несовпадении профиля или snapshot текущего индекса он также возвращает lexical результат с причиной деградации. Передача `models` без валидного `profile` завершается ошибкой при создании индекса; передача одного `profile` без `models` тоже недопустима. Не повторно используйте векторы с несовпадающим профилем/snapshot. Ошибка самого вызова embedding/rerank пробрасывается и не превращается автоматически в lexical fallback.
 
 `createCodeIndex` ожидает `models.embed({ texts, signal })` и optional `models.rerank({ query, documents, signal })`. Provider adapter из `@zorya/search/providers` имеет собственный `profile`; для code profile нужны те же provider/space/model/dimensions, `inputType: 'text'` и текущий `chunkerVersion: CODE_CHUNKER_VERSION` из `@zorya/search/code`. Например, создайте provider методом `createOpenRouterEmbedding({ baseUrl, model, dimensions, apiKeyEnv })`, явно передайте его method как `models.embed`, а конфигурацию профиля согласуйте с provider profile и chunker version. Такой вызов может отправить chunks выбранному провайдеру; пример здесь описан, но в рамках подготовки документации не выполнялся.
+
+В read-only сверке конфигурации Mechanism от 2026-10-31 зафиксирован code embedding preset `voyageai/voyage-code-4` размерности 1024 и отдельный reranker `voyageai/rerank-2.5-lite`. Эти значения не являются универсальными defaults Search. Текущий интеграционный preset и переменную окружения смотри в [профильном руководстве](voyage-profiles.md), после проверки по установленной версии. Установка preset может передавать индексируемый код и запросы OpenRouter. В сверке каталога и исходников внешних inference вызовов не было; live доступность, качество и стоимость не подтверждены.
 
 ## Поиск в web и чтение источников
 
@@ -154,8 +161,10 @@ Web-поиск и чтение источника ничего не записы
 
 Без embedding metadata-only text поиск сравнивает текстовое поле `reference.text`; `screen`, `state` и `breakpoint` можно использовать как точные filters. Запрос картинкой завершается `IMAGE_QUERY_UNSUPPORTED`. Для image query нужен включённый подходящий embedding порт и явно совпадающий профиль. Результат включает score и uncertainty: даже векторная близость не является pixel comparison или подтверждением качества. Хранилище эфемерно; `close()` отменяет принадлежащие операции и очищает его. Не сохраняйте references между процессами как будто они составляют durable визуальный индекс.
 
+Visual профиль Mechanism отделён от кода и использует `voyageai/voyage-multimodal-3.5` размерности 1024. Его настраивает владелец независимо; он не меняет code embeddings и остаётся выключенным, пока его отдельно не включили. Visual дополнение может искать только среди references, которые клиент сам выбрал и передал; Search не получает desktop capture и не скачивает изображения по URL. Модельный каталог и committed client configuration были сверены без provider inference. Подробные ограничения интеграции и MCP tool смотрите в [профильном руководстве](voyage-profiles.md).
+
 ## Что считать результатом
 
 Search возвращает кандидатов вместе с источником, границами и происхождением, где оно доступно. Score, confidence, semantic similarity, код или web-текст не подтверждают верность решения и не разрешают действие. Вызывающая сторона решает, что передать своей модели, какие источники проверять и нужно ли менять собственное состояние. Поисковый текст не исполняется, а SDK не создаёт сессии агентов, не управляет памятью и не меняет prompt.
 
-Описание выше относится к локальным исходникам baseline и export surface этого snapshot. Текущий локальный consumer gate использовал созданный `npm pack` tarball; это не означает публикацию в npm/GitHub. Приёмка artifact/consumer gate не означает подключение MCP, доступность инструментов в чат-клиенте, live provider acceptance или готовый Assistant adapter; проверяйте эти статусы по [плану](implementation-plan.md).
+Описание базовых SDK сигнатур привязано к указанному baseline; runtime/MCP exports проверены на `fa3185c` и при локальной установке архива в отдельный проект. Руководства CLI и профилей относятся к своим интерфейсам и не подтверждают доступность функции в любом установленном пакете. Локальный `npm pack` не означает публикацию. MCP archive smoke и локальные проверки инструментов не означают подключения к текущему чату, живых вызовов моделей или готового Assistant адаптера.
