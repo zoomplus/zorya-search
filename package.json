@@ -36,6 +36,10 @@
     "./visual": {
       "types": "./dist/visual/index.d.ts",
       "import": "./dist/visual/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
     }
   },
   "main": "./dist/index.js",
