@@ -144,6 +144,15 @@ export const runtimeConfigSchema = z
       })
       .strict()
       .optional(),
+    indexing: z
+      .object({
+        maxConcurrentRoots: z.number().int().min(1).max(4).optional(),
+        maxAttempts: z.number().int().min(1).max(32).optional(),
+        jobTimeoutMs: z.number().int().min(1000).max(3600000).optional(),
+        retryDelayMs: z.number().int().min(100).max(5000).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

@@ -126,13 +126,23 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     }
     const modern = await makeClient('auto', alphaToken)
     const listed = await modern.listTools()
-    assert.equal(listed.tools.length, 11)
+    assert.equal(listed.tools.length, 13)
     assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)
     assert.ok(listed.tools.some((tool) => tool.name === 'search_code'))
     assert.equal(
       listed.tools.find((tool) => tool.name === 'index_repository')?.annotations?.readOnlyHint,
       false,
     )
+    assert.equal(listed.tools.some((tool) => tool.name === 'start_indexing'), true)
+    assert.equal(listed.tools.some((tool) => tool.name === 'cancel_indexing'), true)
+    assert.equal(listed.tools.find((tool) => tool.name === 'start_indexing')?.annotations?.readOnlyHint, false)
+    assert.equal(listed.tools.find((tool) => tool.name === 'cancel_indexing')?.annotations?.destructiveHint, true)
+    const admission = await modern.callTool({ name: 'start_indexing', arguments: { rootId: 'alpha' } })
+    assert.notEqual(admission.isError, true)
+    const admittedJob = (admission.structuredContent as { job?: { jobId?: string } }).job
+    assert.match(admittedJob?.jobId ?? '', /^[0-9a-f-]{36}$/u)
+    const liveStatus = await modern.callTool({ name: 'index_status', arguments: { rootId: 'alpha' } })
+    assert.equal((liveStatus.structuredContent as { indexingJob?: { jobId?: string } }).indexingJob?.jobId, admittedJob?.jobId)
     assert.equal(
       listed.tools.find((tool) => tool.name === 'classify')?.annotations?.openWorldHint,
       true,
@@ -429,6 +439,80 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
   } finally {
     await Promise.all(clients.map((client) => client.close().catch(() => undefined)))
     await daemon?.close().catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('HTTP clients reach status during first watch index and admission survives the admitting disconnect', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'zorya-mcp-background-index-'))
+  const root = join(dir, 'root')
+  await mkdir(root)
+  await mkdir(join(dir, 'state'))
+  await writeFile(join(root, 'delayed.ts'), 'export const delayedIndex = true\n')
+  const tokenA = 'background-client-a'.padEnd(40, 'a')
+  const tokenB = 'background-client-b'.padEnd(40, 'b')
+  let release: (() => void) | undefined
+  let fetchStartedResolve: (() => void) | undefined
+  const fetchStarted = new Promise<void>((resolve) => { fetchStartedResolve = resolve })
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    fetchStartedResolve?.()
+    await new Promise<void>((resolve) => { release = resolve })
+    const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+  }
+  let daemon: Awaited<ReturnType<typeof startSearchDaemon>> | undefined
+  const clients: Client[] = []
+  try {
+    daemon = await startSearchDaemon({
+      host: '127.0.0.1',
+      authorize: async (token) => token === tokenA || token === tokenB
+        ? { principalId: token === tokenA ? 'client-a' : 'client-b', rootIds: ['watched'], operations: ['read', 'index'] }
+        : undefined,
+      allowedHosts: ['127.0.0.1'],
+      allowedOrigins: ['http://127.0.0.1'],
+      config: {
+        version: 1,
+        dataDir: join(dir, 'state'),
+        roots: [{ id: 'watched', path: root, watch: true, watchIntervalMs: 250 }],
+        embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'BACKGROUND_EMBED_KEY' } },
+      },
+      runtimeOptions: { testDependencies: { env: { BACKGROUND_EMBED_KEY: 'fixture-only' }, fetch } },
+    })
+    await Promise.race([fetchStarted, new Promise((_, reject) => setTimeout(() => reject(new Error('BACKGROUND_EMBED_NOT_STARTED')), 5000))])
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'background-test', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${daemon!.port}${daemon!.path}`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }))
+      return client
+    }
+    const admittingClient = await connect(tokenA)
+    const observingClient = await connect(tokenB)
+    const status = await observingClient.callTool({ name: 'index_status', arguments: { rootId: 'watched' } })
+    const currentJob = (status.structuredContent as { indexingJob?: { jobId?: string; state?: string; attempt?: number } }).indexingJob
+    assert.equal(currentJob?.state, 'running')
+    assert.equal(currentJob?.attempt, 1)
+    const reused = await admittingClient.callTool({ name: 'start_indexing', arguments: { rootId: 'watched' } })
+    assert.equal((reused.structuredContent as { created?: boolean }).created, false)
+    const wrongRoot = await admittingClient.callTool({ name: 'cancel_indexing', arguments: { rootId: 'other', jobId: currentJob!.jobId } })
+    assert.equal(wrongRoot.isError, true)
+    const wrongJob = await observingClient.callTool({ name: 'cancel_indexing', arguments: { rootId: 'watched', jobId: '00000000-0000-4000-8000-000000000000' } })
+    assert.equal(wrongJob.isError, true)
+    await admittingClient.close()
+    clients.splice(clients.indexOf(admittingClient), 1)
+    release?.()
+    const deadline = Date.now() + 5000
+    let finalStatus = status
+    while (Date.now() < deadline) {
+      finalStatus = await observingClient.callTool({ name: 'index_status', arguments: { rootId: 'watched', jobId: currentJob!.jobId } })
+      const current = (finalStatus.structuredContent as { indexingJob?: { state?: string } }).indexingJob
+      if (current?.state === 'completed' || current?.state === 'failed') break
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal((finalStatus.structuredContent as { indexingJob?: { state?: string } }).indexingJob?.state, 'completed')
+  } finally {
+    release?.()
+    for (const client of clients) await client.close().catch(() => undefined)
+    await daemon?.close()
     await rm(dir, { recursive: true, force: true })
   }
 })

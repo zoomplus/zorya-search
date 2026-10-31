@@ -170,6 +170,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const indexRepositoryInner: CodeIndex['indexRepository'] = async ({
     root: inputRoot,
     signal,
+    onProgress,
   }) => {
     ensureOpen()
     checkAbort(signal)
@@ -318,6 +319,17 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       }
       if (chunks.length > limits.maxChunks) throw new CodeIndexError('CODE_INDEX_CHUNK_LIMIT')
     }
+    let checkpointWrites = 0
+    try {
+      onProgress?.({
+        snapshotId: identity.snapshotId,
+        totalChunks: chunks.length,
+        checkpointChunks: 0,
+        checkpointWrites,
+      })
+    } catch {
+      /* Observers cannot control indexing. */
+    }
     const profileForChunks = profileId
     const cached = await database.query<{ id: string; content_hash: string; vector_json: unknown }>(
       `SELECT c.id,c.content_hash,c.vector_json FROM zorya_code_worktrees w
@@ -334,6 +346,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ? vectorMaybe(reusable.get(`${chunk.id}:${chunk.contentHash}`), profile?.dimensions)
         : null,
     )
+    let stagedCheckpointCount = 0
     if (models) {
       const staged = await database.query<{ id: string; content_hash: string; vector_json: unknown }>(
         `SELECT id,content_hash,vector_json FROM zorya_code_resume_chunks
@@ -341,6 +354,17 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         [worktreeId, resumeScopeId],
       )
       const stagedVectors = new Map(staged.rows.map((row) => [row.id + ':' + row.content_hash, row.vector_json]))
+      stagedCheckpointCount = stagedVectors.size
+      try {
+        onProgress?.({
+          snapshotId: identity.snapshotId,
+          totalChunks: chunks.length,
+          checkpointChunks: stagedVectors.size,
+          checkpointWrites,
+        })
+      } catch {
+        /* Observers cannot control indexing. */
+      }
       vectors = vectors.map((value, index) => value ?? (
         stagedVectors.has(`${chunks[index]!.id}:${chunks[index]!.contentHash}`)
           ? vector(stagedVectors.get(`${chunks[index]!.id}:${chunks[index]!.contentHash}`), profile!.dimensions)
@@ -387,6 +411,15 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
             vectors[item.index] = item.value
           }
         }, signal)
+        checkpointWrites += batch.length
+        try {
+          onProgress?.({
+            snapshotId: identity.snapshotId,
+            totalChunks: chunks.length,
+            checkpointChunks: Math.min(chunks.length, stagedCheckpointCount + cursor + batch.length),
+            checkpointWrites,
+          })
+        } catch { /* Progress observers do not control indexing. */ }
       }
     }
     checkAbort(signal)
@@ -502,10 +535,24 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       if (activeIndexJobs >= 8) throw new CodeIndexError('CODE_INDEX_BUSY')
       activeIndexJobs++
       try {
-        return await indexRepositoryInner({ root: input.root, signal })
+        return await indexRepositoryInner({
+          root: input.root,
+          signal,
+          ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+        })
       } finally {
         activeIndexJobs--
       }
+    })
+
+  const sourceFingerprint: CodeIndex['sourceFingerprint'] = (inputRoot, callerSignal) =>
+    own(callerSignal, async (signal) => {
+      await options.beforeSourceFingerprint?.(signal)
+      checkAbort(signal)
+      const root = await realpath(resolve(inputRoot))
+      const { treeHash } = await enumerateCode(root, limits, signal, pathPolicy.excludes)
+      const identity = await identifyRoot(root, treeHash, signal)
+      return sha(`${identity.snapshotId}\0${profileId ?? 'lexical'}\0${chunkConfigId}`)
     })
 
   async function current(
@@ -688,6 +735,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ...(rerankCandidateLimit > 0 ? { topN: Math.min(cap, rerankCandidateLimit) } : {}),
         signal: input.signal ?? new AbortController().signal,
       })
+
       if (
         !Array.isArray(reranked) ||
         reranked.some(
@@ -907,6 +955,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
 
   return {
     indexRepository,
+    sourceFingerprint,
     searchCode,
     indexStatus,
     readSource,

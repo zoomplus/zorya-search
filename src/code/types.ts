@@ -33,6 +33,7 @@ export interface CodeIndexOptions {
   limits?: Partial<CodeIndexLimits>
   exclude?: string[]
   rerankCandidateLimit?: number
+  beforeSourceFingerprint?: (signal: AbortSignal) => Promise<void>
 }
 
 export interface CodeSourceIdentity {
@@ -94,6 +95,13 @@ export interface CodeIndexStatus {
   denseDisabledReason: string | null
 }
 
+export interface CodeIndexProgress {
+  snapshotId: string
+  totalChunks: number
+  checkpointChunks: number
+  checkpointWrites: number
+}
+
 export interface CodeReadInput {
   root: string
   path: string
@@ -126,7 +134,8 @@ export interface CodeWatchHandle {
 }
 
 export interface CodeIndex {
-  indexRepository(input: { root: string; signal?: AbortSignal }): Promise<CodeIndexStatus>
+  indexRepository(input: { root: string; signal?: AbortSignal; onProgress?: (progress: CodeIndexProgress) => void }): Promise<CodeIndexStatus>
+  sourceFingerprint(root: string, signal?: AbortSignal): Promise<string>
   searchCode(input: CodeSearchInput): Promise<{
     hits: CodeHit[]
     identity: CodeSourceIdentity

@@ -8,7 +8,7 @@ export async function watchCodeRoot(input: {
   root: string
   signal: AbortSignal
   intervalMs: number
-  reconcile(): Promise<void>
+  reconcile(cause: 'event' | 'interval'): Promise<void>
   onError?(code: string): void
   onClose(): void
 }): Promise<CodeWatchHandle> {
@@ -29,10 +29,10 @@ export async function watchCodeRoot(input: {
       /* Ошибка обработчика не должна ломать наблюдение. */
     }
   }
-  const run = async () => {
+  const run = async (cause: 'event' | 'interval') => {
     if (stopped || active) return
     active = input
-      .reconcile()
+      .reconcile(cause)
       .catch(() => {
         if (!input.signal.aborted) report('CODE_INDEX_WATCH_RECONCILE_FAILED')
       })
@@ -49,13 +49,13 @@ export async function watchCodeRoot(input: {
       if (stopped) return
       if (debounceTimer) clearTimeout(debounceTimer)
       debounceTimer = setTimeout(() => {
-        void run()
+        void run('event')
       }, 200)
     })
     const schedule = () => {
       if (stopped) return
       reconcileTimer = setTimeout(async () => {
-        await run()
+        await run('interval')
         schedule()
       }, input.intervalMs)
     }

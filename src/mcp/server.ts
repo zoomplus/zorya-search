@@ -14,6 +14,7 @@ import {
   classifyRequest,
   contextRequest,
   indexRequest,
+  indexStatusRequest,
   readRequest,
   relatedRequest,
   searchRequest,
@@ -21,6 +22,8 @@ import {
   webReadRequest,
   webSearchRequest,
   visualSearchRequest,
+  startIndexingRequest,
+  cancelIndexingRequest,
 } from '../runtime/requests.js'
 
 export type SearchMcpRuntime = Awaited<ReturnType<typeof openSearchRuntime>>
@@ -30,11 +33,12 @@ export interface SearchMcpAccess {
 }
 
 const annotationsFor = (name: string): ToolAnnotations => ({
-  readOnlyHint: name !== 'index_repository',
-  destructiveHint: false,
-  idempotentHint: name !== 'index_repository',
+  readOnlyHint: !['index_repository', 'start_indexing', 'cancel_indexing'].includes(name),
+  destructiveHint: name === 'cancel_indexing',
+  idempotentHint: !['index_repository', 'start_indexing', 'cancel_indexing'].includes(name),
   openWorldHint: [
     'index_repository',
+    'start_indexing',
     'search_code',
     'get_code_context',
     'search_web',
@@ -58,13 +62,23 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
   },
   index_status: {
     description: 'Get the index status for a granted root.',
-    schema: statusRequest,
+    schema: indexStatusRequest,
     annotations: annotationsFor('index_status'),
   },
   index_repository: {
     description: 'Index configured files for a granted root. This does not edit source files.',
     schema: indexRequest,
     annotations: annotationsFor('index_repository'),
+  },
+  start_indexing: {
+    description: 'Start or reuse a runtime-owned background indexing job for a granted root.',
+    schema: startIndexingRequest,
+    annotations: annotationsFor('start_indexing'),
+  },
+  cancel_indexing: {
+    description: 'Cancel and join the named background indexing job for a granted root.',
+    schema: cancelIndexingRequest,
+    annotations: annotationsFor('cancel_indexing'),
   },
   search_code: {
     description:
@@ -124,6 +138,8 @@ const requiredOperation: Record<string, 'read' | 'index' | 'web' | 'classify' | 
   related_code: 'read',
   get_code_context: 'read',
   index_repository: 'index',
+  start_indexing: 'index',
+  cancel_indexing: 'index',
   search_web: 'web',
   read_web_source: 'web',
   classify: 'classify',
@@ -192,11 +208,13 @@ export function createSearchMcpServer(
   add('list_roots', () => runtime.listRoots().filter((root) => roots.has(root.id)))
   add('capabilities', () => runtime.capabilities())
   add('index_status', (input, signal) =>
-    runtime.indexStatus({ ...input, ...(signal ? { signal } : {}) }),
+    runtime.indexStatus({ rootId: input.rootId, ...(input.jobId ? { jobId: input.jobId } : {}), ...(signal ? { signal } : {}) }),
   )
   add('index_repository', (input, signal) =>
     runtime.indexRepository({ ...input, ...(signal ? { signal } : {}) }),
   )
+  add('start_indexing', (input, signal) => runtime.startIndexing({ ...input, ...(signal ? { signal } : {}) }))
+  add('cancel_indexing', (input) => runtime.cancelIndexing(input))
   add('search_code', (input, signal) =>
     runtime.searchCode({ ...input, ...(signal ? { signal } : {}) } as Parameters<
       typeof runtime.searchCode

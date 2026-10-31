@@ -2,7 +2,10 @@ import { z } from 'zod'
 
 const idField = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/)
 export const statusRequest = z.object({ rootId: idField }).strict()
+export const indexStatusRequest = z.object({ rootId: idField, jobId: z.string().uuid().optional() }).strict()
 export const indexRequest = statusRequest
+export const startIndexingRequest = statusRequest
+export const cancelIndexingRequest = z.object({ rootId: idField, jobId: z.string().uuid() }).strict()
 export const searchRequest = z
   .object({
     rootId: idField,
