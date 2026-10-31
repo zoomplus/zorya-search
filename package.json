@@ -5,8 +5,19 @@
   "type": "module",
   "license": "MIT",
   "files": [
-    "dist",
-    "LICENSE"
+    "dist/**",
+    "LICENSE",
+    "README.md",
+    "AGENTS.md",
+    "docs/cli.md",
+    "docs/sdk.md",
+    "docs/mcp.md",
+    "docs/voyage-profiles.md",
+    "docs/agent-clients.md",
+    "docs/architecture.md",
+    "skills/**",
+    ".agents/rules/**",
+    ".cursor/rules/**"
   ],
   "exports": {
     ".": {
@@ -79,5 +90,8 @@
   },
   "engines": {
     "node": ">=20.19.0"
+  },
+  "bin": {
+    "zorya-search": "./dist/cli/entry.js"
   }
 }
