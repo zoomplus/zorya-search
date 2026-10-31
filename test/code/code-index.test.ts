@@ -55,6 +55,7 @@ async function index(
   },
   limits?: Partial<CodeIndexLimits>,
   exclude?: string[],
+  rerankCandidateLimit?: number,
 ) {
   const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
   roots.push(dataDir)
@@ -65,9 +66,34 @@ async function index(
     ...(models ? { models, profile } : {}),
     ...(limits ? { limits } : {}),
     ...(exclude ? { exclude } : {}),
+    ...(rerankCandidateLimit === undefined ? {} : { rerankCandidateLimit }),
   })
   return { database, code }
 }
+
+test('bounded rerank shortlist can promote a candidate beyond the requested output limit', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'candidates.ts'), Array.from({ length: 12 }, (_, i) => `export function candidate${i}() { return "needle" }`).join('\n'))
+  await commit(root, 'fixture')
+  let offered = 0
+  let requestedTopN: number | undefined
+  const profile = { provider: 'mock', space: 'rerank-shortlist', model: 'fixture', dimensions: 2, inputType: 'text' as const, chunkerVersion: 'ts-ast-symbol-v1' }
+  const { code } = await index(root, {
+    async embed({ texts }) { return texts.map(() => [1, 0]) },
+    async rerank({ documents, topN }) {
+      offered = documents.length
+      requestedTopN = topN
+      return documents.map((_, index) => ({ index, score: index === documents.length - 1 ? 1 : 0 }))
+    },
+  }, profile, undefined, undefined, 10)
+  await code.indexRepository({ root })
+  const result = await code.searchCode({ root, query: 'needle', limit: 1 })
+  assert.equal(offered, 10)
+  assert.equal(requestedTopN, 1)
+  assert.match(result.hits[0]?.path ?? '', /candidates\.ts$/u)
+  assert.ok((result.hits[0]?.lineStart ?? 0) > 1)
+  assert.equal(result.hits.length, 1)
+})
 
 function countCodeWrites(database: QueryableDatabase) {
   let writes = 0

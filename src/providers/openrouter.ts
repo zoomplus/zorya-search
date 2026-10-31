@@ -18,6 +18,7 @@ export interface OpenRouterModelConfig extends HttpConfig {
   model: string;
   provider?: Record<string, unknown>;
   profileId?: string;
+  verifyReturnedModel?: boolean;
 }
 
 export interface OpenRouterEmbeddingConfig extends OpenRouterModelConfig {
@@ -35,11 +36,74 @@ export interface EmbeddingProvider {
   usage(): ProviderUsage;
 }
 
+export interface MultimodalEmbeddingProvider {
+  readonly profile: ProviderProfile
+  embed(input: {
+    texts?: string[]
+    images?: Array<{ bytes: Uint8Array; mimeType: string }>
+    signal: AbortSignal
+  }): Promise<number[][]>
+  usage(): ProviderUsage
+}
+
+/** OpenRouter multimodal embeddings. Images are supplied as bytes; this adapter never fetches URLs. */
+export function createOpenRouterMultimodalEmbedding(
+  config: OpenRouterEmbeddingConfig,
+): MultimodalEmbeddingProvider {
+  const options = snapshotEmbeddingConfig({
+    ...config,
+    limits: config.limits ?? { maxInputBytes: 8_000_000 },
+  })
+  if (!options.model?.trim()) throw new TypeError('Embedding model is required')
+  endpoint(options.baseUrl, '/embeddings')
+  if (!Number.isSafeInteger(options.dimensions) || options.dimensions < 1 || options.dimensions > 8192)
+    throw new RangeError('Invalid embedding dimensions')
+  const lim = limitsOf(options.limits)
+  const profile = makeProfile('openrouter', options, options.dimensions, 'text+image', 'embedding')
+  const usage = new UsageLedger()
+  const semaphore = new Semaphore(lim.concurrency)
+  return {
+    profile,
+    usage: () => usage.snapshot(),
+    async embed({ texts = [], images = [], signal }) {
+      if (texts.length + images.length < 1 || texts.length + images.length > lim.maxItems)
+        throw new ProviderError('budget')
+      if (texts.some((text) => typeof text !== 'string' || !text.trim() || text.length > 20_000))
+        throw new ProviderError('malformed')
+      const inputBytes = texts.reduce((sum, text) => sum + Buffer.byteLength(text), 0) + images.reduce((sum, image) => sum + (image.bytes instanceof Uint8Array ? image.bytes.length : lim.maxInputBytes + 1), 0)
+      if (inputBytes > lim.maxInputBytes) throw new ProviderError('budget')
+      const content = [
+        ...texts.map((text) => ({ type: 'text', text })),
+        ...images.map(({ bytes, mimeType }) => {
+          if (!(bytes instanceof Uint8Array) || bytes.length < 1 || !/^image\/(png|jpeg|webp|gif)$/u.test(mimeType))
+            throw new ProviderError('malformed')
+          return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}` } }
+        }),
+      ]
+      const body = await requestJson(options, '/embeddings', {
+        model: options.model,
+        input: [{ content }],
+        dimensions: options.dimensions,
+        encoding_format: 'float',
+      }, signal, semaphore, lim, usage)
+      if (body.model !== undefined && body.model !== options.model) throw new ProviderError('malformed')
+      if (!Array.isArray(body.data) || body.data.length !== 1) throw new ProviderError('malformed')
+      const row = body.data[0] as { index?: unknown; embedding?: unknown } | undefined
+      if (row?.index !== undefined && row.index !== 0) throw new ProviderError('malformed')
+      const vector = row?.embedding
+      if (!Array.isArray(vector) || vector.length !== options.dimensions || vector.some((v) => typeof v !== 'number' || !Number.isFinite(v)) || vector.every((v) => v === 0))
+        throw new ProviderError('malformed')
+      return [vector as number[]]
+    },
+  }
+}
+
 export interface RerankerProvider {
   readonly profile: ProviderProfile;
   rerank(input: {
     query: string;
     documents: string[];
+    topN?: number;
     signal: AbortSignal;
   }): Promise<Array<{ index: number; score: number }>>;
   usage(): ProviderUsage;
@@ -115,12 +179,14 @@ export function createOpenRouterReranker(
   return {
     profile,
     usage: () => usage.snapshot(),
-    async rerank({ query, documents, signal }) {
+    async rerank({ query, documents, signal, topN: requestedTopN }) {
       validateTexts([query, ...documents], lim.maxItems + 1, lim.maxInputBytes);
       if (!documents.length) return [];
+      if (requestedTopN !== undefined && (!Number.isSafeInteger(requestedTopN) || requestedTopN < 1 || requestedTopN > 200))
+        throw new ProviderError("budget");
       const topN = Math.min(
         documents.length,
-        options.maxResults ?? documents.length,
+        requestedTopN ?? options.maxResults ?? documents.length,
       );
       const body = await requestJson(
         options,
@@ -137,6 +203,8 @@ export function createOpenRouterReranker(
         lim,
         usage,
       );
+      if (options.verifyReturnedModel && body.model !== undefined && body.model !== options.model)
+        throw new ProviderError('malformed');
       if (!Array.isArray(body.results) || body.results.length > topN)
         throw new ProviderError("malformed");
       const seen = new Set<number>();
@@ -208,6 +276,8 @@ function createEmbedding(
         lim,
         usage,
       );
+      if (options.verifyReturnedModel && body.model !== undefined && body.model !== options.model)
+        throw new ProviderError('malformed');
       if (!Array.isArray(body.data) || body.data.length !== texts.length)
         throw new ProviderError("malformed");
       const ordered: number[][] = Array(texts.length);

@@ -58,6 +58,7 @@ export interface SearchModels {
   rerank(input: {
     query: string
     documents: string[]
+    topN?: number
     signal: AbortSignal
   }): Promise<{ index: number; score: number }[]>
   judgeCache(input: {

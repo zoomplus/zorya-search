@@ -80,3 +80,13 @@ export const classifyRequest = z
     allowAbstain: z.boolean().optional(),
   })
   .strict()
+const visualImage = z.object({ mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), dataBase64: z.string().min(4).max(2_800_000) }).strict()
+const visualReference = z.object({
+  id: z.string().min(1).max(200), contentHash: z.string().regex(/^(?:sha256:)?[a-f0-9]{64}$/iu),
+  screen: z.string().min(1).max(200).optional(), state: z.string().min(1).max(200).optional(), breakpoint: z.string().min(1).max(200).optional(),
+  text: z.string().min(1).max(4000).optional(), image: visualImage.optional(),
+}).strict().refine((v) => Number(Boolean(v.text)) + Number(Boolean(v.image)) === 1)
+export const visualSearchRequest = z.object({
+  references: z.array(visualReference).min(1).max(12),
+  queryText: z.string().min(1).max(4000).optional(), queryImage: visualImage.optional(), limit: z.number().int().min(1).max(5).optional(),
+}).strict().refine((v) => Number(Boolean(v.queryText)) + Number(Boolean(v.queryImage)) === 1)

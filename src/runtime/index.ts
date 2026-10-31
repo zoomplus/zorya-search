@@ -1,4 +1,5 @@
 import { realpath, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import { createCodeIndex } from '../code/index.js'
@@ -25,7 +26,10 @@ import {
   createOpenAICompatibleEmbedding,
   createOpenRouterEmbedding,
   createOpenRouterReranker,
+  createOpenRouterMultimodalEmbedding,
 } from '../providers/openrouter.js'
+import { MECHANISM_RETRIEVAL_PRESETS } from '../providers/voyage.js'
+import { createVisualSearch } from '../visual/index.js'
 import {
   ProviderError,
   type ProviderErrorCode,
@@ -45,6 +49,7 @@ import {
   webSearchRequest,
   webReadRequest,
   classifyRequest,
+  visualSearchRequest,
 } from './requests.js'
 import {
   loadRuntimeConfig,
@@ -86,7 +91,7 @@ export interface RuntimeCapabilities {
   webRead: boolean
   webDiscovery: boolean
   classification: boolean
-  visual: false
+  visual: boolean
 }
 export interface RuntimeIndexStatus extends CodeIndexStatus {
   watcherError: string | null
@@ -236,6 +241,18 @@ function createProviders(
   fetchOption: { fetch?: typeof fetch },
   testWebSource?: WebSource,
 ) {
+  const mechanismCode = config.mechanism?.code
+  const codeEmbedding = mechanismCode
+    ? createOpenRouterEmbedding({
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: MECHANISM_RETRIEVAL_PRESETS.code.model,
+        dimensions: MECHANISM_RETRIEVAL_PRESETS.code.dimensions,
+        verifyReturnedModel: true,
+        apiKey: resolveSecret(mechanismCode.secret),
+        ...(mechanismCode.limits ? { limits: compact(mechanismCode.limits) } : {}),
+        ...fetchOption,
+      })
+    : undefined
   const embedding = config.embedding
     ? (() => {
         const p = config.embedding!
@@ -259,6 +276,17 @@ function createProviders(
               profileId: p.profileId!,
             })
       })()
+    : undefined
+  const codeReranker = mechanismCode
+    ? createOpenRouterReranker({
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: MECHANISM_RETRIEVAL_PRESETS.code.reranker,
+        maxResults: MECHANISM_RETRIEVAL_PRESETS.code.candidateLimit,
+        verifyReturnedModel: true,
+        apiKey: resolveSecret(mechanismCode.secret),
+        ...(mechanismCode.limits ? { limits: compact(mechanismCode.limits) } : {}),
+        ...fetchOption,
+      })
     : undefined
   const reranker = config.reranker
     ? createOpenRouterReranker({
@@ -290,7 +318,17 @@ function createProviders(
         })
       : undefined
   if (testWebSource && config.web?.discovery) resolveSecret(config.web.discovery.secret)
-  return { embedding, reranker, classifier, web: testWebSource ?? braveWeb }
+  const visualEmbedding = config.mechanism?.visual
+    ? createOpenRouterMultimodalEmbedding({
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: MECHANISM_RETRIEVAL_PRESETS.visual.model,
+        dimensions: MECHANISM_RETRIEVAL_PRESETS.visual.dimensions,
+        apiKey: resolveSecret(config.mechanism.visual.secret),
+        ...(config.mechanism.visual.limits ? { limits: compact(config.mechanism.visual.limits) } : {}),
+        ...fetchOption,
+      })
+    : undefined
+  return { embedding, codeEmbedding, reranker, codeReranker, classifier, visualEmbedding, web: testWebSource ?? braveWeb }
 }
 
 async function createOwnedRuntime(
@@ -360,18 +398,19 @@ async function createOwnedRuntime(
     let index = indexes.get(id)
     if (index) return index
     const root = getRoot(id)
-    const modelSet = providers.embedding
+    const codeEmbedding = providers.codeEmbedding ?? providers.embedding
+    const modelSet = codeEmbedding
       ? {
-          embed: providers.embedding.embed,
-          ...(providers.reranker ? { rerank: providers.reranker.rerank } : {}),
+          embed: codeEmbedding.embed,
+          ...((providers.codeReranker ?? providers.reranker) ? { rerank: (providers.codeReranker ?? providers.reranker)!.rerank } : {}),
         }
       : undefined
-    const profile = providers.embedding
+    const profile = codeEmbedding
       ? {
-          provider: providers.embedding.profile.provider,
-          model: providers.embedding.profile.model,
-          space: providers.embedding.profile.space,
-          dimensions: providers.embedding.profile.dimensions!,
+          provider: codeEmbedding.profile.provider,
+          model: codeEmbedding.profile.model,
+          space: codeEmbedding.profile.space,
+          dimensions: codeEmbedding.profile.dimensions!,
           inputType: 'text' as const,
           chunkerVersion: 'ts-ast-symbol-v1',
         }
@@ -382,6 +421,7 @@ async function createOwnedRuntime(
       ...(modelSet && profile ? { models: modelSet, profile } : {}),
       ...(root.config.exclude ? { exclude: [...root.config.exclude] } : {}),
       ...(limits ? { limits } : {}),
+      ...(config.mechanism?.code ? { rerankCandidateLimit: MECHANISM_RETRIEVAL_PRESETS.code.candidateLimit } : {}),
     })
     indexes.set(id, index)
     contexts.set(id, createCodeContext({ index }))
@@ -503,31 +543,39 @@ async function createOwnedRuntime(
     capabilities(): RuntimeCapabilities {
       return {
         code: true,
-        embedding: Boolean(providers.embedding),
-        codeReranking: Boolean(providers.embedding && providers.reranker),
+        embedding: Boolean(providers.codeEmbedding ?? providers.embedding),
+        codeReranking: Boolean((providers.codeEmbedding ?? providers.embedding) && (providers.codeReranker ?? providers.reranker)),
         webReranking: Boolean(providers.web && config.web?.discovery && providers.reranker),
         webRead: Boolean(providers.web),
         webDiscovery: Boolean(config.web?.discovery && providers.web),
         classification: Boolean(providers.classifier),
-        visual: false,
+        visual: Boolean(providers.visualEmbedding),
       }
     },
     usage() {
       return {
-        embedding: providers.embedding?.usage() ?? null,
+        embedding: (providers.codeEmbedding ?? providers.embedding)?.usage() ?? null,
+        codeEmbedding: providers.codeEmbedding?.usage() ?? null,
         reranking: providers.reranker?.usage() ?? null,
         classification: providers.classifier?.usage() ?? null,
         web:
           providers.web && 'usage' in providers.web
             ? (providers.web as WebSource & { usage(): unknown }).usage()
             : null,
+        codeReranking: providers.codeReranker?.usage() ?? null,
+        visual: providers.visualEmbedding?.usage() ?? null,
       }
     },
     profiles() {
       return {
-        embedding: providers.embedding ? structuredClone(providers.embedding.profile) : null,
+        embedding: (providers.codeEmbedding ?? providers.embedding) ? structuredClone((providers.codeEmbedding ?? providers.embedding)!.profile) : null,
+        codeEmbedding: providers.codeEmbedding ? structuredClone(providers.codeEmbedding.profile) : null,
         reranking: providers.reranker ? structuredClone(providers.reranker.profile) : null,
+        codeReranking: (providers.codeReranker ?? providers.reranker)
+          ? structuredClone((providers.codeReranker ?? providers.reranker)!.profile)
+          : null,
         classification: providers.classifier ? structuredClone(providers.classifier.profile) : null,
+        visual: providers.visualEmbedding ? structuredClone(providers.visualEmbedding.profile) : null,
       }
     },
     async indexStatus(input: {
@@ -564,7 +612,7 @@ async function createOwnedRuntime(
           query: request.query,
           ...(request.paths === undefined ? {} : { paths: request.paths }),
           ...(request.language === undefined ? {} : { language: request.language }),
-          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          ...(request.limit === undefined ? (config.mechanism?.code ? { limit: MECHANISM_RETRIEVAL_PRESETS.code.defaultLimit } : {}) : { limit: request.limit }),
           ...(request.mode === undefined ? {} : { mode: request.mode }),
           signal: operationSignal,
         } as CodeSearchInput)
@@ -715,6 +763,72 @@ async function createOwnedRuntime(
         }
       })
     },
+    async searchVisualReferences(input: {
+      references: Array<{ id: string; contentHash: string; screen?: string; state?: string; breakpoint?: string; text?: string; image?: { mimeType: string; dataBase64: string } }>
+      queryText?: string
+      queryImage?: { mimeType: string; dataBase64: string }
+      limit?: number
+      signal?: AbortSignal
+    }) {
+      if (input && typeof input === 'object' && Array.isArray(input.references)) {
+        let encodedBytes = typeof input.queryText === 'string' ? Buffer.byteLength(input.queryText) : 0
+        for (const ref of input.references)
+          if (ref && typeof ref === 'object' && ref.image && typeof ref.image.dataBase64 === 'string')
+            encodedBytes += ref.image.dataBase64.length
+        if (input.queryImage && typeof input.queryImage.dataBase64 === 'string')
+          encodedBytes += input.queryImage.dataBase64.length
+        if (encodedBytes > 11_000_000) throw new SearchRuntimeError('INVALID_REQUEST')
+      }
+      const { request, signal } = captureRequest(visualSearchRequest, input)
+      return execute(signal, async (operationSignal) => {
+        if (!providers.visualEmbedding) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        const decode = (image: { mimeType: string; dataBase64: string }) => {
+          if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(image.dataBase64))
+            throw new SearchRuntimeError('INVALID_REQUEST')
+          const bytes = Buffer.from(image.dataBase64, 'base64')
+          if (!bytes.length || bytes.length > 2_000_000 || bytes.toString('base64') !== image.dataBase64)
+            throw new SearchRuntimeError('INVALID_REQUEST')
+          return { bytes: Uint8Array.from(bytes), mimeType: image.mimeType }
+        }
+        const ids = new Set<string>()
+        let totalBytes = 0
+        const prepared = request.references.map((ref) => {
+          if (ids.has(ref.id)) throw new SearchRuntimeError('INVALID_REQUEST')
+          ids.add(ref.id)
+          const image = ref.image ? decode(ref.image) : undefined
+          const bytes = image?.bytes ?? Buffer.from(ref.text!, 'utf8')
+          totalBytes += bytes.length
+          if (totalBytes > 8_000_000 || createHash('sha256').update(bytes).digest('hex') !== ref.contentHash.replace(/^sha256:/iu, '').toLowerCase())
+            throw new SearchRuntimeError('INVALID_REQUEST')
+          const reference = {
+            id: ref.id,
+            contentHash: ref.contentHash,
+            ...(ref.screen === undefined ? {} : { screen: ref.screen }),
+            ...(ref.state === undefined ? {} : { state: ref.state }),
+            ...(ref.breakpoint === undefined ? {} : { breakpoint: ref.breakpoint }),
+            ...(ref.text === undefined ? {} : { text: ref.text }),
+          }
+          return { reference, ...(image ? { image } : {}) }
+        })
+        const queryImage = request.queryImage ? decode(request.queryImage) : undefined
+        if (queryImage) totalBytes += queryImage.bytes.length
+        if (request.queryText) totalBytes += Buffer.byteLength(request.queryText)
+        if (totalBytes > 8_000_000) throw new SearchRuntimeError('INVALID_REQUEST')
+        const visual = createVisualSearch({ enabled: true, embedding: providers.visualEmbedding, profile: providers.visualEmbedding.profile })
+        try {
+          for (const ref of prepared) {
+            operationSignal.throwIfAborted()
+            await visual.upsert({ ...ref, signal: operationSignal })
+          }
+          return await visual.search({
+            ...(request.queryText ? { text: request.queryText } : {}),
+            ...(queryImage ? { image: queryImage } : {}),
+            limit: request.limit ?? MECHANISM_RETRIEVAL_PRESETS.visual.defaultLimit,
+            signal: operationSignal,
+          })
+        } finally { await visual.close() }
+      })
+    },
     async startWatcher(input: { rootId: string; signal?: AbortSignal }) {
       const { request, signal } = captureRequest(statusRequest, input)
       return execute(signal, (operationSignal) =>
@@ -782,6 +896,8 @@ async function loadSecrets(
     config.reranker?.secret,
     config.classifier?.secret,
     config.web?.discovery?.secret,
+    config.mechanism?.code?.secret,
+    config.mechanism?.visual?.secret,
   ]
   if (!references.some((ref) => ref?.kind === 'file')) return undefined
   if (!configDir) throw new RuntimeConfigError('SECRET_FILE_INVALID')

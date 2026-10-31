@@ -126,6 +126,8 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     }
     const modern = await makeClient('auto', alphaToken)
     const listed = await modern.listTools()
+    assert.equal(listed.tools.length, 11)
+    assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)
     assert.ok(listed.tools.some((tool) => tool.name === 'search_code'))
     assert.equal(
       listed.tools.find((tool) => tool.name === 'index_repository')?.annotations?.readOnlyHint,
