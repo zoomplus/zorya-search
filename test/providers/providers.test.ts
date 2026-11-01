@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { Worker } from 'node:worker_threads'
 import {
   createOpenAICompatibleEmbedding,
   createOpenRouterEmbedding,
@@ -17,7 +18,26 @@ import {
 } from "../../src/providers/brave.js";
 import { ProviderError } from "../../src/providers/contracts.js";
 import { Semaphore, limitsOf } from "../../src/providers/http.js";
-import { BraveQuota } from '../../src/providers/brave-quota.js'
+import { BraveQuota, createBraveQuotaState } from '../../src/providers/brave-quota.js'
+
+function runBraveQuotaWorker(sharedQuota: SharedArrayBuffer | undefined, observations: SharedArrayBuffer, mode?: '429-once' | 'ok', onPhase?: (phase: string) => void, apiKey?: string, gate?: SharedArrayBuffer) {
+  return new Promise<void>((resolve, reject) => {
+    const worker = new Worker(new URL('./brave-quota-worker.mjs', import.meta.url), {
+      workerData: { sharedQuota, observations, mode, apiKey, gate },
+    })
+    worker.on('message', (message: { ok?: boolean; error?: string; phase?: string }) => {
+      if (message.phase) onPhase?.(message.phase)
+      if (message.ok === undefined) return
+      void worker.terminate()
+      if (message.ok) resolve()
+      else reject(new Error(message.error ?? 'Brave quota worker failed'))
+    })
+    worker.once('error', reject)
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`Brave quota worker exited with ${code}`))
+    })
+  })
+}
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -816,6 +836,107 @@ test('Brave quota observes owner limits and shares a bounded 429 cooldown', asyn
     unlimitedMonth.acquire(Date.now() + 100, new AbortController().signal),
     (error: unknown) => error instanceof ProviderError && error.code === 'rate_limit' && (error.retryAfterMs ?? Infinity) < 2000,
   )
+})
+
+test('Brave shared quota is owner-created, validated, and shared across actual Node workers', async () => {
+  const invalid = new SharedArrayBuffer(64)
+  assert.throws(() => createBraveWebSource({ apiKey: 'fixture', sharedQuota: invalid }), TypeError)
+  assert.throws(() => new BraveQuota(1, new SharedArrayBuffer(0)), TypeError)
+  const valid = createBraveQuotaState()
+  const copiedBytes = new Uint8Array(valid)
+  const copiedArrayBuffer = new ArrayBuffer(valid.byteLength)
+  new Uint8Array(copiedArrayBuffer).set(copiedBytes)
+  assert.throws(() => createBraveWebSource({ apiKey: 'fixture', sharedQuota: copiedArrayBuffer as unknown as SharedArrayBuffer }), TypeError)
+  assert.throws(() => createBraveWebSource({ apiKey: 'fixture', sharedQuota: new Uint8Array(valid) as unknown as SharedArrayBuffer }), TypeError)
+  assert.throws(() => createBraveWebSource({ apiKey: 'fixture', sharedQuota: null as unknown as SharedArrayBuffer }), TypeError)
+
+  const freshQuota = new BraveQuota(1, createBraveQuotaState())
+  await freshQuota.acquire(Date.now() + 100, new AbortController().signal)
+
+  const shared = createBraveQuotaState()
+  const observations = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT * 8)
+  await Promise.all([
+    runBraveQuotaWorker(shared, observations),
+    runBraveQuotaWorker(shared, observations),
+  ])
+  const times = new BigInt64Array(observations)
+  assert.equal(Atomics.load(times, 0), 2n)
+  assert.ok(Atomics.load(times, 2) - Atomics.load(times, 1) >= 900_000n)
+})
+
+test('Brave shared cooldown safely handles fractional and very large untrusted reset headers', async () => {
+  for (const status of [200, 429]) {
+    const quota = new BraveQuota(10, createBraveQuotaState())
+    const headers = status === 429
+      ? new Headers({ 'retry-after': '1000000000000000000000000000' })
+      : new Headers({
+          'x-ratelimit-limit': '1',
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': '1000000000000000000000000000',
+        })
+    assert.doesNotThrow(() => quota.observe(headers, status))
+    await assert.rejects(
+      quota.acquire(Date.now() + 100, new AbortController().signal),
+      (error: unknown) => error instanceof ProviderError && error.code === 'rate_limit',
+    )
+  }
+
+  const fractional = new BraveQuota(10, createBraveQuotaState())
+  assert.doesNotThrow(() => fractional.observe(new Headers({ 'retry-after': '2.0005' }), 429))
+  await assert.rejects(
+    fractional.acquire(Date.now() + 100, new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'rate_limit' && (error.retryAfterMs ?? 0) >= 1500,
+  )
+})
+
+test('Brave shared cooldown propagates 429 across workers; default worker quotas stay independent', async () => {
+  const shared = createBraveQuotaState()
+  const observations = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT * 8)
+  let second: Promise<void> | undefined
+  const first = runBraveQuotaWorker(shared, observations, '429-once', (phase) => {
+    if (phase === '429' && !second) second = runBraveQuotaWorker(shared, observations)
+  })
+  await first
+  await second
+  const sharedTimes = new BigInt64Array(observations)
+  assert.equal(Atomics.load(sharedTimes, 0), 3n)
+  const firstStart = Atomics.load(sharedTimes, 1)
+  const firstAfter429 = Atomics.load(sharedTimes, 2)
+  assert.ok(firstAfter429 - firstStart >= 1_400_000n)
+
+  const independentObservations = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT * 8)
+  const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
+  const gateState = new Int32Array(gate)
+  let readyCount = 0
+  let releaseReady!: () => void
+  const bothReady = new Promise<void>((resolve) => { releaseReady = resolve })
+  const ready = () => {
+    readyCount++
+    if (readyCount === 2) releaseReady()
+  }
+  const independent = Promise.all([
+    runBraveQuotaWorker(undefined, independentObservations, 'ok', (phase) => { if (phase === 'ready') ready() }, 'principal-a', gate),
+    runBraveQuotaWorker(undefined, independentObservations, 'ok', (phase) => { if (phase === 'ready') ready() }, 'principal-b', gate),
+  ])
+  await bothReady
+  Atomics.store(gateState, 0, 1)
+  Atomics.notify(gateState, 0)
+  await independent
+  const independentTimes = new BigInt64Array(independentObservations)
+  assert.equal(Atomics.load(independentTimes, 0), 2n)
+  assert.ok(Math.abs(Number(Atomics.load(independentTimes, 2) - Atomics.load(independentTimes, 1))) < 900_000)
+})
+
+test('Brave cancelled shared quota wait does not reserve a future request start', async () => {
+  const quota = new BraveQuota(1, createBraveQuotaState())
+  const started = Date.now()
+  await quota.acquire(started + 3000, new AbortController().signal)
+  const cancelled = new AbortController()
+  const waiting = quota.acquire(Date.now() + 3000, cancelled.signal)
+  setTimeout(() => cancelled.abort(), 50)
+  await assert.rejects(waiting, (error: unknown) => error instanceof ProviderError && error.code === 'cancel')
+  await quota.acquire(Date.now() + 3000, new AbortController().signal)
+  assert.ok(Date.now() - started < 1800)
 })
 
 test('Brave source honors a standalone long rate reset before another physical request', async () => {

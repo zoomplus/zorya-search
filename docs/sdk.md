@@ -174,6 +174,29 @@ try {
 
 `dateRange` необязателен. `from` и `through` должны быть реальными календарными датами `YYYY-MM-DD`; `from` не может быть позже `through`. Период передаётся Brave как фильтр обнаружения ссылок, он не подтверждает дату публикации текста и не гарантирует полноту выдачи.
 
+По умолчанию каждый экземпляр `createBraveWebSource` ограничивает частоту запросов независимо. Если приложение владеет несколькими экземплярами в одном процессе Node или его worker threads, оно может явно создать `const quota = createBraveQuotaState()` и передать один и тот же буфер как `sharedQuota` каждому источнику. Владелец передаёт SharedArrayBuffer в каждый worker thread через поддерживаемый Node механизм, например `workerData`; Search не создаёт глобальное состояние и не объединяет разные ключи автоматически. Участникам следует задавать одинаковый `limits.maxRequestsPerSecond`; если настройки различаются, действует более строгий общий интервал. Состояние также передаёт между участниками обнаруженные серверные cooldown и лимиты. Оно предназначено только для сотрудничающих потоков одного процесса: это не межпроцессный или распределённый лимитер. Владелец отвечает за то, какие экземпляры получают буфер; он не содержит ключей Brave.
+
+```ts
+// В главном потоке:
+import { Worker } from 'node:worker_threads'
+import { createBraveQuotaState } from '@zorya/search/providers'
+
+const quota = createBraveQuotaState()
+new Worker(new URL('./search-worker.js', import.meta.url), { workerData: { quota } })
+
+// В search-worker.js:
+import { workerData } from 'node:worker_threads'
+import { createBraveWebSource } from '@zorya/search/providers'
+
+const web = createBraveWebSource({
+  apiKeyEnv: 'BRAVE_SEARCH_API_KEY',
+  limits: { maxRequestsPerSecond: 2 },
+  sharedQuota: workerData.quota,
+})
+```
+
+`sharedQuota` принимает только буфер, созданный `createBraveQuotaState()` текущей совместимой версией SDK; размер, метаданные и версия проверяются при создании источника. Не редактируйте его содержимое вручную. Обычные экземпляры без этого параметра сохраняют отдельные квоты и не делят cooldown.
+
 `searchWeb({ query, limit?, maxChars?, dateRange?, signal? })` возвращает отрывки страниц с canonical URL, content hash, ranking и временными полями. `publishedAt` берётся из даты публикации, явно найденной в документе; `sourceUpdatedAt` — из метаданных даты изменения либо, если их нет, из `Last-Modified`. `fetchedAt` — время, когда Search прочитал документ. Это разные сведения: время чтения не заменяет дату страницы. Ошибки этапов discovery, document, embed и rerank перечислены в `errors`; `partial` сообщает, что не все этапы завершились успешно.
 
 `readWebSource({ url, maxChars?, signal? })` читает один указанный URL и сообщает `truncated`. При owner JSON с `"web": {}` его можно использовать для чтения известной страницы без ключа Brave; runtime и MCP caller всё равно должны разрешать web-операцию. Brave reader разбирает HTML/XHTML, текст, Markdown, JSON, XML, RSS/Atom и PDF с текстовым слоем. Для PDF текст извлекается без OCR; Search не запускает JavaScript и не управляет полноценным браузером. Содержимое ограничено размером ответа и runtime budgets. Превышение лимита страницы может вернуть `DOCUMENT_TOO_LARGE` и сделать результат частичным. В извлечённом тексте сохраняются пробелы и отступы внутри кодовых блоков.

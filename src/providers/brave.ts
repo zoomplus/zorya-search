@@ -57,6 +57,8 @@ export interface BraveWebSourceConfig {
   loader?: WebLoader;
   locale?: string;
   maxSearchRequests?: number;
+  /** Explicit owner-provided state shared only with instances given this same buffer. */
+  sharedQuota?: SharedArrayBuffer;
 }
 
 export function createBraveWebSource(
@@ -86,7 +88,7 @@ export function createBraveWebSource(
   const queue = new Semaphore(lim.concurrency);
   if (!Number.isSafeInteger(maxRequestsPerSecond) || maxRequestsPerSecond < 1 || maxRequestsPerSecond > 100)
     throw new RangeError("Некорректный предел частоты запросов Brave");
-  const quota = new BraveQuota(maxRequestsPerSecond);
+  const quota = new BraveQuota(maxRequestsPerSecond, config.sharedQuota);
   const documentCache = new BraveDocumentCache(128, 16 * 1024 * 1024);
   const stats: ProviderUsage = {
     calls: 0,
