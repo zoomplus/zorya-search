@@ -994,10 +994,25 @@ test('Brave document validators are exact-path scoped and 304 preserves the pars
   let unsolicited304OnRedirect = false
   let raceConditionals = 0
   let cancelCacheRequests = 0
+  let notifyCancelCacheStarted!: () => void
   let releaseStale304!: () => void
   let notifyStale304Started!: () => void
   const stale304Gate = new Promise<void>((resolve) => { releaseStale304 = resolve })
   const stale304Started = new Promise<void>((resolve) => { notifyStale304Started = resolve })
+  const firstCancelCacheRequestStarted = new Promise<void>((resolve) => { notifyCancelCacheStarted = resolve })
+  const waitForServerSignal = async (signal: Promise<void>, timeoutMs: number, message: string) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        signal,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
   const server = createServer(async (request, response) => {
     const path = request.url ?? '/'
     const etag = request.headers['if-none-match']
@@ -1031,6 +1046,7 @@ test('Brave document validators are exact-path scoped and 304 preserves the pars
       if (cancelCacheRequests === 1) {
         response.write('partial')
         response.flushHeaders()
+        notifyCancelCacheStarted()
       } else {
         response.end('complete source')
       }
@@ -1142,11 +1158,17 @@ test('Brave document validators are exact-path scoped and 304 preserves the pars
     assert.equal(revalidated.text, 'race body v2')
     const cancelled = new AbortController()
     const cancelledRead = web.fetchDocument(`${origin}/cancel-cache`, cancelled.signal)
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    await waitForServerSignal(
+      firstCancelCacheRequestStarted,
+      1000,
+      'Timed out waiting for the first cancellation cache request',
+    )
     cancelled.abort()
     await assert.rejects(cancelledRead, (error: unknown) => error instanceof ProviderError && error.code === 'cancel')
+    assert.equal(cancelCacheRequests, 1)
     const completedRead = await web.fetchDocument(`${origin}/cancel-cache`, new AbortController().signal)
     assert.equal(completedRead.text, 'complete source')
+    assert.equal(cancelCacheRequests, 2)
     assert.equal(seen.at(-1)?.etag, undefined)
   } finally {
     releaseStale304()
