@@ -27,6 +27,56 @@
 
 В версии `v0.1.6` штатный `createCodeIndex` предоставляет необязательный `findCodeDuplicates({ root, paths?, language?, sourceKind?, matchMode?, minTokens?, minOccurrences?, limit?, maxOccurrencesPerGroup?, signal? })`; архив `v0.1.5` этой capability не содержит. Старые пользовательские реализации `CodeIndex` без этого метода остаются структурно совместимыми; runtime сообщает `CAPABILITY_DISABLED`, если адаптер не предоставляет capability. По умолчанию проверяются только индексированные implementation-файлы, минимум 12 токенов и два вхождения; ответ включает `supportedLanguages: ['JavaScript', 'TypeScript']` для фактически поддерживаемых JS/TS семейств. Режим `exact` сохраняет имена, `renamed` нормализует только локальные/параметрические символы, опознанные TypeScript checker. Ответ содержит snapshot identity, полный файл hash, символы и диапазоны функций, счётчики пропусков и признаки усечения; для каждой группы `occurrenceCount` показывает общее число совпадений даже при ограниченном списке `occurrences`. Это механические кандидаты по телам функций, не доказательство семантической эквивалентности, оценка экономии LOC или автоматическое объединение. Сверяйте весь диапазон через `readSource` перед использованием; capability не вызывает модели или провайдеры. Исторические квитанции не квалифицируют `v0.1.6`; актуальный статус выпуска и архива указан на [странице релиза `v0.1.6`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6).
 
+### Следующий source candidate: статический граф символов
+
+Описанные ниже методы являются возможностями source candidate SDK `22b3773` и MCP `60659ba`. Опубликованный пакет `@zorya/search` версии `0.1.6` их не содержит; это описание не объявляет новый релиз и не меняет контракт установленного архива. Проверяйте capability по установленным типам: все четыре метода `CodeIndex` необязательны, поэтому старые пользовательские adapters остаются совместимыми.
+
+`indexRepository` штатного индекса уже публикует символы и статические связи вместе с текущим индексом. Отдельный `indexCodeSymbols({ root, signal? })` нужен для явного заполнения или обновления metadata у уже существующего актуального snapshot. Он требует текущий базовый индекс и те же root, конфигурацию исключений и лимиты; не заменяет embedding-профиль, chunks, векторы или существующие поисковые данные и не вызывает embedding/rerank-модели. Чтение metadata ничего не индексирует автоматически.
+
+`findCodeSymbols({ root, query?, name?, path?, language?, sourceKind?, limit?, cursor?, signal? })` ищет объявления по подстроке имени или `qualifiedName`, пути и языку. Текущий extractor анализирует JavaScript/TypeScript; unsupported files видны в coverage. `query` имеет приоритет над `name`; без фильтра `sourceKind` включены все категории. Категории `implementation`, `tests`, `documentation` и `all` определяются эвристически по путям. По умолчанию возвращается до 20 символов, максимум — 100. `findCodeReferences({ root, symbolId, direction?, kind?, limit?, cursor?, signal? })` по умолчанию ищет входящие связи, до 50 за страницу (максимум 200); `kind` может быть `reference`, `call`, `construct` или `export`. `traceCodeCalls({ root, symbolId, direction?, maxDepth?, maxNodes?, maxEdges?, signal? })` обходит только статические `call` и `construct` связи: направление по умолчанию `outgoing`, глубина — 2 (допустимо 0–4), узлы — 64, рёбра — 128; верхние границы числа узлов и рёбер — 256 и 1024.
+
+Каждый ответ содержит source identity и профиль анализа: версию extractor и TypeScript, hash compiler options, профиль библиотек и лимиты анализа. `analysis.state` различает `indexed`, `not_indexed`, `partial` и `unavailable`; отсутствие базового или актуального source index по-прежнему является типизированной ошибкой. `partial` и счётчики покрытия показывают parse errors, неподдержанные и усечённые файлы. Список `coverage` ограничен 50 файлами; на файл возвращается до пяти diagnostics длиной до 512 символов. `coverageTotalFiles`, `coverageOmittedFiles` и `coverageCounts` дают сводные числа. `unresolvedReferenceCount` считает рёбра с `targetKind: 'unresolved'`; `unresolvedCallCount` — их подмножество для `call` и `construct`. `targetKind: 'external'` обозначает отдельный внешний target, а не ещё одно unresolved-ребро. Состояние `indexed`/`complete` означает, что обработана объявленная поддерживаемая область анализа, но не доказывает полноту динамических привязок или runtime-поведения.
+
+У `findCodeSymbols` и `findCodeReferences` `truncated`/`nextCursor` относятся к ограниченной странице результата. `analysis.truncation` и coverage относятся к самим пределам извлечения; большое количество страниц не отменяет отсутствующие, неподдержанные или усечённые файлы.
+
+Символы и рёбра относятся к исходному пути и диапазону, хранят file hash и полную identity snapshot. `targetKind` различает конкретную цель, contract, внешнюю и unresolved цель. Динамический dispatch, dependency injection и runtime bindings могут остаться неразрешёнными; не выводите из отсутствия ребра, что вызова нет. Cursor привязан к snapshot, профилю анализа и фильтрам запроса; не переносите его на другой snapshot, профиль или набор фильтров. Перед использованием диапазона перечитайте текущий текст через `readSource` с identity snapshot и самостоятельно решите, соответствует ли он задаче.
+
+Ниже показан явный backfill для уже существующего current base index. Функция получает настроенный владельцем `CodeIndex` и не создаёт его с новыми exclusions, limits или embedding profile. Передайте действующий экземпляр и разрешённый root из вызывающей стороны; владелец закрывает индекс и принадлежащую ему database после завершения всех операций. Для нового или изменившегося дерева сначала используйте `indexRepository`; не вызывайте refresh перед каждым чтением.
+
+```ts
+import type { CodeIndex } from '@zorya/search/code'
+
+async function lookupSymbol(index: CodeIndex, root: string, name: string) {
+  const base = await index.indexStatus(root)
+  if (!base.identity) throw new Error('Нет текущего индекса исходников')
+
+  const findSymbols = index.findCodeSymbols?.bind(index)
+  if (!findSymbols) return { state: 'unsupported' as const }
+
+  let result = await findSymbols({ root, name, limit: 20 })
+  if (result.analysis.state === 'not_indexed') {
+    const refresh = index.indexCodeSymbols?.bind(index)
+    if (!refresh) return { state: 'unsupported' as const }
+    await refresh({ root })
+    result = await findSymbols({ root, name, limit: 20 })
+  }
+
+  const symbol = result.symbols[0]
+  const source = symbol
+    ? await index.readSource({
+        root,
+        path: symbol.location.path,
+        lineStart: symbol.location.lineStart,
+        lineEnd: symbol.location.lineEnd,
+        snapshotId: result.analysis.identity.snapshotId,
+      })
+    : undefined
+  return { analysis: result.analysis, symbol, source }
+}
+```
+
+Если metadata capability отсутствует, используйте доступные `searchCode`/`readSource` или сообщите вызывающей стороне, что локальный adapter не поддерживает эту функцию. Не подменяйте отсутствие порта пустым полным результатом.
+
 `createCodeContext` использует необязательную capability `CodeIndex.withReadSnapshot`, если её предоставляет штатный `createCodeIndex`. Scope принадлежит одному вызову контекста и его root. Он повторно использует загруженный корпус для нескольких запросов, проверяет свежесть исходников при чтении и перепроверяет identity перед возвратом. Строки scope освобождаются после завершения операции. Старые пользовательские реализации с `indexStatus`, `searchCode`, `readSource` и `relatedCode` остаются совместимы и работают без scope.
 
 ### Владение базой и закрытие ресурсов
@@ -112,6 +162,7 @@ try {
 ### Методы `CodeIndex`
 
 - `indexRepository({ root, signal? })` индексирует разрешённое дерево и возвращает `CodeIndexStatus`. Идентичность результата включает `repoId`, `worktreeId`, `snapshotId` и `contentHash`.
+- В source candidate методы `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences` и `traceCodeCalls` являются необязательными портами; подробности, profile/cursor provenance и лимиты приведены в разделе выше. Типы `CodeSymbol`, `CodeSymbolReference`, `CodeSymbolAnalysisStatus` и result DTO экспортируются из `@zorya/search/code` этого candidate.
 - `indexStatus(root, signal?)` возвращает текущий статус или пустую identity, если usable snapshot отсутствует. `denseAvailable` и `denseDisabledReason` показывают состояние vector-пути.
 - `searchCode({ root, query, paths?, language?, sourceKind?, limit?, mode?, signal? })` возвращает `{ hits, identity, degraded, degradedReason }`. `language` принимает точный сохранённый идентификатор расширения либо распространённое имя (`typescript`, `javascript`, `python`, `markdown`); имя сопоставляется с сохранёнными вариантами расширений и не меняет `CodeHit.language`. `sourceKind` — `implementation`, `tests`, `documentation` или `all`; пропуск сохраняет полный прежний поиск. Классификация основана на соглашениях о путях: тестовые каталоги и `.test`/`.spec` файлы относятся к тестам, документационные каталоги и текстовые форматы — к документации, остальные индексированные файлы — к реализации. При необходимости ищите во всех категориях. Каждый hit несёт путь, строки, `snapshotId`, хеш chunk и сведения lexical/dense/rerank ранжирования. По умолчанию limit `10`; без моделей режим по умолчанию lexical. Явный `mode: 'lexical'` не вызывает embedding/rerank.
 
