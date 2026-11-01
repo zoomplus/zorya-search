@@ -22,6 +22,11 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
   const beta = join(dir, 'beta')
   await Promise.all([mkdir(alpha), mkdir(beta), mkdir(join(dir, 'state'))])
   await writeFile(join(alpha, 'alpha.ts'), 'export const alphaNeedle = "alpha"\n')
+  await writeFile(
+    join(alpha, 'duplicates.ts'),
+    'export function duplicateAlpha(input:number){const value=input+7;return value*3}\n' +
+      'export function duplicateBeta(source:number){const result=source+7;return result*3}\n',
+  )
   await writeFile(join(beta, 'beta.ts'), 'export const betaNeedle = "beta"\n')
   const tokens = new Map([
     [
@@ -154,9 +159,18 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal(installedManifest.name, '@zorya/search')
     assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
-    assert.equal(listed.tools.length, 13)
+    assert.equal(listed.tools.length, 14)
     assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)
     assert.ok(listed.tools.some((tool) => tool.name === 'search_code'))
+    assert.ok(listed.tools.some((tool) => tool.name === 'find_code_duplicates'))
+    assert.equal(
+      listed.tools.find((tool) => tool.name === 'find_code_duplicates')?.annotations?.readOnlyHint,
+      true,
+    )
+    assert.equal(
+      listed.tools.find((tool) => tool.name === 'find_code_duplicates')?.annotations?.openWorldHint,
+      false,
+    )
     assert.equal(
       listed.tools.find((tool) => tool.name === 'index_repository')?.annotations?.readOnlyHint,
       false,
@@ -191,6 +205,21 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.match(JSON.stringify(result), /alpha\.ts/)
     assert.ok(result.structuredContent && typeof result.structuredContent === 'object')
     assert.ok('identity' in result.structuredContent)
+    const duplicates = await modern.callTool({
+      name: 'find_code_duplicates',
+      arguments: { rootId: 'alpha' },
+    })
+    assert.notEqual(duplicates.isError, true)
+    const duplicateGroups = (
+      duplicates.structuredContent as {
+        groups?: Array<{ occurrences: Array<{ path: string }> }>
+      }
+    ).groups
+    assert.ok(
+      duplicateGroups?.some((group) =>
+        group.occurrences.some((item) => item.path === 'duplicates.ts'),
+      ),
+    )
     const disabled = await modern.callTool({
       name: 'search_web',
       arguments: { query: 'offline only' },
@@ -209,6 +238,11 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       arguments: { rootId: 'beta', query: 'betaNeedle', mode: 'lexical' },
     })
     assert.equal(denied.isError, true)
+    const duplicateRootDenied = await modern.callTool({
+      name: 'find_code_duplicates',
+      arguments: { rootId: 'beta' },
+    })
+    assert.equal(duplicateRootDenied.isError, true)
     const malformed = await modern.callTool({
       name: 'search_code',
       arguments: { rootId: 'alpha', query: 'alphaNeedle', mode: 'lexical', root: '/etc' },
