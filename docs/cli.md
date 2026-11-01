@@ -1,6 +1,6 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`.
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Source candidate `0a584e6` добавляет opt-in команду `reuse` и настройку Jev; GitHub archive `v0.1.6` этого не содержит, npm package пока не опубликован. Параметры и миграция описаны в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
@@ -76,7 +76,7 @@ Watch включается только явным `--watch`; `--watch-interval-
 
 Визуальный preset независим и включается только явным `--visual-env NAME`: `voyageai/voyage-multimodal-3.5`, 1024 dimensions, top 5. Он сохраняется в `mechanism.visual.secret` и не влияет на кодовый профиль; TTY-мастер также предлагает visual-only режим. Для кода top-level OpenAI-compatible embedding доступен как явно заданный custom profile: `--custom-embedding-endpoint HTTPS_URL --custom-embedding-profile ID --custom-embedding-model MODEL --custom-embedding-dimensions N --custom-embedding-env NAME`. Он конфликтует с code preset, чтобы не смешивать embedding spaces. Web-профиль настраивается отдельно, как описано выше.
 
-Classifier задаётся через `--classifier-model MODEL --classifier-env NAME`. TTY-мастер сообщает о возможной отправке данных и расходах, отдельно предлагает включить поиск ссылок и спрашивает модель для текста страниц; ключи через prompt не принимаются. Исторический synthetic smoke через установленный Search и OpenRouter проверял только выбранные code и visual запросы. Он относится к baseline на 2026-11-01 и не квалифицирует последующие Brave изменения или качество web-поиска.
+Jev classification и reuse включаются при создании профиля через `--jev-env NAME`; runtime использует только `typesafe/jev-1.14`. Совместимые `--classifier-model MODEL --classifier-env NAME` принимают только этот model ID и несовместимы с `--jev-env`. Search хранит имя environment variable, не значение ключа. Чтобы выполнить reuse для уже разрешённого root, source candidate принимает `reuse --config PATH --root-id ID --query TEXT`; вызов и limits описаны в [руководстве Jev](jev-classification.md). Эта команда отсутствует в archive `v0.1.6`.
 
 Пути конфигурации и данных по умолчанию находятся в пользовательских каталогах ОС и вне индексируемого корня. Для явного профиля службы задайте `--config PATH`, `--root PATH` и при необходимости `--data PATH`. Перед записью конфигурация проверяется общей строгой runtime-схемой; CLI не поддерживает отдельную схему credentials. Если конфигурация уже существует, setup завершится явной ошибкой и не заменит её; выберите новый путь либо отредактируйте профиль отдельно. Повторная установка пакета не удаляет индекс.
 
@@ -87,6 +87,7 @@ Classifier задаётся через `--classifier-model MODEL --classifier-en
 - `index [--background]` — начать или переиспользовать runtime job первого настроенного корня. По умолчанию команда ждёт финальный статус; `--background` сразу возвращает admission и `jobId`.
 - `search --query TEXT [--mode lexical|hybrid]` — выполнить поиск через MCP операцию Search.
 - `context --query TEXT` — запросить ограниченный контекст через ту же операцию Search.
+- `reuse --config PATH --root-id ID --query TEXT` — в source candidate вызвать `get_reuse_context`; требуется Jev capability и grant `read` плюс `classify`. Не входит в archive `v0.1.6`.
 - `root-add --root-id ID --root PATH [--watch] [--watch-interval-ms N]` — добавить корень. Watch вступает в силу при следующем запуске службы; конфигурация не перезаписывается при активном владельце.
 - `serve` — запустить локальную службу на loopback в foreground. При ручном запуске CLI сам создаёт приватные owner и control секреты; внутренние параметры секретных файлов используются только launcher-ом. На Node 24 для этого ограниченного workaround можно запустить entry как `node --wasm-wrapper-tiering-budget=1000000000 <entry> serve --config <path>`; обычная команда `zorya-search serve` сохраняет стандартные настройки Node. Команды, автоматически создающие владельца службы, применяют флаг к собственному Node 24 daemon.
 - `mcp` — предоставить MCP stdio и подключиться к общей локальной службе. Данные протокола идут только в stdout; диагностика — в stderr.

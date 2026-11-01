@@ -18,10 +18,10 @@ It is useful for questions such as â€œwhere is this initiative trigger handled?â
 | --- | --- |
 | Find code and verify it | Lexical or configured embedding-backed retrieval, current source reads, bounded context, paths, line ranges, and snapshot identity. |
 | Explore code structure | Duplicate candidates in release `v0.1.6`; current-main source adds exact symbol lookup, static references/call tracing, and opt-in logical context. |
-| Retrieve other sources | Optional Brave web discovery and page reading; optional classification and caller-provided visual references. |
+| Retrieve other sources | Optional Brave web discovery and page reading; classification (pinned Jev in current source candidate) and caller-provided visual references. |
 | Connect an existing client | Node.js SDK, local stdio/loopback MCP, or owner-hosted remote MCP with separately configured OAuth. |
 
-The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. A separate project-text index and caller-selected multi-query web discovery are documented for current source, but are not in archive `v0.1.6`. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
+The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. Current source candidate `0a584e6` adds the shared Jev Decisions port, `getReuseContext` SDK and `get_reuse_context` MCP tool, plus the large symbol-limit correction. These additions, like the separate project-text index and caller-selected multi-query web discovery, are not in archive `v0.1.6`; npm publication is pending. See the [Jev and reuse guide](docs/jev-classification.md) for migration and limits. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
 
 ## Install the available release
 
@@ -100,7 +100,7 @@ The sample is read-only with respect to source files and does not call an embedd
 
 ## Which version has which features?
 
-The GitHub archive `v0.1.6` includes code search/source reading/context, duplicate candidates, indexing/status, and optional web and classification capabilities. Current main adds exact symbol/reference queries, bounded static call tracing, and `includeLogical` for `getCodeContext` / `get_code_context`. `includeLogical` is off by default and independent of `includeRelated`; its coverage and omissions are explicit, and it does not claim complete runtime calls or dynamic dispatch. These additions are source-only and are not in archive `v0.1.6`.
+The GitHub archive `v0.1.6` includes code search/source reading/context, duplicate candidates, indexing/status, and optional web and classification capabilities. Current source adds exact symbol/reference queries, bounded static call tracing, `includeLogical`, and opt-in Jev-backed reuse context. `includeLogical` is off by default and independent of `includeRelated`; its coverage and omissions are explicit, and it does not claim complete runtime calls or dynamic dispatch. These additions are source-only and are not in archive `v0.1.6`.
 
 Archive `v0.1.6` does not contain the project-text index. Current source has a separate capability for documentation, rules, and skills in supported text formats including `.md`, `.mdc`, `.txt`, `AGENTS.md`, and `SKILL.md`. See the [project text and web discovery guide](docs/project-text.md) for SDK, CLI, and MCP examples, and the [capability guide](docs/capabilities.md) for version availability.
 
@@ -121,6 +121,6 @@ Archive `v0.1.6` does not contain the project-text index. Current source has a s
 
 ## Project status
 
-The source and package checks passed for the current main snapshot, including the full CI matrix. That verifies the tested source/package scope; it does not claim hosted ChatGPT, user-device/game, provider-quality, or full-program acceptance. The public GitHub artifact remains `v0.1.6`; npm publication has not happened. Use Search when its repository index, current-source identity, or configured retrieval capabilities help. Ordinary search and file-reading tools may be all a task needs.
+The historical main snapshot passed its recorded source and package checks. The new Jev/reuse candidate has its own scoped evidence and remaining gates; neither statement claims hosted ChatGPT, user-device/game, paired agent quality, or full-program acceptance. The public GitHub artifact remains `v0.1.6`; npm publication has not happened. Use Search when its repository index, current-source identity, or configured retrieval capabilities help. Ordinary search and file-reading tools may be all a task needs.
 
 MIT License. See [LICENSE](LICENSE).

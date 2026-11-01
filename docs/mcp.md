@@ -1,5 +1,9 @@
 # MCP и удалённая служба
 
+## Jev reuse context — source candidate
+
+В source candidate `0a584e6` зарегистрирован `get_reuse_context`. Tool требует разрешения `read` и `classify` одновременно и принимает `rootId`, `query`, optional `maxChars` до 48 000 и `limit` до 40. `maxChars` ограничивает текст контекста, а не весь структурированный ответ с metadata. Serialized MCP envelope имеет отдельный предел 1 000 000 bytes; превышение возвращает `RESPONSE_TOO_LARGE`. Без любого разрешения filtered сервер скрывает tool и сообщает `reuseContext: false`; используются существующие OAuth scopes `zorya:read` и `zorya:classify`. Детали обработки, SDK/CLI миграция и статус опубликованных версий — в [руководстве Jev](jev-classification.md). Этот контракт отсутствует в архиве `v0.1.6` и пока не опубликован в npm.
+
 Пакет предоставляет `@zorya/search/mcp` и `@zorya/search/daemon`. Daemon владеет одним `SearchRuntime` и его хранилищем. MCP transport вызывает runtime через строгие схемы запросов и возвращает найденный контекст. Подключение клиента настраивается отдельно. Импорт модуля сам не запускает службу или индексацию.
 
 ## Инструменты
@@ -99,7 +103,7 @@ Search не исправляет код. Найденные фрагменты, 
 }
 ```
 
-Значения `allowedOrigins` — только origin (схема + host + необязательный port), без path и query. `resource` — точный HTTPS URL `https://<public-host>[:port]/mcp`; порт в URL должен совпадать с TLS listener и переданным proxy `Host`. `issuer` и `jwksUrl` должны быть HTTPS. Доступны операции: `read`, `index`, `web`, `classify`, `visual`. Для web чтения добавьте `web`; для изменения индекса — `index`. Токен должен включать соответствующие `zorya:<operation>` scopes, а политика провайдера входа должна отдельно разрешать выдачу этих scopes. Не выдавайте шире нужного.
+Значения `allowedOrigins` — только origin (схема + host + необязательный port), без path и query. `resource` — точный HTTPS URL `https://<public-host>[:port]/mcp`; порт в URL должен совпадать с TLS listener и переданным proxy `Host`. `issuer` и `jwksUrl` должны быть HTTPS. Доступны операции: `read`, `index`, `web`, `classify`, `visual`. Для web чтения добавьте `web`; для изменения индекса — `index`. Source candidate `get_reuse_context` требует одновременно `read` и `classify`, а OAuth scopes остаются `zorya:read` и `zorya:classify`. Токен должен включать соответствующие `zorya:<operation>` scopes, а политика провайдера входа должна отдельно разрешать выдачу этих scopes. Не выдавайте шире нужного.
 
 Runtime-конфигурацию можно создать интерактивно или задать явно. Для простого профиля:
 

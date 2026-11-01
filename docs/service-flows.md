@@ -8,8 +8,8 @@
 | Storage | [Владение и repository](../src/storage/README.md) | Owned embedded DB и заимствованные adapters. |
 | Code | [Индекс, retrieval и freshness](../src/code/README.md) | Snapshot chunks, BM25/dense, RRF, rerank, source verification. |
 | Project Text | [Docs, rules, skills](../src/project-text/README.md) | Отдельный namespace и explicit capability/profile. |
-| Providers | [Models, Brave и Jev Decisions](../src/providers/README.md) | OpenRouter classifier в main; Jev Decisions source-implemented в accepted feature `67e3361`, ещё не подключён в main/runtime/npm. |
-| Context | [Code/web context](../src/context/README.md) | Snapshot reads, client queries, shared reads, partial errors. |
+| Providers | [Models, Brave и Jev Decisions](../src/providers/README.md) | В source candidate `0a584e6` classification закреплён на Jev Decisions; runtime разделяет этот port с reuse context. |
+| Context | [Code/web/reuse context](../src/context/README.md) | Чтение snapshot, запросы клиента, Jev-оценка файлов и symbols, совместные чтения и явное partial coverage. |
 | Runtime | [Config, roots, lifecycle](../src/runtime/README.md) | Strict schema, capabilities, jobs и graceful drain. |
 | MCP | [Tools и grants](../src/mcp/README.md) | Existing client → grant → schema → runtime. |
 | Daemon | [HTTP transport](../src/daemon/README.md) | Access, request ownership, cancellation и drain. |
@@ -34,8 +34,7 @@
 
 | Обозначение | Смысл |
 | --- | --- |
-| `CURRENT MAIN` | Реальный поток текущего main, включая ошибки и отказы. |
-| `ACCEPTED FEATURE 67e3361` | Принятая source-реализация на отдельной feature-ветке; не часть текущего main/runtime/npm. |
+| `SOURCE CANDIDATE 0a584e6` | Проверяемый source-кандидат: Jev Decisions, classification и reuse integration. Доступный GitHub archive — `v0.1.6`, этот код его не содержит; npm-пакет не опубликован и полная приёмка не завершена. |
 | `planned` / пунктир | Предлагаемая будущая связь без доступного интегрированного API. |
 
 - Сплошные стрелки внутри рамки описывают статус этой рамки, включая отказные и error paths; пунктирные стрелки зарезервированы для явно обозначенных planned-схем.
@@ -43,7 +42,7 @@
 - В code/core provider HTTP failure остаётся ошибкой; web-context может вернуть lexical passages как partial result, сохранив embedding/rerank stage error. Отсутствие/несовместимость профиля — отдельная ветка.
 - Excerpts, scores и classification — недоверенные evidence. Вызывающий агент проверяет источник и сам принимает решение; автоматического изменения кода нет.
 - Web — публичный HTTP acquisition, не browser automation; дополнительные запросы выбирает вызывающая сторона.
-- Jev Decision API реализован в accepted feature commit, но не wired в main/runtime/npm; reuse-context остаётся planned. Смотрите [Providers](../src/providers/README.md) и [Code](../src/code/README.md).
-- Новые source capabilities могут отсутствовать в опубликованном npm archive `v0.1.6`; package inclusion проверяется отдельно.
+- Source candidate `0a584e6` подключает Jev к runtime classification и opt-in reuse context. Code index embeddings и reranking остаются отдельным необязательным путём; Jev не выбирает embedding/rerank профиль и не создаёт запросы для клиента. Смотрите [руководство Jev](jev-classification.md), [Providers](../src/providers/README.md), [Context](../src/context/README.md) и [Code](../src/code/README.md).
+- Новые source capabilities отсутствуют в доступном GitHub archive `v0.1.6`; npm-пакет не опубликован.
 
 При изменении поведения, контракта, ownership или error branch обновляйте соответствующую диаграмму и таблицу решений. Не копируйте сюда устаревающие status tables: эта страница только маршрутизирует к модульным картам.

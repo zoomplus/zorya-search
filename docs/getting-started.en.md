@@ -1,6 +1,6 @@
 # Getting started with Zorya Search
 
-This guide installs the available GitHub archive `v0.1.6`. New APIs on current main are documented separately and are not in that archive. The npm registry package has not been published.
+This guide installs the available GitHub archive `v0.1.6`. Jev classification and reuse context exist only in source candidate `0a584e6`, not in that archive. The npm registry package has not been published. For a source checkout, read the [Jev and reuse guide](jev-classification.md); the archive commands below do not install the candidate API.
 
 ## 1. Install the release archive
 

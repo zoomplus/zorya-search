@@ -47,16 +47,24 @@ flowchart TD
 
 Профиль `voyageai/voyage-code-4` 1024d — необязательный конфигурационный preset; его выбор требует явного runtime config. Текущий legacy code profile не задаёт Voyage `input_type`; query-role change остаётся экспериментом. Необязательный `voyageai/rerank-2.5-lite` получает fusion-кандидатов и только меняет их порядок; место в списке не подтверждает истинность или корректность кандидата. AST chunks, symbols, references и duplicate groups — структурные/текстовые evidence, не вывод Jev.
 
-Планируемое автоматическое переиспользование существующего кода сейчас не подключено; пунктир показывает только proposed flow:
+В source candidate `0a584e6` необязательный `createReuseContext` связывает существующий индекс кода с Jev. Схема показывает границы этой опции:
 
 ```mermaid
 flowchart LR
- A["Caller request"] -.-> B["Code search / graph facts"]
- B -.-> C["Jev file/symbol Choices"]
- C -.-> D["Verify ranges + tests/contracts/duplicate evidence"]
- D -.-> E["Caller decides next action"]
+ A["Запрос клиента + разрешённый root"] --> B["Поиск кода / факты графа в одном snapshot"]
+ B --> C["Фрагменты с хешами + факты о символах"]
+ C --> D{"Общий Jev port доступен?"}
+ D -->|"да"| E["Noul оценка файлов + native Choice символов"]
+ D -->|"нет / invalid"| F["unassessed / unavailable"]
+ E --> G["Ограниченные кандидаты + omissions / coverage"]
+ F --> G
+ G --> H["Клиент проверяет исходники/тесты/контракты и принимает решение"]
 ```
 
-Нынешние search/duplicate/symbol API существуют, но такого собранного контекста не создают. Caller сопоставляет typed choices с проверенными исходниками и решает, нужен ли код.
+Reuse не индексирует проект заново, не меняет embedding/rerank профиль и не редактирует код. По умолчанию он выбирает не более 24 файлов-кандидатов, ограничивает текст контекста 48 000 символами и операцию 60 секундами; неполное покрытие и omissions входят в ответ. Общий источник сведений об API и миграции — [руководство Jev](../../docs/jev-classification.md). Эта функция доступна только в исходниках: archive `v0.1.6` её не содержит.
+
+Symbol metadata учитывает настроенное `maxFiles` code index при построении, чтении и проверке актуальности. Значение по умолчанию остаётся 5 000, а заданный предел до 20 000 не подменяется скрытой границей 5 000 при обработке symbols. Неподдерживаемые типы файлов и неразрешённые статические связи остаются в partial coverage; `complete` не означает полноту runtime-графа.
+
+Embeddings и reranking — самостоятельные необязательные retrieval-порты. Jev оценивает смысл запроса и кандидатов только в путях reuse/classification; он не выбирает retrieval profile и не доказывает истинность или безопасность найденного кода.
 
 Действующие операции включают `indexRepository`, `searchCode`, `readSource`, `findCodeDuplicates`, `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences`, `traceCodeCalls`, `relatedCode`. Исходники: [`index.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/index.ts), [`ranking.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/ranking.ts), [`duplicates.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/duplicates.ts), [`schema.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/schema.ts).

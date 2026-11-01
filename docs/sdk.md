@@ -14,7 +14,7 @@
 | `@zorya/search/context` | `createCodeContext` и его DTO |
 | `@zorya/search/context/web` | `createWebSearch` и DTO web-контекста |
 | `@zorya/search/context/classify` | `createClassificationTool` и его limits/profile |
-| `@zorya/search/providers` | OpenRouter/OpenAI-compatible model adapters, Brave web source и classifier |
+| `@zorya/search/providers` | OpenRouter/OpenAI-compatible retrieval adapters, Brave web source и classifier (Jev в current source candidate) |
 | `@zorya/search/visual` | opt-in `createVisualSearch` и visual DTO |
 | `@zorya/search/runtime` | runtime factory и конфигурация разрешённых roots |
 | `@zorya/search/mcp` | MCP server, tool contracts и stdio proxy |
@@ -23,6 +23,12 @@
 Корневой entry не импортирует runtime-модули этих специализированных поверхностей за потребителя. Текущий `package.json` задаёт ESM exports и требует Node.js `>=20.19.0`.
 
 Для большинства библиотечных потребителей начни с `@zorya/search` и нужных subpaths. Для локального MCP сценария используй daemon, который единолично владеет каталогом embedded database, и `@zorya/search/mcp` как transport adapter. Не запускай второй владелец того же data directory. Настройка конкретного клиента и CLI описана отдельно в [руководстве MCP](mcp.md) и [руководстве CLI](cli.md).
+
+### Jev и контекст повторного использования — source candidate
+
+В source candidate `0a584e6` `@zorya/search/providers` экспортирует `createJevDecisions` и `createJevClassifier`, а `@zorya/search/context` — `createReuseContext`. Runtime разделяет один Decisions port между classification и reuse. `getReuseContext({ root, query, maxChars?, limit?, signal? })` возвращает bounded source context, Jev-оценку релевантности файлов/символов и явные coverage/omissions; вызывающая сторона проверяет evidence. Значения по умолчанию, hard limits, лимит calls и migration со старого классификатора собраны в [руководстве Jev](jev-classification.md).
+
+Эти source candidate функции отсутствуют в GitHub archive `v0.1.6`; npm package пока не опубликован. Пример импорта из незапакетованного candidate нельзя выполнять через `npx` или считать доступным для версии из архива.
 
 ## Индекс кода и контекст
 
@@ -278,7 +284,7 @@ Web-поиск и чтение источника ничего не записы
 
 ## Классификация по критериям вызывающей стороны
 
-`createClassificationTool({ classifier, limits? })` принимает `Classifier` и возвращает `profile`, `classify(...)` и `close()`. Запрос содержит `text`, разрешённые `labels`, обязательные правила `criteria`, optional `examples`, `allowMultiple`, `allowAbstain` и `signal`. `criteria` задаёт вызывающая сторона; адаптер применяет эти правила только к классификации переданного текста. DTO строго валидируется: итоговые labels должны принадлежать предложенному набору; результат может воздержаться, confidence может отсутствовать, а evidence и uncertainty возвращаются вызывающей стороне. При adapter `createOpenRouterClassifier({ baseUrl, model, apiKeyEnv })` текст отправляется провайдеру только при фактическом `classify`. Текст и примеры являются данными: они не переопределяют инструкции вызывающей стороны, а результат не гарантированно истинен.
+`createClassificationTool({ classifier, limits? })` принимает `Classifier` и возвращает `profile`, `classify(...)` и `close()`. Запрос содержит `text`, разрешённые `labels`, обязательные правила `criteria`, optional `examples`, `allowMultiple`, `allowAbstain` и `signal`. `criteria` задаёт вызывающая сторона; DTO строго валидируется, итоговые labels должны принадлежать предложенному набору. В source candidate `createOpenRouterClassifier({ baseUrl, model, apiKeyEnv })` сохраняется ради совместимости имён, но принимает только Jev `typesafe/jev-1.14`; произвольные OpenRouter chat model больше не поддерживаются Search semantic boundary. Для нового кода используй `createJevClassifier` / `createJevDecisions` и сверяй условия migration в [руководстве Jev](jev-classification.md). Текст и примеры являются данными; результат не гарантированно истинен.
 
 ## Визуальный поиск
 

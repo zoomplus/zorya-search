@@ -1,22 +1,24 @@
 # Providers: модели, web и решения Jev
 
-Provider получает явные данные и конфигурацию от вызывающего слоя. Он возвращает ограниченный типизированный ответ или ошибку; provider не выбирает, что клиент должен искать или менять. В `main` классификация пока проходит через `createOpenRouterClassifier` и `/chat/completions`. Jev foundation принят отдельным исходным feature commit, но не подключён к main/runtime/npm.
+Provider получает явные данные и конфигурацию от вызывающего слоя. Он возвращает ограниченный типизированный ответ или ошибку; provider не выбирает, что клиент должен искать или менять. В source candidate `0a584e6` runtime создаёт один pinned Jev Decisions port, который разделяют classification и reuse. Embedding и rerank остаются отдельными retrieval-портами.
 
-## Текущие provider-потоки в main
+## Provider-потоки source candidate
 
 ```mermaid
 flowchart TD
- subgraph main["CURRENT MAIN"]
-  A["Явный запрос runtime"] --> B{"Настроенный port"}
-  B -->|"embedding"| C["OpenRouter / OpenAI-compatible embedding"]
-  B -->|"rerank"| D["OpenRouter reranker"]
-  B -->|"classify"| E["createOpenRouterClassifier"]
-  B -->|"web discovery"| F["Brave Search API"]
-  B -->|"web read"| G["canonicalPublicUrl + public-address policy"]
+ A["Явный запрос runtime"] --> B{"Настроенный отдельный port"}
+ B -->|"embedding"| C["OpenRouter / OpenAI-compatible embeddings"]
+ B -->|"rerank"| D["OpenRouter reranker"]
+ B -->|"classification / reuse"| E["Общий createJevDecisions port"]
+ B -->|"web discovery"| F["Brave Search API"]
+ B -->|"web read"| G["canonicalPublicUrl + public-address policy"]
   C --> H["Проверить schema, размерность и model identity"]
   D --> H
-  E --> I["chat/completions → validateResponse"]
-  I --> J["ClassificationResult → явный вызвавший слой"]
+  E --> I["/alpha/decisions → validateDecisionResponse"]
+  I --> J{"Явный потребитель"}
+  J -->|"classify"| J1["ClassificationResult → caller"]
+  J -->|"reuse"| J2["Файлы/символы → caller"]
+  E --> U["Один usage ledger: classification + reuse"]
   F --> K["Ограниченные ordered results"]
   G --> L["Отклонить private target → fetch и parse"]
   L --> M["Документ с metadata либо ProviderError"]
@@ -24,23 +26,22 @@ flowchart TD
   H -->|"HTTP / invalid / timeout"| O["Передать ошибку вызывающему коду"]
   F --> O
   G --> O
- end
 ```
 
 | Операция | Что проверяется и кто принимает следующее решение | Исходники |
 | --- | --- | --- |
 | Embedding | Provider проверяет ответ и размерность; вызывающий retrieval строит dense candidates. Ошибка HTTP остаётся ошибкой, не скрытым lexical результатом. | `openrouter.ts`, `runtime/index.ts` |
 | Rerank | Provider возвращает индексы/оценки кандидатов; вызывающий слой проверяет индексы и использует порядок. Оценка не доказывает истинность источника. | `openrouter.ts`, consumers in `core`, `code`, `context` |
-| Classification в main | `createOpenRouterClassifier` формирует запрос к `chat/completions`; критерии, метки и excerpts идут от клиента. Ответ проверяется, а его смысл оценивает caller. | `classifier.ts`, `runtime/index.ts` |
+| Classification и reuse | Оба потребителя используют общий pinned `typesafe/jev-1.14` Decisions port. Вердикт строится Jev; `usage().classification` учитывает их общие вызовы. | `decisions.ts`, `jev-classifier.ts`, `context/reuse.ts`, `runtime/index.ts` |
 | Brave discovery/read | Проверяется публичность URL и ограничения загрузки; discovery/read failure остаётся provider error или этапной partial ошибкой в context. | `brave.ts`, `brave-inflight.ts`, `context/web.ts` |
 
-## Jev Decisions: принятый provider feature, пока отдельно от main
+## Jev Decisions и semantic adapters
 
-Следующая схема относится к исходному feature commit [`67e3361`](https://github.com/zoomplus/zorya-search/commit/67e336111b6644143c6d9774991a3bd418c5c690). Это source-implemented provider foundation; runtime `main` его пока не создаёт и не вызывает. Solid arrows внутри отдельной рамки описывают этот commit, а не текущую main композицию.
+`createJevDecisions` использует `typesafe/jev-1.14`, маршрут TypeSafe без fallback, endpoint `/api/alpha/decisions` и одну попытку транспорта. Ответы и cancellation/timeout проверяются до передачи adapter-у. Полная migration/API-сводка дана в [руководстве Jev](../../docs/jev-classification.md).
 
 ```mermaid
 flowchart TD
- subgraph accepted["ACCEPTED FEATURE 67e3361 — не подключён в main/runtime/npm"]
+ subgraph jev["Jev Decisions port"]
   A["Caller: JSON state + 1..32 Choice / Noul / Score questions"] --> B["snapshotDecisionInput: копия и проверка типов, ключей и бюджета"]
   B --> C["createJevDecisions: typesafe/jev-1.14, TypeSafe route, no fallback"]
   C --> D["Один Decisions request; response проверяется по model/provider и точным question IDs"]
@@ -98,10 +99,10 @@ flowchart TD
 
 | Adapter | Формирование вопросов | Ветвь результата |
 | --- | --- | --- |
-| `createJevClassifier`, `allowMultiple=false` (default) | Один `Choice` по supplied labels; abstain — только если разрешён. `Score` не подключён. | Валидная метка → `ClassificationResult`; отказ → abstain либо typed error; затем локальная проверка результата. |
-| `createJevClassifier`, `allowMultiple=true` | Один `Noul` для каждой supplied label; затем adapter собирает их ответы. | `noul > 0.5` выбирает метку, `< 0.5` исключает, `= 0.5` unresolved. Любой unresolved даёт abstain/error; без unresolved возвращается набор выбранных меток, а пустой набор — abstain/error. |
+| `createJevClassifier`, `allowMultiple=false` (default) | Один `Choice` по переданным меткам; при разрешённом abstain добавляется явный вариант отказа. Для 200 меток с abstain Choice не вмещает дополнительный вариант: перед ним выполняется отдельный Noul-вопрос о наличии подходящей метки. `Score` не подключён. | Валидная метка → `ClassificationResult`; отказ → abstain либо typed error; затем локальная проверка результата. |
+| `createJevClassifier`, `allowMultiple=true` | Noul для каждой supplied label, партиями максимум по 32 за запрос. | `noul > 0.5` выбирает метку, `< 0.5` исключает, `= 0.5` unresolved. Любой unresolved даёт abstain/error; без unresolved возвращается набор выбранных меток, а пустой набор — abstain/error. |
 | `createQueryIntent` | Буквальный запрос передаётся как data в `query_text`; два `Choice`: `taskIntent` и `sourceScope`. Человеческие критерии задают варианты; запрос не исполняется как инструкция. | Только типизированные метаданные к caller-у. Само по себе не фильтрует и не запускает web/code search, не меняет файлы и не выбирает модель caller-а. |
 
 `taskIntent`: `locate_symbol`, `implement_change`, `explain_behavior`, `find_duplicates`, `find_documentation`, `find_tests`, `mixed`, `unknown`. `sourceScope`: `implementation`, `documentation`, `tests`, `mixed`, `unspecified`. `unknown` и `unspecified` — допустимые значения. `implement_change` описывает просьбу пользователя, но не решает, нужен ли новый код; перед реализацией caller проверяет существующий код, extension points, дубликаты и контракты. Запрос о выполнимости одного поведения остаётся `explain_behavior`; `mixed` требует разных явно запрошенных результатов.
 
-Все исходники accepted feature открываются по immutable commit: [`decision-types.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decision-types.ts), [`decisions.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decisions.ts), [`decision-validation.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decision-validation.ts), [`jev-classifier.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/jev-classifier.ts), [`query-intent.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/query-intent.ts). Текущие main provider sources: [`classifier.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/classifier.ts), [`openrouter.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/openrouter.ts), [`brave.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave.ts), [`brave-inflight.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave-inflight.ts), [`voyage.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/voyage.ts).
+Исходники provider-потоков зафиксированы на source candidate `0a584e64c10d1a9d46b18d1e199979f2787f647d`: [`decision-types.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/decision-types.ts), [`decisions.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/decisions.ts), [`decision-validation.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/decision-validation.ts), [`jev-classifier.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/jev-classifier.ts), [`query-intent.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/query-intent.ts), [`classifier.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/classifier.ts), [`openrouter.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/openrouter.ts), [`brave.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/brave.ts), [`brave-inflight.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/brave-inflight.ts), [`voyage.ts`](https://github.com/zoomplus/zorya-search/blob/0a584e64c10d1a9d46b18d1e199979f2787f647d/src/providers/voyage.ts). Прежний provider foundation принят отдельным коммитом `67e3361`; эти ссылки фиксируют интегрированный candidate с адаптером runtime.

@@ -12,11 +12,13 @@
 - `src/storage/` реализует embedded и PostgreSQL хранение ([карта](../src/storage/README.md)). Владение соединением зависит от фабрики. `openEmbeddedDatabase` владеет созданной базой и блокировкой каталога, а `createCodeIndex` получает заимствованную базу и не закрывает её.
 - `src/code/` индексирует текст репозитория и выдаёт lexical или гибридные code hits ([карта](../src/code/README.md)). Результаты привязаны к repository, worktree, snapshot и content hash.
 - `src/providers/` адаптирует embedding, rerank, web discovery/read и classification API ([карта](../src/providers/README.md)).
-- `src/context/` формирует ограниченный контекст кода или web-источников и вызывает классификатор по критериям клиента ([карта](../src/context/README.md)).
+- `src/context/` формирует ограниченный контекст кода или web-источников; source candidate `0a584e6` добавляет opt-in Jev-backed reuse context поверх существующего `CodeIndex` ([карта](../src/context/README.md)).
 - `src/visual/` выполняет отдельный opt-in поиск по явно переданным вызывающим кодом текстовым или графическим references ([карта](../src/visual/README.md)). Он не снимает экран и не оценивает корректность UI.
 - `src/mcp/` публикует инструменты для существующего MCP-клиента ([карта](../src/mcp/README.md)). `src/daemon/` предоставляет локальный HTTP endpoint ([карта](../src/daemon/README.md)) и, в версии `v0.1.1`, удалённый OAuth-защищённый режим с loopback binding. Внешний TLS proxy и authorization server настраивает владелец. Stdio proxy подключается к уже запущенному локальному daemon.
 
 Публичные subpaths задаёт `package.json`. Используй только документированные exports и типы установленной версии. SDK, MCP transport и client setup — разные уровни: установленная библиотека сама не подключает инструменты к редактору или текущему чату.
+
+В source candidate `0a584e6` классификация и reuse используют один закреплённый Jev Decisions port: `typesafe/jev-1.14` через TypeSafe без fallback. MCP reuse требует `read` и `classify`; клиент по-прежнему владеет prompt, моделью, памятью, workflow и решением по возвращённым кандидатам. GitHub archive `v0.1.6` этого candidate не содержит; npm публикация ожидается. См. [руководство Jev](jev-classification.md).
 
 ## Поток запроса
 
