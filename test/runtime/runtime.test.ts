@@ -111,6 +111,21 @@ test('strict versioned owner configuration rejects unsafe extras and snapshots i
       }),
     RuntimeConfigError,
   )
+  assert.throws(
+    () =>
+      parseRuntimeConfig({
+        ...config,
+        web: {
+          embedding: {
+            provider: 'openai-compatible',
+            model: 'web-model',
+            dimensions: 3,
+            secret: { kind: 'env', name: 'WEB_KEY' },
+          },
+        },
+      }),
+    RuntimeConfigError,
+  )
 })
 
 test('offline PGlite runtime indexes isolated roots, preserves provenance, and reopens', async () => {
@@ -121,6 +136,7 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
     assert.deepEqual(runtime.capabilities(), {
       code: true,
       embedding: false,
+      webEmbedding: false,
       codeReranking: false,
       webReranking: false,
       webRead: false,
@@ -1859,6 +1875,178 @@ test('web reranker capability remains independent of code embedding', async () =
     assert.equal(runtime.usage().reranking?.calls, 1)
     await runtime.close()
   } finally {
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('legacy code embedding does not report web embedding without configured discovery', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config: {
+        ...f.config,
+        embedding: {
+          provider: 'openrouter',
+          model: 'legacy-code-model',
+          dimensions: 3,
+          secret: { kind: 'env', name: 'LEGACY_EMBED_KEY' },
+        },
+      },
+      testDependencies: { env: { LEGACY_EMBED_KEY: 'fixture-only' } },
+    })
+    assert.equal(runtime.capabilities().embedding, true)
+    assert.equal(runtime.capabilities().webEmbedding, false)
+    assert.equal(runtime.profiles().webEmbedding, null)
+    await assert.rejects(runtime.searchWeb({ query: 'unavailable without discovery' }), isCode('CAPABILITY_DISABLED'))
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('default owner web text profile routes to OpenRouter and uses the supplied model', async () => {
+  const f = await fixture()
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = []
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    requests.push({ url: String(input), body })
+    const texts = body.input as string[]
+    return new Response(JSON.stringify({
+      model: 'fixture-openrouter-web-model',
+      data: texts.map((_, index) => ({ index, embedding: index === 0 ? [1, 0, 0] : [0.9, 0.1, 0] })),
+      usage: { prompt_tokens: 3, total_tokens: 3 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const { createSetupConfig } = await import('../../src/cli/setup-config.js')
+  const config = createSetupConfig({
+    dataDir: f.dataDir,
+    root: { id: 'a', path: f.a },
+    webEnv: 'BRAVE_KEY',
+    webEmbedding: {
+      model: 'fixture-openrouter-web-model',
+      dimensions: 3,
+      env: 'WEB_TEXT_KEY',
+    },
+  })
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config,
+      testDependencies: {
+        env: { BRAVE_KEY: 'fixture-brave-key', WEB_TEXT_KEY: 'fixture-web-key' },
+        fetch,
+        webSource: {
+          async discover() { return ['https://docs.example.test/alpha'] },
+          async fetchDocument(url) {
+            return {
+              url,
+              title: 'Alpha guide',
+              text: 'alpha retrieval fixture content',
+              fetchedAt: new Date().toISOString(),
+              publishedAt: null,
+              sourceUpdatedAt: null,
+            }
+          },
+        },
+      },
+    })
+    assert.equal(runtime.capabilities().webEmbedding, true)
+    assert.equal(runtime.profiles().webEmbedding?.provider, 'openrouter')
+    assert.equal(runtime.profiles().webEmbedding?.model, 'fixture-openrouter-web-model')
+    const result = await runtime.searchWeb({ query: 'alpha retrieval' })
+    assert.equal(result.rankingMode, 'hybrid')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0]?.url, 'https://openrouter.ai/api/v1/embeddings')
+    assert.equal(requests[0]?.body.model, 'fixture-openrouter-web-model')
+    assert.equal(requests[0]?.body.input_type, 'text')
+    assert.equal(runtime.usage().webEmbedding?.calls, 1)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('owner-configured web text embedding stays isolated from the Mechanism code preset', async () => {
+  const f = await fixture()
+  const configDir = join(f.dir, 'owner-config')
+  await mkdir(configDir, { mode: 0o700 })
+  await writeFile(join(configDir, 'secrets.json'), JSON.stringify({ webText: 'web-text-fixture' }), { mode: 0o600 })
+  const requests: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = []
+  const fakeFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    requests.push({ url: String(input), headers: new Headers(init?.headers), body })
+    const texts = body.input as string[]
+    return new Response(JSON.stringify({
+      model: 'owner-web-text-model',
+      data: texts.map((_, index) => ({ index, embedding: index === 0 ? [1, 0, 0] : [0.9, 0.1, 0] })),
+      usage: { prompt_tokens: 3, total_tokens: 3 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  const { createSetupConfig } = await import('../../src/cli/setup-config.js')
+  const config = createSetupConfig({
+    dataDir: f.dataDir,
+    root: { id: 'a', path: f.a },
+    codeEnv: 'VOYAGE_CODE_KEY',
+    webEnv: 'BRAVE_KEY',
+    webEmbedding: {
+      profileId: 'owner-web-text-profile',
+      model: 'owner-web-text-model',
+      dimensions: 3,
+      baseUrl: 'https://embeddings.example.test/v1',
+      env: 'WEB_TEXT_KEY',
+    },
+  })
+  const runtimeConfig = structuredClone(config) as {
+    web: { embedding: { secret: unknown } }
+  }
+  runtimeConfig.web.embedding.secret = {
+    kind: 'file',
+    file: 'secrets.json',
+    key: 'webText',
+  }
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config: runtimeConfig,
+      configDir,
+      testDependencies: {
+        env: { VOYAGE_CODE_KEY: 'code-only-fixture', BRAVE_KEY: 'brave-fixture' },
+        fetch: fakeFetch,
+        webSource: {
+          async discover() { return ['https://docs.example.test/alpha'] },
+          async fetchDocument(url) {
+            return {
+              url,
+              title: 'Alpha guide',
+              text: 'alpha retrieval fixture content',
+              fetchedAt: new Date().toISOString(),
+              publishedAt: null,
+              sourceUpdatedAt: null,
+            }
+          },
+        },
+      },
+    })
+    assert.equal(runtime.capabilities().embedding, true)
+    assert.equal(runtime.capabilities().webEmbedding, true)
+    assert.equal(runtime.profiles().codeEmbedding?.model, 'voyageai/voyage-code-4')
+    assert.equal(runtime.profiles().webEmbedding?.profileId, 'owner-web-text-profile')
+    assert.equal(runtime.profiles().webEmbedding?.model, 'owner-web-text-model')
+
+    const result = await runtime.searchWeb({ query: 'alpha retrieval' })
+    assert.equal(result.rankingMode, 'hybrid')
+    assert.ok(result.passages[0]?.ranking.embeddingProfile?.includes('owner-web-text-profile'))
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0]?.url, 'https://embeddings.example.test/v1/embeddings')
+    assert.equal(requests[0]?.headers.get('authorization'), 'Bearer web-text-fixture')
+    assert.equal(requests[0]?.body.model, 'owner-web-text-model')
+    assert.equal(requests[0]?.body.input_type, 'text')
+    assert.equal(runtime.usage().webEmbedding?.calls, 1)
+    assert.equal(runtime.usage().codeEmbedding?.calls, 0)
+    assert.equal(runtime.usage().embedding?.calls, 0)
+  } finally {
+    await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })
   }
 })

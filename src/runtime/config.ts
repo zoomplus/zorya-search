@@ -129,6 +129,7 @@ export const runtimeConfigSchema = z
     mechanism: mechanism.optional(),
     web: z
       .object({
+        embedding: embedding.optional(),
         discovery: z
           .object({ secret: secretRef, limits: providerLimits.optional() })
           .strict()
@@ -164,19 +165,15 @@ export const runtimeConfigSchema = z
         ctx.addIssue({ code: 'custom', path: ['roots'], message: 'Duplicate root id' })
       ids.add(item.id)
     }
-    if (value.embedding?.provider === 'openai-compatible') {
-      if (!value.embedding.profileId)
-        ctx.addIssue({
-          code: 'custom',
-          path: ['embedding', 'profileId'],
-          message: 'Explicit profileId required',
-        })
-      if (!value.embedding.baseUrl)
-        ctx.addIssue({
-          code: 'custom',
-          path: ['embedding', 'baseUrl'],
-          message: 'Owner configured HTTPS baseUrl required',
-        })
+    for (const [path, profile] of [
+      [['embedding'], value.embedding],
+      [['web', 'embedding'], value.web?.embedding],
+    ] as const) {
+      if (profile?.provider !== 'openai-compatible') continue
+      if (!profile.profileId)
+        ctx.addIssue({ code: 'custom', path: [...path, 'profileId'], message: 'Explicit profileId required' })
+      if (!profile.baseUrl)
+        ctx.addIssue({ code: 'custom', path: [...path, 'baseUrl'], message: 'Owner configured HTTPS baseUrl required' })
     }
   })
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>

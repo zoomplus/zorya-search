@@ -89,6 +89,7 @@ export interface RuntimeRoot {
 export interface RuntimeCapabilities {
   code: true
   embedding: boolean
+  webEmbedding: boolean
   codeReranking: boolean
   webReranking: boolean
   webRead: boolean
@@ -266,6 +267,27 @@ function createProviders(
   fetchOption: { fetch?: typeof fetch },
   testWebSource?: WebSource,
 ) {
+  const configuredEmbedding = (p: NonNullable<RuntimeConfig['embedding']>) => {
+    const shared = {
+      model: p.model,
+      dimensions: p.dimensions,
+      inputType: 'text',
+      ...(p.profileId ? { profileId: p.profileId } : {}),
+      apiKey: resolveSecret(p.secret),
+      ...(p.limits ? { limits: compact(p.limits) } : {}),
+      ...fetchOption,
+    }
+    return p.provider === 'openrouter'
+      ? createOpenRouterEmbedding({
+          ...shared,
+          baseUrl: p.baseUrl ?? 'https://openrouter.ai/api/v1',
+        })
+      : createOpenAICompatibleEmbedding({
+          ...shared,
+          baseUrl: p.baseUrl!,
+          profileId: p.profileId!,
+        })
+  }
   const mechanismCode = config.mechanism?.code
   const codeEmbedding = mechanismCode
     ? createOpenRouterEmbedding({
@@ -278,29 +300,9 @@ function createProviders(
         ...fetchOption,
       })
     : undefined
-  const embedding = config.embedding
-    ? (() => {
-        const p = config.embedding!
-        const shared = {
-          model: p.model,
-          dimensions: p.dimensions,
-          inputType: 'text',
-          ...(p.profileId ? { profileId: p.profileId } : {}),
-          apiKey: resolveSecret(p.secret),
-          ...(p.limits ? { limits: compact(p.limits) } : {}),
-          ...fetchOption,
-        }
-        return p.provider === 'openrouter'
-          ? createOpenRouterEmbedding({
-              ...shared,
-              baseUrl: p.baseUrl ?? 'https://openrouter.ai/api/v1',
-            })
-          : createOpenAICompatibleEmbedding({
-              ...shared,
-              baseUrl: p.baseUrl!,
-              profileId: p.profileId!,
-            })
-      })()
+  const embedding = config.embedding ? configuredEmbedding(config.embedding) : undefined
+  const webEmbedding = config.web?.embedding
+    ? configuredEmbedding(config.web.embedding)
     : undefined
   const codeReranker = mechanismCode
     ? createOpenRouterReranker({
@@ -353,7 +355,16 @@ function createProviders(
         ...fetchOption,
       })
     : undefined
-  return { embedding, codeEmbedding, reranker, codeReranker, classifier, visualEmbedding, web: testWebSource ?? braveWeb }
+  return {
+    embedding,
+    webEmbedding,
+    codeEmbedding,
+    reranker,
+    codeReranker,
+    classifier,
+    visualEmbedding,
+    web: testWebSource ?? braveWeb,
+  }
 }
 
 async function createOwnedRuntime(
@@ -920,6 +931,11 @@ async function createOwnedRuntime(
       return {
         code: true,
         embedding: Boolean(providers.codeEmbedding ?? providers.embedding),
+        webEmbedding: Boolean(
+          providers.web &&
+            config.web?.discovery &&
+            (providers.webEmbedding ?? providers.embedding),
+        ),
         codeReranking: Boolean((providers.codeEmbedding ?? providers.embedding) && (providers.codeReranker ?? providers.reranker)),
         webReranking: Boolean(providers.web && config.web?.discovery && providers.reranker),
         webRead: Boolean(providers.web),
@@ -932,6 +948,7 @@ async function createOwnedRuntime(
       return {
         embedding: (providers.codeEmbedding ?? providers.embedding)?.usage() ?? null,
         codeEmbedding: providers.codeEmbedding?.usage() ?? null,
+        webEmbedding: providers.webEmbedding?.usage() ?? null,
         reranking: providers.reranker?.usage() ?? null,
         classification: providers.classifier?.usage() ?? null,
         web:
@@ -946,6 +963,7 @@ async function createOwnedRuntime(
       return {
         embedding: (providers.codeEmbedding ?? providers.embedding) ? structuredClone((providers.codeEmbedding ?? providers.embedding)!.profile) : null,
         codeEmbedding: providers.codeEmbedding ? structuredClone(providers.codeEmbedding.profile) : null,
+        webEmbedding: providers.webEmbedding ? structuredClone(providers.webEmbedding.profile) : null,
         reranking: providers.reranker ? structuredClone(providers.reranker.profile) : null,
         codeReranking: (providers.codeReranker ?? providers.reranker)
           ? structuredClone((providers.codeReranker ?? providers.reranker)!.profile)
@@ -1093,9 +1111,10 @@ async function createOwnedRuntime(
       return execute(signal, async (operationSignal) => {
         if (!providers.web || !config.web?.discovery)
           throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        const webTextEmbedding = providers.webEmbedding ?? providers.embedding
         const models = {
-          ...(providers.embedding
-            ? { embed: { profile: providers.embedding.profile, embed: providers.embedding.embed } }
+          ...(webTextEmbedding
+            ? { embed: { profile: webTextEmbedding.profile, embed: webTextEmbedding.embed } }
             : {}),
           ...(providers.reranker
             ? { rerank: { profile: providers.reranker.profile, rerank: providers.reranker.rerank } }
@@ -1298,6 +1317,7 @@ async function loadSecrets(
 ): Promise<Record<string, string> | undefined> {
   const references = [
     config.embedding?.secret,
+    config.web?.embedding?.secret,
     config.reranker?.secret,
     config.classifier?.secret,
     config.web?.discovery?.secret,
