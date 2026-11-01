@@ -579,6 +579,32 @@ test('daemon rejects malformed bearer before verifier and owns idle TCP sockets 
     allowedHosts: ['127.0.0.1'],
     config: { version: 1, dataDir: join(dir, 'state'), roots: [{ id: 'root', path: root }] },
   })
+  let releaseDatabaseClose = () => {}
+  const databaseCloseBarrier = new Promise<void>((resolve) => { releaseDatabaseClose = resolve })
+  let databaseCloseStartedResolve = () => {}
+  const databaseCloseStarted = new Promise<void>((resolve) => { databaseCloseStartedResolve = resolve })
+  const originalRuntimeClose = daemon.runtime.close.bind(daemon.runtime)
+  let socket: ReturnType<typeof connectTcp> | undefined
+  let remoteSocketClosed: Promise<void> | undefined
+  let remoteSocketCloseTimer: NodeJS.Timeout | undefined
+  let closing: Promise<void> | undefined
+  let closeCompleted = false
+  let daemonClosed = false
+  let primaryError: unknown
+  let hasPrimaryError = false
+  const awaitBounded = async <T>(promise: Promise<T>, label: string, timeoutMs: number) => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT`)), timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
   try {
     for (const authorization of [undefined, 'Bearer ***', 'Bearer    ']) {
       const status = await new Promise<number>((resolve, reject) => {
@@ -600,35 +626,72 @@ test('daemon rejects malformed bearer before verifier and owns idle TCP sockets 
       assert.equal(status, 401)
     }
     assert.equal(verifierCalls, 0)
-    const socket = connectTcp(daemon.port, '127.0.0.1')
+    socket = connectTcp(daemon.port, '127.0.0.1')
     await new Promise<void>((resolve, reject) => {
-      socket.once('connect', resolve)
-      socket.once('error', reject)
+      socket!.once('connect', resolve)
+      socket!.once('error', reject)
     })
     socket.write(`GET ${daemon.path} HTTP/1.1\r\nHost: 127.0.0.1:${daemon.port}\r\nAuthorization:`)
-    const remoteSocketClosed = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+    remoteSocketClosed = new Promise<void>((resolve, reject) => {
+      remoteSocketCloseTimer = setTimeout(() => {
         reject(new Error('REMOTE_SOCKET_CLOSE_NOT_OBSERVED'))
       }, 2_000)
-      socket.once('close', () => {
-        clearTimeout(timer)
+      socket!.once('close', () => {
+        if (remoteSocketCloseTimer) clearTimeout(remoteSocketCloseTimer)
         resolve()
       })
-      socket.on('error', () => {})
+      socket!.on('error', () => {})
     })
-    let closeCompleted = false
-    const closing = daemon.close().finally(() => {
+    void remoteSocketClosed.catch(() => undefined)
+    daemon.runtime.close = async () => {
+      databaseCloseStartedResolve()
+      await databaseCloseBarrier
+      await originalRuntimeClose()
+    }
+    closing = daemon.close().finally(() => {
       closeCompleted = true
     })
-    await Promise.race([closing, new Promise((resolve) => setTimeout(resolve, 500))])
-    assert.equal(closeCompleted, true)
-    await remoteSocketClosed
+    void closing.catch(() => undefined)
+    await awaitBounded(remoteSocketClosed, 'REMOTE_SOCKET_CLOSE', 2_000)
     assert.equal(socket.destroyed, true)
-    socket.destroy()
-  } finally {
-    await daemon.close().catch(() => undefined)
-    await rm(dir, { recursive: true, force: true })
+    await awaitBounded(databaseCloseStarted, 'DATABASE_CLOSE_ENTRY', 15_000)
+    assert.equal(closeCompleted, false)
+    releaseDatabaseClose()
+    await awaitBounded(closing, 'FULL_DAEMON_CLOSE', 15_000)
+    daemonClosed = true
+    assert.equal(closeCompleted, true)
+  } catch (error) {
+    primaryError = error
+    hasPrimaryError = true
   }
+
+  const teardownErrors: Error[] = []
+  releaseDatabaseClose()
+  if (socket && !socket.destroyed) socket.destroy()
+  if (remoteSocketCloseTimer) clearTimeout(remoteSocketCloseTimer)
+  daemon.runtime.close = originalRuntimeClose
+  if (!daemonClosed) {
+    try {
+      await awaitBounded(daemon.close(), 'DAEMON_CLEANUP_CLOSE', 15_000)
+      daemonClosed = true
+    } catch (error) {
+      teardownErrors.push(new Error('DAEMON_CLOSE_TEARDOWN_FAILED', { cause: error }))
+    }
+  }
+  if (daemonClosed) {
+    try {
+      await rm(dir, { recursive: true, force: true })
+    } catch (error) {
+      teardownErrors.push(new Error('DAEMON_TEST_DIRECTORY_REMOVE_FAILED', { cause: error }))
+    }
+  } else {
+    teardownErrors.push(new Error('DAEMON_TEST_DIRECTORY_RETAINED_FOR_ACTIVE_DAEMON'))
+  }
+  if (hasPrimaryError && teardownErrors.length > 0) {
+    throw new AggregateError([primaryError, ...teardownErrors], 'DAEMON_CLOSE_TEST_AND_TEARDOWN_FAILED', { cause: primaryError })
+  }
+  if (hasPrimaryError) throw primaryError
+  if (teardownErrors.length > 0) throw new AggregateError(teardownErrors, 'DAEMON_CLOSE_TEST_TEARDOWN_FAILED')
 })
 
 test('daemon bounds authorization jobs and joins them after shutdown', async () => {
