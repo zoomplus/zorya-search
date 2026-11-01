@@ -598,12 +598,23 @@ test('daemon rejects malformed bearer before verifier and owns idle TCP sockets 
       socket.once('error', reject)
     })
     socket.write(`GET ${daemon.path} HTTP/1.1\r\nHost: 127.0.0.1:${daemon.port}\r\nAuthorization:`)
+    const remoteSocketClosed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('REMOTE_SOCKET_CLOSE_NOT_OBSERVED'))
+      }, 2_000)
+      socket.once('close', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      socket.on('error', () => {})
+    })
     let closeCompleted = false
     const closing = daemon.close().finally(() => {
       closeCompleted = true
     })
     await Promise.race([closing, new Promise((resolve) => setTimeout(resolve, 500))])
     assert.equal(closeCompleted, true)
+    await remoteSocketClosed
     assert.equal(socket.destroyed, true)
     socket.destroy()
   } finally {
