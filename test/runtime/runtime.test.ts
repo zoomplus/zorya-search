@@ -433,12 +433,17 @@ test('sync and background indexing serialize per root without changing the synch
     await awaitBounded(started)
     let syncDone = false
     const sync = runtime.indexRepository({ rootId: 'a' }).then((status) => { syncDone = true; return status })
+    let symbolsDone = false
+    const symbols = runtime.indexCodeSymbols({ rootId: 'a' }).then((status) => { symbolsDone = true; return status })
     await new Promise((resolve) => setTimeout(resolve, 25))
     assert.equal(syncDone, false)
+    assert.equal(symbolsDone, false)
     release?.()
     const status = await sync
     assert.equal(syncDone, true)
     assert.equal(status.fileCount, 1)
+    assert.equal((await symbols).state, 'indexed')
+    assert.equal(symbolsDone, true)
     await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'completed')
     assert.equal(calls, 1)
   } finally {
@@ -481,6 +486,10 @@ test('a cancelled lane waiter keeps its reservation until the prior index settle
     const waiter = runtime.indexRepository({ rootId: 'a', signal: waiterController.signal })
     waiterController.abort()
     await assert.rejects(waiter, isCode('CANCELLED'))
+    const symbolWaiterController = new AbortController()
+    const symbolWaiter = runtime.indexCodeSymbols({ rootId: 'a', signal: symbolWaiterController.signal })
+    symbolWaiterController.abort()
+    await assert.rejects(symbolWaiter, isCode('CANCELLED'))
     const third = runtime.indexRepository({ rootId: 'a' })
     await new Promise((resolve) => setTimeout(resolve, 25))
     assert.equal(calls, 1)

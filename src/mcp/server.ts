@@ -25,6 +25,10 @@ import {
   visualSearchRequest,
   startIndexingRequest,
   cancelIndexingRequest,
+  indexCodeSymbolsRequest,
+  findCodeSymbolsRequest,
+  findCodeReferencesRequest,
+  traceCodeCallsRequest,
 } from '../runtime/requests.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 
@@ -35,9 +39,9 @@ export interface SearchMcpAccess {
 }
 
 const annotationsFor = (name: string): ToolAnnotations => ({
-  readOnlyHint: !['index_repository', 'start_indexing', 'cancel_indexing'].includes(name),
+  readOnlyHint: !['index_repository', 'start_indexing', 'cancel_indexing', 'index_code_symbols'].includes(name),
   destructiveHint: name === 'cancel_indexing',
-  idempotentHint: !['index_repository', 'start_indexing', 'cancel_indexing'].includes(name),
+  idempotentHint: !['index_repository', 'start_indexing', 'cancel_indexing', 'index_code_symbols'].includes(name),
   openWorldHint: [
     'index_repository',
     'start_indexing',
@@ -72,6 +76,11 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
     schema: indexRequest,
     annotations: annotationsFor('index_repository'),
   },
+  index_code_symbols: {
+    description: 'Refresh static symbol and reference metadata for the current indexed snapshot. This does not reindex vectors or edit source files.',
+    schema: indexCodeSymbolsRequest,
+    annotations: annotationsFor('index_code_symbols'),
+  },
   start_indexing: {
     description: 'Start or reuse a runtime-owned background indexing job for a granted root.',
     schema: startIndexingRequest,
@@ -93,6 +102,21 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
       'Find mechanically similar function body candidates in indexed implementation files. Results require caller inspection and do not claim semantic equivalence or perform edits.',
     schema: codeDuplicatesRequest,
     annotations: annotationsFor('find_code_duplicates'),
+  },
+  find_code_symbols: {
+    description: 'Find statically analyzed symbols in the current indexed snapshot. Results include source ranges and analysis coverage; missing metadata is reported without indexing.',
+    schema: findCodeSymbolsRequest,
+    annotations: annotationsFor('find_code_symbols'),
+  },
+  find_code_references: {
+    description: 'Find bounded static references, calls, or exports for a symbol in the current indexed snapshot. Results may include unresolved targets and analysis coverage.',
+    schema: findCodeReferencesRequest,
+    annotations: annotationsFor('find_code_references'),
+  },
+  trace_code_calls: {
+    description: 'Trace bounded static call and construct edges around a symbol. Dynamic dispatch and runtime bindings may remain unresolved; this tool does not index implicitly.',
+    schema: traceCodeCallsRequest,
+    annotations: annotationsFor('trace_code_calls'),
   },
   read_source: {
     description:
@@ -143,10 +167,14 @@ export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, 'read' | 'index
   index_status: 'read',
   search_code: 'read',
   find_code_duplicates: 'read',
+  find_code_symbols: 'read',
+  find_code_references: 'read',
+  trace_code_calls: 'read',
   read_source: 'read',
   related_code: 'read',
   get_code_context: 'read',
   index_repository: 'index',
+  index_code_symbols: 'index',
   start_indexing: 'index',
   cancel_indexing: 'index',
   search_web: 'web',
@@ -241,6 +269,9 @@ export function createSearchMcpServer(
   add('index_repository', (input, signal) =>
     runtime.indexRepository({ ...input, ...(signal ? { signal } : {}) }),
   )
+  add('index_code_symbols', (input, signal) =>
+    runtime.indexCodeSymbols({ ...input, ...(signal ? { signal } : {}) }),
+  )
   add('start_indexing', (input, signal) => runtime.startIndexing({ ...input, ...(signal ? { signal } : {}) }))
   add('cancel_indexing', (input) => runtime.cancelIndexing(input))
   add('search_code', (input, signal) =>
@@ -253,6 +284,15 @@ export function createSearchMcpServer(
       ...input,
       ...(signal ? { signal } : {}),
     } as Parameters<typeof runtime.findCodeDuplicates>[0]),
+  )
+  add('find_code_symbols', (input, signal) =>
+    runtime.findCodeSymbols({ ...input, ...(signal ? { signal } : {}) } as Parameters<typeof runtime.findCodeSymbols>[0]),
+  )
+  add('find_code_references', (input, signal) =>
+    runtime.findCodeReferences({ ...input, ...(signal ? { signal } : {}) } as Parameters<typeof runtime.findCodeReferences>[0]),
+  )
+  add('trace_code_calls', (input, signal) =>
+    runtime.traceCodeCalls({ ...input, ...(signal ? { signal } : {}) } as Parameters<typeof runtime.traceCodeCalls>[0]),
   )
   add('read_source', (input, signal) =>
     runtime.readSource({ ...input, ...(signal ? { signal } : {}) } as Parameters<

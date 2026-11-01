@@ -5,6 +5,7 @@ const idField = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/)
 export const statusRequest = z.object({ rootId: idField }).strict()
 export const indexStatusRequest = z.object({ rootId: idField, jobId: z.string().uuid().optional() }).strict()
 export const indexRequest = statusRequest
+export const indexCodeSymbolsRequest = statusRequest
 export const startIndexingRequest = statusRequest
 export const cancelIndexingRequest = z.object({ rootId: idField, jobId: z.string().uuid() }).strict()
 export const searchRequest = z
@@ -36,6 +37,32 @@ export const codeDuplicatesRequest = z
     maxOccurrencesPerGroup: z.number().int().min(2).max(50).optional(),
   })
   .strict()
+export const findCodeSymbolsRequest = z.object({
+  rootId: idField,
+  query: z.string().max(256).optional(),
+  name: z.string().max(256).optional(),
+  path: z.string().min(1).max(1024).optional(),
+  language: z.string().min(1).max(64).refine((value) => Boolean(value.trim())).optional(),
+  sourceKind: z.enum(['implementation', 'tests', 'documentation', 'all']).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  cursor: z.string().min(1).max(4096).optional(),
+}).strict()
+export const findCodeReferencesRequest = z.object({
+  rootId: idField,
+  symbolId: z.string().regex(/^[a-f0-9]{64}$/u),
+  direction: z.enum(['incoming', 'outgoing']).optional(),
+  kind: z.enum(['reference', 'call', 'construct', 'export']).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+  cursor: z.string().min(1).max(4096).optional(),
+}).strict()
+export const traceCodeCallsRequest = z.object({
+  rootId: idField,
+  symbolId: z.string().regex(/^[a-f0-9]{64}$/u),
+  direction: z.enum(['incoming', 'outgoing', 'both']).optional(),
+  maxDepth: z.number().int().min(0).max(4).optional(),
+  maxNodes: z.number().int().min(1).max(256).optional(),
+  maxEdges: z.number().int().min(1).max(1024).optional(),
+}).strict()
 export const readRequest = z
   .object({
     rootId: idField,

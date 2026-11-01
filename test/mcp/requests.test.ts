@@ -8,11 +8,23 @@ import {
   searchRequest,
   codeDuplicatesRequest,
   cancelIndexingRequest,
+  findCodeSymbolsRequest,
+  findCodeReferencesRequest,
+  traceCodeCallsRequest,
   webSearchRequest,
 } from '../../src/runtime/requests.js'
 import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
 
 test('shared MCP/runtime schemas keep owner paths and credentials out of tool inputs', () => {
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.readOnlyHint, false)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.idempotentHint, false)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.openWorldHint, false)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.destructiveHint, false)
+  for (const name of ['find_code_symbols', 'find_code_references', 'trace_code_calls'] as const) {
+    assert.equal(SEARCH_MCP_TOOL_CONTRACTS[name].annotations.readOnlyHint, true)
+    assert.equal(SEARCH_MCP_TOOL_CONTRACTS[name].annotations.idempotentHint, true)
+    assert.equal(SEARCH_MCP_TOOL_CONTRACTS[name].annotations.openWorldHint, false)
+  }
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.readOnlyHint, true)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.idempotentHint, true)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.openWorldHint, false)
@@ -69,6 +81,24 @@ test('shared MCP/runtime schemas keep owner paths and credentials out of tool in
     }).success,
     false,
   )
+})
+
+test('symbol requests enforce bounded inputs, valid IDs and strict fields', () => {
+  const symbolId = 'a'.repeat(64)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', query: 'worker', limit: 100, cursor: 'opaque' }).success, true)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', query: 'x'.repeat(257) }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', path: 'x'.repeat(1025) }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', limit: 101 }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', cursor: 'x'.repeat(4097) }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', surprise: true }).success, false)
+  assert.equal(findCodeReferencesRequest.safeParse({ rootId: 'repo', symbolId, direction: 'incoming', kind: 'call', limit: 200 }).success, true)
+  assert.equal(findCodeReferencesRequest.safeParse({ rootId: 'repo', symbolId: 'bad' }).success, false)
+  assert.equal(findCodeReferencesRequest.safeParse({ rootId: 'repo', symbolId, direction: 'both' }).success, false)
+  assert.equal(findCodeReferencesRequest.safeParse({ rootId: 'repo', symbolId, limit: 201 }).success, false)
+  assert.equal(traceCodeCallsRequest.safeParse({ rootId: 'repo', symbolId, direction: 'both', maxDepth: 4, maxNodes: 256, maxEdges: 1024 }).success, true)
+  assert.equal(traceCodeCallsRequest.safeParse({ rootId: 'repo', symbolId, maxDepth: 5 }).success, false)
+  assert.equal(traceCodeCallsRequest.safeParse({ rootId: 'repo', symbolId, maxNodes: 257 }).success, false)
+  assert.equal(traceCodeCallsRequest.safeParse({ rootId: 'repo', symbolId, signal: {} }).success, false)
 })
 
 test('visual request accepts bounded caller-supplied bytes and rejects URL or path access', () => {

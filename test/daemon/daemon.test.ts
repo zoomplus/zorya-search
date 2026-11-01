@@ -21,7 +21,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
   const alpha = join(dir, 'alpha')
   const beta = join(dir, 'beta')
   await Promise.all([mkdir(alpha), mkdir(beta), mkdir(join(dir, 'state'))])
-  await writeFile(join(alpha, 'alpha.ts'), 'export const alphaNeedle = "alpha"\n')
+  await writeFile(join(alpha, 'alpha.ts'), 'export function alphaWorker() { return "work" }\nexport function alphaEntry() { return alphaWorker() }\nexport const alphaNeedle = "alpha"\n')
   await writeFile(
     join(alpha, 'duplicates.ts'),
     'export function duplicateAlpha(input:number){const value=input+7;return value*3}\n' +
@@ -44,6 +44,10 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
         rootIds: ['beta'],
         operations: ['read', 'index', 'classify', 'web'] as const,
       },
+    ],
+    [
+      'token-readonly-'.padEnd(40, 'r'),
+      { principalId: 'alpha-reader', rootIds: ['alpha'], operations: ['read'] as const },
     ],
   ])
   const fetchStarts: Array<{ signal: AbortSignal }> = []
@@ -72,6 +76,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
   const clients: Client[] = []
   const alphaToken = 'token-alpha-'.padEnd(40, 'x')
   const betaToken = 'token-beta-'.padEnd(40, 'y')
+  const readOnlyToken = 'token-readonly-'.padEnd(40, 'r')
   let betaExpiresAt = Number.POSITIVE_INFINITY
   let stage = 'daemon startup'
   try {
@@ -159,10 +164,20 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal(installedManifest.name, '@zorya/search')
     assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
-    assert.equal(listed.tools.length, 14)
+    assert.equal(listed.tools.length, 18)
     assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)
     assert.ok(listed.tools.some((tool) => tool.name === 'search_code'))
     assert.ok(listed.tools.some((tool) => tool.name === 'find_code_duplicates'))
+    for (const toolName of ['find_code_symbols', 'find_code_references', 'trace_code_calls']) {
+      assert.ok(listed.tools.some((tool) => tool.name === toolName))
+      assert.equal(listed.tools.find((tool) => tool.name === toolName)?.annotations?.readOnlyHint, true)
+      assert.equal(listed.tools.find((tool) => tool.name === toolName)?.annotations?.idempotentHint, true)
+      assert.equal(listed.tools.find((tool) => tool.name === toolName)?.annotations?.openWorldHint, false)
+    }
+    assert.equal(listed.tools.find((tool) => tool.name === 'index_code_symbols')?.annotations?.readOnlyHint, false)
+    assert.equal(listed.tools.find((tool) => tool.name === 'index_code_symbols')?.annotations?.idempotentHint, false)
+    assert.equal(listed.tools.find((tool) => tool.name === 'index_code_symbols')?.annotations?.openWorldHint, false)
+    assert.equal(listed.tools.find((tool) => tool.name === 'index_code_symbols')?.annotations?.destructiveHint, false)
     assert.equal(
       listed.tools.find((tool) => tool.name === 'find_code_duplicates')?.annotations?.readOnlyHint,
       true,
@@ -179,6 +194,8 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal(listed.tools.some((tool) => tool.name === 'cancel_indexing'), true)
     assert.equal(listed.tools.find((tool) => tool.name === 'start_indexing')?.annotations?.readOnlyHint, false)
     assert.equal(listed.tools.find((tool) => tool.name === 'cancel_indexing')?.annotations?.destructiveHint, true)
+    const beforeIndex = await modern.callTool({ name: 'find_code_symbols', arguments: { rootId: 'alpha', name: 'alphaEntry' } })
+    assert.equal(beforeIndex.isError, true)
     const admission = await modern.callTool({ name: 'start_indexing', arguments: { rootId: 'alpha' } })
     assert.notEqual(admission.isError, true)
     const admittedJob = (admission.structuredContent as { job?: { jobId?: string } }).job
@@ -197,7 +214,28 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     const visibleRoots = await modern.callTool({ name: 'list_roots', arguments: {} })
     assert.match(JSON.stringify(visibleRoots), /alpha/)
     assert.doesNotMatch(JSON.stringify(visibleRoots), /beta/)
+    const readOnly = await makeClient('auto', readOnlyToken)
+    const readOnlyRefresh = await readOnly.callTool({ name: 'index_code_symbols', arguments: { rootId: 'alpha' } })
+    assert.equal(readOnlyRefresh.isError, true)
+    assert.match(JSON.stringify(readOnlyRefresh), /ACCESS_DENIED/)
     await modern.callTool({ name: 'index_repository', arguments: { rootId: 'alpha' } })
+    const refreshSymbols = await modern.callTool({ name: 'index_code_symbols', arguments: { rootId: 'alpha' } })
+    assert.notEqual(refreshSymbols.isError, true)
+    const symbolsResult = await modern.callTool({ name: 'find_code_symbols', arguments: { rootId: 'alpha', name: 'alphaEntry' } })
+    assert.notEqual(symbolsResult.isError, true)
+    const alphaEntry = ((symbolsResult.structuredContent as { symbols?: Array<{ id: string; name: string; location: { path: string; lineStart: number } }> }).symbols ?? []).find((symbol) => symbol.name === 'alphaEntry')
+    assert.ok(alphaEntry)
+    assert.equal(alphaEntry?.location.path, 'alpha.ts')
+    assert.ok((alphaEntry?.location.lineStart ?? 0) > 0)
+    const outgoing = await modern.callTool({ name: 'find_code_references', arguments: { rootId: 'alpha', symbolId: alphaEntry!.id, direction: 'outgoing', kind: 'call' } })
+    assert.notEqual(outgoing.isError, true)
+    assert.ok(((outgoing.structuredContent as { references?: unknown[] }).references ?? []).length > 0)
+    const trace = await modern.callTool({ name: 'trace_code_calls', arguments: { rootId: 'alpha', symbolId: alphaEntry!.id, direction: 'outgoing', maxDepth: 2 } })
+    assert.notEqual(trace.isError, true)
+    assert.ok(((trace.structuredContent as { edges?: unknown[] }).edges ?? []).length > 0)
+    const malformedSymbolId = await modern.callTool({ name: 'find_code_references', arguments: { rootId: 'alpha', symbolId: 'not-an-id' } })
+    assert.equal(malformedSymbolId.isError, true)
+    assert.match(JSON.stringify(malformedSymbolId), /Invalid arguments for tool find_code_references/)
     const result = await modern.callTool({
       name: 'search_code',
       arguments: { rootId: 'alpha', query: 'alphaNeedle', mode: 'lexical' },
@@ -243,6 +281,11 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       arguments: { rootId: 'beta' },
     })
     assert.equal(duplicateRootDenied.isError, true)
+    const symbolRootDenied = await modern.callTool({
+      name: 'find_code_symbols',
+      arguments: { rootId: 'beta', name: 'betaNeedle' },
+    })
+    assert.equal(symbolRootDenied.isError, true)
     const malformed = await modern.callTool({
       name: 'search_code',
       arguments: { rootId: 'alpha', query: 'alphaNeedle', mode: 'lexical', root: '/etc' },

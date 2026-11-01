@@ -11,6 +11,9 @@ import type {
   CodeReadInput,
   CodeRelatedInput,
   CodeDuplicatesInput,
+  FindCodeSymbolsInput,
+  FindCodeReferencesInput,
+  TraceCodeCallsInput,
 } from '../code/types.js'
 import {
   CodeContextError,
@@ -44,8 +47,12 @@ import {
   statusRequest,
   indexStatusRequest,
   indexRequest,
+  indexCodeSymbolsRequest,
   searchRequest,
   codeDuplicatesRequest,
+  findCodeSymbolsRequest,
+  findCodeReferencesRequest,
+  traceCodeCallsRequest,
   readRequest,
   relatedRequest,
   contextRequest,
@@ -658,16 +665,11 @@ async function createOwnedRuntime(
         controlOperations.delete(operation)
       })
   }
-  const runIndexExclusive = async (
+  const runOnRootIndexLane = async <T>(
     rootId: string,
     signal: AbortSignal,
-    onProgress?: (progress: {
-      snapshotId: string
-      totalChunks: number
-      checkpointChunks: number
-      checkpointWrites: number
-    }) => void,
-  ): Promise<CodeIndexStatus> => {
+    work: (root: RootEntry) => Promise<T>,
+  ): Promise<T> => {
     if (closed) throw new SearchRuntimeError('RUNTIME_CLOSED')
     signal.throwIfAborted()
     const prior = rootIndexTails.get(rootId) ?? Promise.resolve()
@@ -690,7 +692,7 @@ async function createOwnedRuntime(
       })
       signal.throwIfAborted()
       const root = await assertRoot(rootId)
-      return await getIndex(rootId).indexRepository({ root: root.path, signal, ...(onProgress ? { onProgress } : {}) })
+      return await work(root)
     } catch (error) {
       throw sanitize(error, signal)
     } finally {
@@ -700,6 +702,18 @@ async function createOwnedRuntime(
       })
     }
   }
+  const runIndexExclusive = (
+    rootId: string,
+    signal: AbortSignal,
+    onProgress?: (progress: {
+      snapshotId: string
+      totalChunks: number
+      checkpointChunks: number
+      checkpointWrites: number
+    }) => void,
+  ): Promise<CodeIndexStatus> => runOnRootIndexLane(rootId, signal, (root) =>
+    getIndex(rootId).indexRepository({ root: root.path, signal, ...(onProgress ? { onProgress } : {}) }),
+  )
   const execute = <T>(
     callerSignal: AbortSignal | undefined,
     work: (signal: AbortSignal) => Promise<T>,
@@ -1024,6 +1038,18 @@ async function createOwnedRuntime(
         return runIndexExclusive(request.rootId, operationSignal)
       })
     },
+    async indexCodeSymbols(input: { rootId: string; signal?: AbortSignal }) {
+      const { request, signal } = captureRequest(indexCodeSymbolsRequest, input)
+      return execute(signal, (operationSignal) => runOnRootIndexLane(
+        request.rootId,
+        operationSignal,
+        (root) => {
+          const index = getIndex(request.rootId)
+          if (!index.indexCodeSymbols) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+          return index.indexCodeSymbols({ root: root.path, signal: operationSignal })
+        },
+      ))
+    },
     async searchCode(input: Omit<CodeSearchInput, 'root'> & { rootId: string }) {
       const { request, signal } = captureRequest(searchRequest, input)
       return execute(signal, async (operationSignal) => {
@@ -1060,6 +1086,59 @@ async function createOwnedRuntime(
           ...(request.maxOccurrencesPerGroup === undefined
             ? {}
             : { maxOccurrencesPerGroup: request.maxOccurrencesPerGroup }),
+          signal: operationSignal,
+        })
+      })
+    },
+    async findCodeSymbols(input: Omit<FindCodeSymbolsInput, 'root'> & { rootId: string }) {
+      const { request, signal } = captureRequest(findCodeSymbolsRequest, input)
+      return execute(signal, async (operationSignal) => {
+        const root = await assertRoot(request.rootId)
+        const index = getIndex(request.rootId)
+        if (!index.findCodeSymbols) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return index.findCodeSymbols({
+          root: root.path,
+          ...(request.query === undefined ? {} : { query: request.query }),
+          ...(request.name === undefined ? {} : { name: request.name }),
+          ...(request.path === undefined ? {} : { path: request.path }),
+          ...(request.language === undefined ? {} : { language: request.language }),
+          ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          signal: operationSignal,
+        })
+      })
+    },
+    async findCodeReferences(input: Omit<FindCodeReferencesInput, 'root'> & { rootId: string }) {
+      const { request, signal } = captureRequest(findCodeReferencesRequest, input)
+      return execute(signal, async (operationSignal) => {
+        const root = await assertRoot(request.rootId)
+        const index = getIndex(request.rootId)
+        if (!index.findCodeReferences) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return index.findCodeReferences({
+          root: root.path,
+          symbolId: request.symbolId,
+          ...(request.direction === undefined ? {} : { direction: request.direction }),
+          ...(request.kind === undefined ? {} : { kind: request.kind }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          signal: operationSignal,
+        })
+      })
+    },
+    async traceCodeCalls(input: Omit<TraceCodeCallsInput, 'root'> & { rootId: string }) {
+      const { request, signal } = captureRequest(traceCodeCallsRequest, input)
+      return execute(signal, async (operationSignal) => {
+        const root = await assertRoot(request.rootId)
+        const index = getIndex(request.rootId)
+        if (!index.traceCodeCalls) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return index.traceCodeCalls({
+          root: root.path,
+          symbolId: request.symbolId,
+          ...(request.direction === undefined ? {} : { direction: request.direction }),
+          ...(request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth }),
+          ...(request.maxNodes === undefined ? {} : { maxNodes: request.maxNodes }),
+          ...(request.maxEdges === undefined ? {} : { maxEdges: request.maxEdges }),
           signal: operationSignal,
         })
       })
@@ -1438,6 +1517,15 @@ const knownCodes = new Set([
   'CODE_INDEX_GIT_OUTPUT_LIMIT',
   'CODE_INDEX_GIT_TIMEOUT',
   'CODE_INDEX_MIGRATION_CHECKSUM_MISMATCH',
+  'CODE_INDEX_SYMBOL_CURSOR_INVALID',
+  'CODE_INDEX_SYMBOL_CURSOR_STALE',
+  'CODE_INDEX_SYMBOL_DIRECTION_INVALID',
+  'CODE_INDEX_SYMBOL_ID_INVALID',
+  'CODE_INDEX_SYMBOL_KIND_INVALID',
+  'CODE_INDEX_SYMBOL_LIMIT_INVALID',
+  'CODE_INDEX_SYMBOL_NOT_FOUND',
+  'CODE_INDEX_SYMBOL_PROFILE_MISMATCH',
+  'CODE_INDEX_SYMBOL_QUERY_INVALID',
   'CODE_CONTEXT_STALE_SNAPSHOT',
   'CODE_CONTEXT_MANDATORY_BUDGET',
   'CODE_CONTEXT_CLOSED',
