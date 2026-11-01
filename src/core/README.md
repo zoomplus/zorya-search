@@ -5,27 +5,33 @@ Core связывает collection, модели embeddings/rerank и knowledge 
 ```mermaid
 flowchart TD
  A["SearchRequest"] --> B["executeSearch: отмена и buildSearchQuery"]
- B --> C["Embed query → repository.retrieve"]
- C --> D["rankPassages: rerank cache"]
- D --> E{"Cache score достиг порога?"}
- E -->|"да"| F["recordQuery → database result"]
- E -->|"нет"| G["collectSources: запрос и выбранные клиентом additionalQueries"]
- G --> H{"Документы получены?"}
- H -->|"нет"| I{"Есть ранжированный cache?"}
- I -->|"да"| J["Частичный database ответ + collection errors"]
- I -->|"нет"| K["Пустой web result: partial/errors"]
- H -->|"да"| L["chunkDocuments → embedChunks, batches of 32"]
- L --> M["Сохранить документы и chunks"]
- M --> N["retrieve → rankPassages / rerank"]
- N --> O["recordQuery → bounded SearchResult"]
- P["HTTP model/repository error или AbortSignal"] --> Q["Явная ошибка/отмена; не скрывать как lexical fallback"]
- C --> Q
- L --> Q
+ B --> C["Embed query → repository.retrieve cache candidates"]
+ C --> D["rankPassages → cache rerank"]
+ D --> E{"Ranked cache passages exist?"}
+ E -->|"нет: score 0"| H["collectSources: query + caller-selected additionalQueries"]
+ E -->|"да"| F["Injected SearchModels judgeCache score"]
+ F --> G{"Validate finite score 0..1"}
+ G -->|"invalid"| X["Schema error"]
+ G -->|"valid: compare threshold default 0.9"| I{"score ≥ threshold?"}
+ I -->|"yes"| J["recordQuery → cached database result"]
+ I -->|"no"| H
+ H --> K{"Документы получены?"}
+ K -->|"нет"| L{"Есть ranked cache?"}
+ L -->|"да"| M["Частичный database ответ + collection errors"]
+ L -->|"нет"| N["Пустой web result: partial/errors"]
+ K -->|"да"| O["chunkDocuments → embedChunks"]
+ O --> P["Embed/store document chunks"]
+ P --> Q["retrieve → rankPassages / rerank"]
+ Q --> R["recordQuery → bounded SearchResult"]
+ S["HTTP model/repository error или AbortSignal"] --> T["Явная ошибка/отмена; не скрывать как lexical fallback"]
+ C --> T
+ O --> T
 ```
 
 | Условие | Результат | Кодовая опора |
 | --- | --- | --- |
-| Cache score ≥ порога | Возвращаются database passages без нового collection. | `executeSearch`, `evaluateSearchCache` |
+| `judgeCache` сообщает finite score ≥ порога (default 0.9) | Возвращаются database passages без нового collection. Модель порта задаёт владелец; Core не закрепляет Jev. | `executeSearch`, `evaluateSearchCache`, `SearchModels` |
+| Невалидный score | Schema error; это не ветка cache miss. | `evaluateSearchCache` |
 | Collection неполная или бюджет истёк | `partial` и этапные `errors` сохраняются; при пустой collection возможен лишь ранжированный cache. | `collectSources`, `cachePartialFallback` |
 | HTTP embedding/rerank завершился ошибкой | Ошибка проходит выше; автоматической lexical подмены нет. | `embedChunks`, `rankPassages` |
 
