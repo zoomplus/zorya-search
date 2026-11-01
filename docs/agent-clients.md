@@ -24,6 +24,8 @@ cp node_modules/@zorya/search/skills/code-retrieval/SKILL.md .agents/skills/code
 
 ## Работа с результатами
 
+Для вопросов о правилах проекта или документации текущие исходники предоставляют `search_project_text` и `read_project_text`; детали и ограничение по версии собраны в [руководстве по тексту проекта](project-text.md). Эти инструменты пока отсутствуют в архиве `v0.1.6`. Текущие исходники `search_web` также принимают caller-selected `additionalQueries`; Search не формулирует запросы за клиента.
+
 Если нужен поиск, уточни у клиента разрешённый root и используемый snapshot. Для кода получи candidate через `search_code` или SDK, сверь repository/worktree/snapshot identity и прочитай нужный диапазон через `read_source`. При изменении snapshot или source повтори запрос. Для web отделяй найденные URL от реально прочитанных страниц. Ошибку, отмену, частичный ответ, пустую выдачу, lexical degradation и stale source сообщай как разные состояния.
 
 Web provider error может содержать `errors[].provider` с `code`, `httpStatus` и `retryAfterMs`. Используй только присутствующие поля при объяснении статуса или планировании повторной попытки; не домысливай причину и не показывай сырой ответ провайдера.

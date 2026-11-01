@@ -10,6 +10,7 @@
 | --- | --- |
 | `@zorya/search` | Core API, `openEmbeddedDatabase`, PostgreSQL adapters и shared-типы |
 | `@zorya/search/code` | `createCodeIndex` и типы code index |
+| `@zorya/search/project-text` | `createProjectTextIndex` и индекс документации, правил, навыков |
 | `@zorya/search/context` | `createCodeContext` и его DTO |
 | `@zorya/search/context/web` | `createWebSearch` и DTO web-контекста |
 | `@zorya/search/context/classify` | `createClassificationTool` и его limits/profile |
@@ -207,6 +208,10 @@ Lexical индекс не требует provider и работает офлай
 
 Интегрированный preset для кода использует `voyageai/voyage-code-4` размерности 1024 и отдельный reranker `voyageai/rerank-2.5-lite`. Это выбор владельца при настройке, а не обязательный профиль любого SDK-потребителя. При включении индексируемый код и запрос могут уйти в OpenRouter. В историческом smoke через установленный runtime два code embedding запроса и один code rerank проверили на десяти синтетических файлах; ожидаемый файл оказался первым. Вместе с visual вызовами в том smoke выполнено восемь успешных OpenRouter вызовов общей известной стоимостью $0.00011708. Это подтверждает только выбранный синтетический сценарий; широкое качество, задержки и стоимость на реальном репозитории не установлены. Подробности — в [руководстве профилей](voyage-profiles.md).
 
+## Документы, правила и навыки проекта
+
+Текущие исходники экспортируют `createProjectTextIndex` из `@zorya/search/project-text`; пример SDK, конфигурация, лимиты и identity описаны в [едином руководстве](project-text.md#отдельный-индекс-документов-правил-и-навыков). Этот отдельный индекс привязан к тому же borrowed `QueryableDatabase`, но владеет собственным пространством `zorya_project_text_*`. `close()` закрывает операции индекса, не базу. Экспорт и feature ещё не входят в публичный архив `v0.1.6`.
+
 ## Поиск в web и чтение источников
 
 Web-поиск выполняет два независимых шага: `WebSource.discover(...)` находит кандидаты URL, а `WebSource.fetchDocument(...)` читает публичные страницы. С адаптером Brave поиск ссылок идёт через Brave Search API; сами страницы Search загружает непосредственно по URL. Для `discover` нужен ключ Brave, а `fetchDocument` и `readWebSource` читают уже известный публичный URL без него. См. [официальную документацию Brave Web Search API](https://api-dashboard.search.brave.com/app/documentation/web-search).
@@ -261,7 +266,9 @@ const web = createBraveWebSource({
 
 `sharedQuota` принимает только буфер, созданный `createBraveQuotaState()` текущей совместимой версией SDK; размер, метаданные и версия проверяются при создании источника. Не редактируйте его содержимое вручную. Обычные экземпляры без этого параметра сохраняют отдельные квоты и не делят cooldown.
 
-`searchWeb({ query, limit?, maxChars?, dateRange?, signal? })` возвращает отрывки страниц с canonical URL, content hash, ranking и временными полями. `publishedAt` берётся из даты публикации, явно найденной в документе; `sourceUpdatedAt` — из метаданных даты изменения либо, если их нет, из `Last-Modified`. `fetchedAt` — время, когда Search прочитал документ. Это разные сведения: время чтения не заменяет дату страницы. Ошибки этапов discovery, document, embed и rerank перечислены в `errors`; `partial` сообщает, что не все этапы завершились успешно.
+`searchWeb({ query, additionalQueries?, limit?, maxChars?, dateRange?, signal? })` возвращает отрывки страниц с canonical URL, content hash, ranking и временными полями. `additionalQueries` — до семи непустых строк, выбранных вызывающей стороной. Основной `query` остаётся ranking/embedding/reranking query; Search не придумывает дополнительные формулировки. При нескольких запросах ответ включает summary `discovery`, `passages[].queryIndexes` и `errors[].queryIndex`; пустой или отсутствующий список сохраняет старую форму ответа. Полный контракт, dedup/admission и пример см. в [руководстве по тексту проекта и web discovery](project-text.md#несколько-запросов-web-discovery).
+
+`publishedAt` берётся из даты публикации, явно найденной в документе; `sourceUpdatedAt` — из метаданных даты изменения либо, если их нет, из `Last-Modified`. `fetchedAt` — время, когда Search прочитал документ. Это разные сведения: время чтения не заменяет дату страницы. Ошибки этапов discovery, document, embed и rerank перечислены в `errors`; `partial` сообщает, что не все этапы завершились успешно.
 
 `readWebSource({ url, maxChars?, signal? })` читает один указанный URL и сообщает `truncated`. При owner JSON с `"web": {}` его можно использовать для чтения известной страницы без ключа Brave; runtime и MCP caller всё равно должны разрешать web-операцию. Brave reader разбирает HTML/XHTML, текст, Markdown, JSON, XML, RSS/Atom и PDF с текстовым слоем. Для PDF текст извлекается без OCR; Search не запускает JavaScript и не управляет полноценным браузером. Содержимое ограничено размером ответа и runtime budgets. Превышение лимита страницы может вернуть `DOCUMENT_TOO_LARGE` и сделать результат частичным. В извлечённом тексте сохраняются пробелы и отступы внутри кодовых блоков.
 
