@@ -15,10 +15,20 @@ import type { QueryableDatabase } from '../../src/storage/database.js'
 
 const roots: string[] = []
 const databases: { close(): Promise<void> }[] = []
+const indexes: { close(): Promise<void> }[] = []
 afterEach(async () => {
-  await Promise.all(databases.splice(0).map((database) => database.close()))
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  const indexResults = await Promise.allSettled(indexes.splice(0).map((code) => code.close()))
+  const databaseResults = await Promise.allSettled(databases.splice(0).map((database) => database.close()))
+  const rootResults = await Promise.allSettled(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  const failures = [...indexResults, ...databaseResults, ...rootResults]
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), 'CODE_INDEX_TEST_CLEANUP_FAILED')
 })
+
+function trackCodeIndex<T extends { close(): Promise<void> }>(code: T): T {
+  indexes.push(code)
+  return code
+}
 
 async function temp(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), 'zorya-code-index-'))
@@ -61,13 +71,13 @@ async function index(
   roots.push(dataDir)
   const database = await openEmbeddedDatabase(dataDir)
   databases.push(database)
-  const code = createCodeIndex({
+  const code = trackCodeIndex(createCodeIndex({
     database,
     ...(models ? { models, profile } : {}),
     ...(limits ? { limits } : {}),
     ...(exclude ? { exclude } : {}),
     ...(rerankCandidateLimit === undefined ? {} : { rerankCandidateLimit }),
-  })
+  }))
   return { database, code }
 }
 
@@ -407,7 +417,7 @@ test('exclusion policy is copied, invalidates old snapshots, and cannot negate h
   await first.code.indexRepository({ root })
 
   const exclusion = ['docs/evidence/**']
-  const second = createCodeIndex({ database: first.database, exclude: exclusion })
+  const second = trackCodeIndex(createCodeIndex({ database: first.database, exclude: exclusion }))
   exclusion.splice(0, exclusion.length)
   const pending = await second.indexStatus(root)
   assert.equal(pending.identity, null)
@@ -676,7 +686,7 @@ test('unchanged reindex validates current identity without parsing, embedding, o
     chunkerVersion: 'ts-ast-symbol-v1',
   }
   let embeddingCalls = 0
-  const code = createCodeIndex({
+  const code = trackCodeIndex(createCodeIndex({
     database: tracked.database,
     profile,
     models: {
@@ -685,7 +695,7 @@ test('unchanged reindex validates current identity without parsing, embedding, o
         return texts.map(() => [1, 0])
       },
     },
-  })
+  }))
   await code.indexRepository({ root })
   const before = await code.indexStatus(root)
   assert.ok(embeddingCalls > 0)
@@ -716,14 +726,14 @@ test('reuses only durably settled vectors after restart and publishes the comple
     inputType: 'text' as const, chunkerVersion: 'ts-ast-symbol-v1',
   }
   const firstBatches: number[] = []
-  const first = createCodeIndex({
+  const first = trackCodeIndex(createCodeIndex({
     database, profile,
     models: { async embed({ texts }) {
       firstBatches.push(texts.length)
       if (firstBatches.length === 2) throw new Error('fixture provider interruption')
       return texts.map(() => [1, 0])
     } },
-  })
+  }))
   await assert.rejects(first.indexRepository({ root }), /fixture provider interruption/u)
   assert.deepEqual(firstBatches, [32, 32])
   assert.equal((await first.indexStatus(root)).identity, null)
@@ -734,13 +744,13 @@ test('reuses only durably settled vectors after restart and publishes the comple
   await first.close()
 
   const retryBatches: number[] = []
-  const retry = createCodeIndex({
+  const retry = trackCodeIndex(createCodeIndex({
     database, profile,
     models: { async embed({ texts }) {
       retryBatches.push(texts.length)
       return texts.map(() => [1, 0])
     } },
-  })
+  }))
   const completed = await retry.indexRepository({ root })
   assert.deepEqual(retryBatches, [32, 20])
   assert.equal(completed.chunkCount, 84)
@@ -786,7 +796,7 @@ test('abort during unchanged-index confirmation prevents a successful return', a
     exec: (sql) => rawDatabase.exec(sql),
     transaction: (operation, signal) => rawDatabase.transaction(operation, signal),
   }
-  const code = createCodeIndex({ database: delayedDatabase })
+  const code = trackCodeIndex(createCodeIndex({ database: delayedDatabase }))
   await code.indexRepository({ root })
   waitingForConfirmation = true
   const controller = new AbortController()
@@ -831,7 +841,7 @@ test('indexes AST symbols and import edges, searches offline, and returns proven
   })
   assert.match(source.text, /function addNumbers/u)
   await code.close()
-  const restored = createCodeIndex({ database })
+  const restored = trackCodeIndex(createCodeIndex({ database }))
   assert.equal(
     (await restored.searchCode({ root, query: 'addNumbers' })).hits[0]?.snapshotId,
     status.identity?.snapshotId,
@@ -1078,9 +1088,9 @@ test('profile changes create separate snapshots and never reuse vectors across p
       return documents.map((_, index) => ({ index, score: 1 }))
     },
   }
-  const a = createCodeIndex({ database, models: modelsA, profile: profileA })
+  const a = trackCodeIndex(createCodeIndex({ database, models: modelsA, profile: profileA }))
   const first = await a.indexRepository({ root })
-  const b = createCodeIndex({ database, models: modelsB, profile: profileB })
+  const b = trackCodeIndex(createCodeIndex({ database, models: modelsB, profile: profileB }))
   const second = await b.indexRepository({ root })
   assert.notEqual(first.identity?.snapshotId, second.identity?.snapshotId)
   assert.notEqual(first.profileId, second.profileId)
@@ -1252,20 +1262,40 @@ test('scores camel-case identifiers by either word and observes nested changes a
   await code.indexRepository({ root })
   assert.ok((await code.searchCode({ root, query: 'fetch' })).hits.length)
   assert.ok((await code.searchCode({ root, query: 'document' })).hits.length)
-  const watcher = await code.watchRepository(root, { intervalMs: 250 })
-  await writeFile(
-    join(root, 'nested', 'late.ts'),
-    'export function periodicReconcileTarget() { return 2 }',
-  )
-  await new Promise((resolve) => setTimeout(resolve, 450))
-  assert.equal(
-    (await code.searchCode({ root, query: 'periodicReconcileTarget' })).hits[0]?.path,
-    'nested/late.ts',
-  )
-  const [firstClose, secondClose] = await Promise.all([watcher.close(), watcher.close()])
-  assert.equal(firstClose, undefined)
-  assert.equal(secondClose, undefined)
-  await code.close()
+  const originalSnapshotId = (await code.indexStatus(root)).identity?.snapshotId
+  assert.ok(originalSnapshotId)
+  let watcher: Awaited<ReturnType<typeof code.watchRepository>> | undefined
+  try {
+    watcher = await code.watchRepository(root, { intervalMs: 250 })
+    await writeFile(
+      join(root, 'nested', 'late.ts'),
+      'export function periodicReconcileTarget() { return 2 }',
+    )
+    const deadline = Date.now() + 10_000
+    let publishedSnapshotId: string | undefined
+    while (Date.now() < deadline) {
+      const status = await code.indexStatus(root)
+      if (status.fileCount === 2 && status.identity?.snapshotId !== originalSnapshotId) {
+        publishedSnapshotId = status.identity?.snapshotId
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    assert.ok(publishedSnapshotId, 'watcher did not publish the changed source snapshot')
+    assert.equal(
+      (await code.searchCode({ root, query: 'periodicReconcileTarget' })).hits[0]?.path,
+      'nested/late.ts',
+    )
+    const [firstClose, secondClose] = await Promise.all([watcher.close(), watcher.close()])
+    assert.equal(firstClose, undefined)
+    assert.equal(secondClose, undefined)
+  } finally {
+    try {
+      await watcher?.close()
+    } finally {
+      await code.close()
+    }
+  }
 })
 
 test('rejects a pre-aborted watcher without retaining a watcher or job', async () => {
@@ -1288,9 +1318,9 @@ test('chunk configuration changes invalidate the current snapshot and profile mi
   roots.push(dataDir)
   const database = await openEmbeddedDatabase(dataDir)
   databases.push(database)
-  const lexical = createCodeIndex({ database, limits: { maxChunkChars: 64 } })
+  const lexical = trackCodeIndex(createCodeIndex({ database, limits: { maxChunkChars: 64 } }))
   const oldSnapshot = await lexical.indexRepository({ root })
-  const changed = createCodeIndex({ database, limits: { maxChunkChars: 32 } })
+  const changed = trackCodeIndex(createCodeIndex({ database, limits: { maxChunkChars: 32 } }))
   assert.equal((await changed.indexStatus(root)).identity, null)
   const newSnapshot = await changed.indexRepository({ root })
   assert.notEqual(newSnapshot.identity?.snapshotId, oldSnapshot.identity?.snapshotId)
@@ -1312,7 +1342,7 @@ test('chunk configuration changes invalidate the current snapshot and profile mi
       return documents.map((_, index) => ({ index, score: 1 }))
     },
   }
-  const hybrid = createCodeIndex({ database, models, profile, limits: { maxChunkChars: 32 } })
+  const hybrid = trackCodeIndex(createCodeIndex({ database, models, profile, limits: { maxChunkChars: 32 } }))
   const status = await hybrid.indexStatus(root)
   assert.equal(status.denseAvailable, false)
   assert.match(status.denseDisabledReason ?? '', /профиль embedding не совпадает/iu)
@@ -1355,7 +1385,7 @@ test('captures provider functions with the validated profile and permits embeddi
     },
   }
   const options = { database, models: original, profile }
-  const code = createCodeIndex(options)
+  const code = trackCodeIndex(createCodeIndex(options))
   options.models = replacement
   await code.indexRepository({ root })
   const found = await code.searchCode({ root, query: 'capturedEmbeddingTarget' })
