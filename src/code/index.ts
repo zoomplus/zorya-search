@@ -131,6 +131,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   for (const [key, value] of Object.entries(limits))
     if (!Number.isInteger(value) || value < 1 || value > HARD_LIMITS[key as keyof CodeIndexLimits])
       throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID', `Invalid code index limit: ${key}`)
+  const symbolAnalysisLimits = Object.freeze({ ...DEFAULT_SYMBOL_LIMITS, maxFiles: limits.maxFiles })
   const validatedProfile = options.models ? validateProfile(options.profile) : undefined
   const pathPolicy = createCodePathPolicy(options.exclude)
   const profile = validatedProfile ? Object.freeze({ ...validatedProfile }) : undefined
@@ -192,7 +193,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     signal: AbortSignal,
   ) => {
     const generation = await claimSymbolRefresh(database, identity.worktreeId, identity.snapshotId, signal)
-    const prepared = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal)
+    const prepared = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal, symbolAnalysisLimits)
     const verified = await enumerateCode(root, limits, signal, pathPolicy.excludes)
     const reidentified = await identifyRoot(root, verified.treeHash, signal)
     const validateSource = async () => {
@@ -211,13 +212,13 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
     await publishSymbolRefresh(database, identity.worktreeId, identity.snapshotId, generation,
       prepared.result, prepared.profile, signal, validateSource)
-    return loadSymbolAnalysis(database, identity, identity.worktreeId)
+    return loadSymbolAnalysis(database, identity, identity.worktreeId, symbolAnalysisLimits)
   }
   const hasCurrentSymbolAnalysis = async (worktreeId: string, snapshotId: string, signal: AbortSignal): Promise<boolean> => {
     const libraries = await loadTypeScriptLibraryBundle({ signal, selector: 'es2023' })
     const result = await database.query<{ analysis_profile_id: string; extractor_version: string;
       typescript_version: string; compiler_options_hash: string; library_profile_id: string | null;
-      limits_json: typeof DEFAULT_SYMBOL_LIMITS }>(
+      limits_json: typeof symbolAnalysisLimits }>(
       `SELECT a.analysis_profile_id,a.extractor_version,a.typescript_version,a.compiler_options_hash,a.library_profile_id,a.limits_json
        FROM zorya_code_analysis_state s JOIN zorya_code_analysis a
         ON a.snapshot_id=s.snapshot_id AND a.analysis_profile_id=s.current_profile_id
@@ -229,7 +230,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       return false
     const limits = { maxFiles: Number(row.limits_json.maxFiles), maxSymbols: Number(row.limits_json.maxSymbols),
       maxReferences: Number(row.limits_json.maxReferences), tsconfigPath: row.limits_json.tsconfigPath ?? null }
-    return JSON.stringify(limits) === JSON.stringify(DEFAULT_SYMBOL_LIMITS) &&
+    return JSON.stringify(limits) === JSON.stringify(symbolAnalysisLimits) &&
       row.library_profile_id === libraries.profileId &&
       row.analysis_profile_id === analysisProfileId(row.extractor_version, row.typescript_version,
         row.compiler_options_hash, row.library_profile_id, limits)
@@ -528,7 +529,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       identity.snapshotId
     )
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
-    const preparedSymbols = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal!)
+    const preparedSymbols = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal!, symbolAnalysisLimits)
     const latest = await database.query<{ generation: string | number }>(
       'SELECT generation FROM zorya_code_worktrees WHERE worktree_id=$1',
       [worktreeId],
@@ -747,7 +748,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const metadata = await getSymbolFence(value.identity.worktreeId, value.snapshot)
     return { identity: value.identity, snapshot: value.snapshot,
       metadataGeneration: metadata.generation, metadataProfile: metadata.profile }
-  })
+  }, symbolAnalysisLimits)
   const captureFindCodeSymbolsInput = (input: Parameters<NonNullable<CodeIndex['findCodeSymbols']>>[0]) => ({
     ...input,
     ...(input.enclosing === undefined ? {} : { enclosing: { ...input.enclosing } }),
@@ -1466,7 +1467,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           metadataGeneration: symbolFence.generation,
           metadataProfile: symbolFence.profile,
         }
-      })
+      }, symbolAnalysisLimits)
       const invoke = <T>(
         callerOperationSignal: AbortSignal | undefined,
         operation: (ownedSignal: AbortSignal, canonicalRoot: string) => Promise<T>,
