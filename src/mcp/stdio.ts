@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { isIP } from 'node:net'
 import { SEARCH_MCP_TOOL_CONTRACTS } from './server.js'
 import { PACKAGE_VERSION } from '../package-version.js'
+import { buildSearchMcpInstructions } from './instructions.js'
 
 /** Запускает stdio proxy: PGlite и SearchRuntime остаются у уже работающего daemon. */
 export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string) {
@@ -35,9 +36,21 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
   try {
     await client.connect(clientTransport)
     const remote = await client.listTools()
-    server = new McpServer({ name: 'zorya-search-stdio-proxy', version: PACKAGE_VERSION })
-    for (const tool of remote.tools) {
-      if (!Object.hasOwn(SEARCH_MCP_TOOL_CONTRACTS, tool.name)) continue
+    const exposedTools = remote.tools.filter((tool) => Object.hasOwn(SEARCH_MCP_TOOL_CONTRACTS, tool.name))
+    server = new McpServer(
+      { name: 'zorya-search-stdio-proxy', version: PACKAGE_VERSION },
+      {
+        instructions: buildSearchMcpInstructions(exposedTools.map((tool) => tool.name), {
+          reuseContext: 'unknown',
+          projectText: 'unknown',
+          webDiscovery: 'unknown',
+          webRead: 'unknown',
+          classification: 'unknown',
+          visual: 'unknown',
+        }),
+      },
+    )
+    for (const tool of exposedTools) {
       const contract =
         SEARCH_MCP_TOOL_CONTRACTS[tool.name as keyof typeof SEARCH_MCP_TOOL_CONTRACTS]
       server.registerTool(

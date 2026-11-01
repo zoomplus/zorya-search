@@ -6,6 +6,8 @@ Search вызывается из уже существующего клиент�
 
 ## Подключение MCP
 
+При MCP `initialize` текущий source candidate передаёт короткие подсказки по доступным ролям, каждая ограничена своей capability и grant: code/project-text retrieval не задаёт порядок работы для web, classification или visual. HTTP server использует известные ему capabilities; stdio proxy условно указывает проверить соответствующие поля `capabilities` и grants, прежде чем вызывать инструменты, и не делает дополнительных вызовов при initialize. Для `get_reuse_context` нужны `reuseContext`, `read` и `classify`; для web-инструментов — соответствующая `webDiscovery`/`webRead` capability и grant `web`; для `classify` — capability `classification` и grant `classify`; для visual — capability `visual` и grant `visual`. Одно имя инструмента не доказывает настройки provider. Это guidance, а не разрешение на поиск без grant и не замена пользовательским инструкциям. Инициализация не вызывает Search или модели. Stdio proxy использует локальный текст и локальный список разрешённых имён; upstream instructions не копируются. Публикация подсказки не доказывает подключение hosted клиента или установленной версии.
+
 Есть два способа работы:
 
 - **Локальный Codex или другой клиент с локальным stdio MCP:** настрой owner и подключи stdio proxy согласно [руководству MCP](mcp.md#локальный-mcp). Это не даёт hosted чату доступ к локальному процессу.

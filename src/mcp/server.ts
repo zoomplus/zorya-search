@@ -35,6 +35,7 @@ import {
 } from '../runtime/requests.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 import { compactReuseContext } from './reuse-presentation.js'
+import { buildSearchMcpInstructions } from './instructions.js'
 
 const mcpReuseContextRequest = reuseContextRequest.extend({
   responseDetail: z.enum(['compact', 'full']).optional(),
@@ -258,7 +259,8 @@ export function createSearchMcpServer(
   )
     throw new Error('MCP_ACCESS_INVALID')
   const operations = new Set(operationValues)
-  const server = new McpServer({ name: 'zorya-search', version: PACKAGE_VERSION })
+  const registeredToolNames: string[] = []
+  const registerTools: Array<(server: McpServer) => void> = []
 
   const add = <K extends keyof typeof SEARCH_MCP_TOOL_CONTRACTS>(
     name: K,
@@ -272,48 +274,51 @@ export function createSearchMcpServer(
     const missingRequired = requiredOperations.some((operation) => !operations.has(operation))
     if (missingRequired && (filterUnauthorizedTools || name === 'get_reuse_context')) return
     const contract = SEARCH_MCP_TOOL_CONTRACTS[name]
-    server.registerTool(
-      name,
-      {
-        description: contract.description,
-        inputSchema: contract.schema as unknown as StandardSchemaWithJSON,
-        annotations: contract.annotations,
-        ...(oauthScopesAdvertised
-          ? { _meta: { securitySchemes: [{ type: 'oauth2', scopes: requiredOperations.map((operation) => `zorya:${operation}`) }] } }
-          : {}),
-      },
-      async (input, ctx) => {
-        if (requiredOperations.some((operation) => !operations.has(operation))) return failure('ACCESS_DENIED')
-        const parsed = contract.schema.safeParse(input)
-        if (!parsed.success) return failure('INVALID_REQUEST')
-        input = parsed.data as typeof input
-        const requestRoot =
-          input && typeof input === 'object' && 'rootId' in input
-            ? String((input as { rootId: unknown }).rootId)
-            : undefined
-        if (requestRoot && !roots.has(requestRoot)) return failure('ROOT_NOT_AUTHORIZED')
-        try {
-          const signal = ownerSignal
-            ? AbortSignal.any([ctx.mcpReq.signal, ownerSignal])
-            : ctx.mcpReq.signal
-          const result = await work(
-            input as Zod.infer<(typeof SEARCH_MCP_TOOL_CONTRACTS)[K]['schema']>,
-            signal,
-          )
-          if (name === 'get_reuse_context' && (input as { responseDetail?: string }).responseDetail !== 'full') {
-            return boundedCompactSuccess(
-              compactReuseContext(
-                String((input as { rootId: string }).rootId),
-                result as Parameters<typeof compactReuseContext>[1],
-              ),
+    registeredToolNames.push(name)
+    registerTools.push((server) => {
+      server.registerTool(
+        name,
+        {
+          description: contract.description,
+          inputSchema: contract.schema as unknown as StandardSchemaWithJSON,
+          annotations: contract.annotations,
+          ...(oauthScopesAdvertised
+            ? { _meta: { securitySchemes: [{ type: 'oauth2', scopes: requiredOperations.map((operation) => `zorya:${operation}`) }] } }
+            : {}),
+        },
+        async (input, ctx) => {
+          if (requiredOperations.some((operation) => !operations.has(operation))) return failure('ACCESS_DENIED')
+          const parsed = contract.schema.safeParse(input)
+          if (!parsed.success) return failure('INVALID_REQUEST')
+          input = parsed.data as typeof input
+          const requestRoot =
+            input && typeof input === 'object' && 'rootId' in input
+              ? String((input as { rootId: unknown }).rootId)
+              : undefined
+          if (requestRoot && !roots.has(requestRoot)) return failure('ROOT_NOT_AUTHORIZED')
+          try {
+            const signal = ownerSignal
+              ? AbortSignal.any([ctx.mcpReq.signal, ownerSignal])
+              : ctx.mcpReq.signal
+            const result = await work(
+              input as Zod.infer<(typeof SEARCH_MCP_TOOL_CONTRACTS)[K]['schema']>,
+              signal,
             )
+            if (name === 'get_reuse_context' && (input as { responseDetail?: string }).responseDetail !== 'full') {
+              return boundedCompactSuccess(
+                compactReuseContext(
+                  String((input as { rootId: string }).rootId),
+                  result as Parameters<typeof compactReuseContext>[1],
+                ),
+              )
+            }
+            return boundedSuccess(result)
+          } catch (error) {
+            return failure(safeCode(error))
           }
-          return boundedSuccess(result)
-        } catch (error) {
-          return failure(safeCode(error))
-        }
-      },
-    )
+        },
+      )
+    })
   }
   add('list_roots', () => runtime.listRoots().filter((root) => roots.has(root.id)))
   add('capabilities', () => {
@@ -421,6 +426,23 @@ export function createSearchMcpServer(
     add('search_visual_references', (input, signal) =>
       runtime.searchVisualReferences({ ...input, ...(signal ? { signal } : {}) } as Parameters<typeof runtime.searchVisualReferences>[0]),
     )
+  const grantedToolNames = registeredToolNames.filter((name) =>
+    requiredOperationsForTool(name)?.every((operation) => operations.has(operation)),
+  )
+  const capabilities = runtime.capabilities()
+  const instructionCapabilities = {
+    reuseContext: capabilities.reuseContext && operations.has('read') && operations.has('classify'),
+    projectText: capabilities.projectText && operations.has('read'),
+    webDiscovery: capabilities.webDiscovery && operations.has('web'),
+    webRead: capabilities.webRead && operations.has('web'),
+    classification: capabilities.classification && operations.has('classify'),
+    visual: capabilities.visual && operations.has('visual'),
+  }
+  const server = new McpServer(
+    { name: 'zorya-search', version: PACKAGE_VERSION },
+    { instructions: buildSearchMcpInstructions(grantedToolNames, instructionCapabilities) },
+  )
+  for (const register of registerTools) register(server)
   return server
 }
 
