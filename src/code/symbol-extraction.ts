@@ -236,7 +236,7 @@ export async function extractCodeSymbols(
       if (references.length >= maxReferences) { truncation.references = true; coverage.status = 'truncated'; return }
       const location = makeLocation(path, source, fileHash, node)
       references.push({
-        id: hash(`${CODE_SYMBOL_EXTRACTOR_VERSION}\0${identity.snapshotId}\0${programResult.libraryProfileId ?? 'no-lib'}\0${path}\0${location.start}\0${location.end}\0${kind}`),
+        id: hash(`${CODE_SYMBOL_EXTRACTOR_VERSION}\0${identity.snapshotId}\0${programResult.libraryProfileId ?? 'no-lib'}\0${programResult.compilerOptionsHash}\0${path}\0${location.start}\0${location.end}\0${kind}`),
         kind,
         from: location,
         ownerSymbolId: ownerId && publishedSymbolIds.has(ownerId) ? ownerId : null,
@@ -333,6 +333,7 @@ export async function extractCodeSymbols(
     truncation,
     compiler: {
       typescriptVersion: programResult.typescriptVersion,
+      compilerOptionsHash: programResult.compilerOptionsHash,
       libraryProfileId: programResult.libraryProfileId,
       libraryAssets: programResult.libraryAssets,
     },

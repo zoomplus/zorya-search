@@ -1,7 +1,7 @@
 import type { TypeScriptLibraryBundle } from './symbol-libraries.js'
 
 /** Внутренние версионируемые DTO детерминированного извлечения символов. */
-export const CODE_SYMBOL_EXTRACTOR_VERSION = 'ts-symbol-graph-v1'
+export const CODE_SYMBOL_EXTRACTOR_VERSION = 'ts-symbol-graph-v2'
 
 export interface VerifiedSymbolSource {
   path: string
@@ -73,6 +73,7 @@ export interface SymbolExtractionResult {
 
 export interface SymbolCompilerProvenance {
   typescriptVersion: string
+  compilerOptionsHash: string
   libraryProfileId: string | null
   libraryAssets: string[]
 }

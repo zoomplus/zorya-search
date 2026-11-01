@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import ts from 'typescript'
 import type { VerifiedSymbolSource } from './symbol-types.js'
 
@@ -6,6 +7,7 @@ export interface VerifiedSourceResolver {
   resolve(fromPath: string, specifier: string): string | null
   compilerOptions: ts.CompilerOptions
   diagnostics: string[]
+  compilerOptionsHash: string
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -24,9 +26,10 @@ export function createVerifiedSourceResolver(rootInput: string, sources: readonl
   const absoluteToLogical = new Map<string, string>()
   for (const source of sources) {
     const logical = normalizeRelative(source.path)
-    if (!logical) continue
+    if (!logical) throw new Error(`Source path is not canonical: ${source.path}`)
     const absolute = resolve(root, logical)
-    if (!inside(root, absolute)) continue
+    if (!inside(root, absolute)) throw new Error(`Source path escapes verified root: ${source.path}`)
+    if (paths.has(logical)) throw new Error(`Duplicate verified source path: ${logical}`)
     paths.set(logical, source)
     absoluteToLogical.set(absolute, logical)
   }
@@ -42,79 +45,103 @@ export function createVerifiedSourceResolver(rootInput: string, sources: readonl
   }
   let compilerOptions: ts.CompilerOptions = {
     module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    allowJs: true, noResolve: true, noLib: true, target: ts.ScriptTarget.Latest,
+    target: ts.ScriptTarget.Latest,
   }
   const configContents = new Map([...paths].filter(([path]) => path.toLowerCase().endsWith('.json')))
-  const configKey = tsconfigPath ? normalizeRelative(tsconfigPath) : 'tsconfig.json'
+  const configKey = tsconfigPath ? normalizeRelative(tsconfigPath) : configContents.has('tsconfig.json') ? 'tsconfig.json' : null
+  if (tsconfigPath && !configKey) diagnostics.push('tsconfig path escaped verified root')
+  const configIdentity = configKey ?? null
   if (configKey) {
     const visited = new Set<string>()
-    const readConfig = (key: string, depth: number): Record<string, unknown> => {
-      if (depth > 8) { diagnostics.push('tsconfig extends depth exceeded'); return {} }
+    const checked = new Set<string>()
+    const allowedConfigPaths = new Set<string>()
+    const checkChain = (key: string, depth: number): void => {
       const normalized = normalizeRelative(key)
-      if (!normalized) { diagnostics.push('tsconfig extends escaped verified root'); return {} }
-      if (visited.has(normalized)) { diagnostics.push(`tsconfig extends cycle: ${normalized}`); return {} }
+      if (!normalized) { diagnostics.push('tsconfig extends escaped verified root'); return }
+      if (depth > 8) { diagnostics.push('tsconfig extends depth exceeded'); return }
+      if (visited.has(normalized)) { diagnostics.push(`tsconfig extends cycle: ${normalized}`); return }
+      if (checked.has(normalized)) return
       const source = configContents.get(normalized)
-      if (!source) { diagnostics.push(`unavailable verified tsconfig: ${normalized}`); return {} }
-      visited.add(normalized)
+      if (!source) { diagnostics.push(`unavailable verified tsconfig: ${normalized}`); return }
       const parsed = ts.parseConfigFileTextToJson(normalized, source.text)
-      if (parsed.error || !parsed.config || typeof parsed.config !== 'object') {
-        diagnostics.push(`malformed tsconfig: ${normalized}`); visited.delete(normalized); return {}
-      }
-      const config = parsed.config as Record<string, unknown>
-      let base: Record<string, unknown> = {}
-      if (typeof config.extends === 'string') {
-        const parentSpec = config.extends.endsWith('.json') ? config.extends : `${config.extends}.json`
-        if (parentSpec.startsWith('.') || parentSpec.startsWith('/'))
-          base = readConfig(resolve(dirname(resolve(root, normalized)), parentSpec).replace(`${root}${sep}`, '').split(sep).join('/'), depth + 1)
-        else diagnostics.push(`package tsconfig extends not resolved: ${parentSpec}`)
-      }
-      const merged = { ...base, ...config }
-      const baseCompiler = (base.compilerOptions && typeof base.compilerOptions === 'object' ? base.compilerOptions : {}) as Record<string, unknown>
-      const ownCompiler = (config.compilerOptions && typeof config.compilerOptions === 'object' ? config.compilerOptions : {}) as Record<string, unknown>
-      const own = { ...ownCompiler }
-      const configDirectory = dirname(resolve(root, normalized))
-      const ownBaseUrl = typeof own.baseUrl === 'string'
-        ? resolve(configDirectory, own.baseUrl)
-        : typeof baseCompiler.baseUrl === 'string' ? resolve(root, baseCompiler.baseUrl) : configDirectory
-      if (typeof own.baseUrl === 'string') own.baseUrl = relative(root, ownBaseUrl) || '.'
-      if (own.paths && typeof own.paths === 'object') {
-        const normalizedPaths: Record<string, string[]> = {}
-        for (const [pattern, substitutions] of Object.entries(own.paths as Record<string, unknown>)) {
-          if (!Array.isArray(substitutions) || substitutions.some((item) => typeof item !== 'string')) {
-            diagnostics.push(`malformed tsconfig paths mapping: ${normalized}:${pattern}`); continue
-          }
-          normalizedPaths[pattern] = (substitutions as string[]).map((item) => relative(root, resolve(ownBaseUrl, item)))
+      if (parsed.error || !parsed.config || typeof parsed.config !== 'object') { diagnostics.push(`malformed tsconfig: ${normalized}`); return }
+      allowedConfigPaths.add(normalized)
+      visited.add(normalized)
+      const parent = (parsed.config as { extends?: unknown }).extends
+      if (typeof parent === 'string') {
+        if (!parent.startsWith('.') || parent.includes('*')) diagnostics.push('unsupported non-relative tsconfig extends')
+        else {
+          const parentPath = resolve(dirname(resolve(root, normalized)), parent.endsWith('.json') ? parent : `${parent}.json`)
+          if (!inside(root, parentPath)) diagnostics.push('tsconfig extends escaped verified root')
+          else checkChain(relative(root, parentPath).split(sep).join('/'), depth + 1)
         }
-        own.paths = normalizedPaths
       }
-      if (Array.isArray(own.rootDirs)) own.rootDirs = own.rootDirs.filter((item): item is string => typeof item === 'string').map((item) => relative(root, resolve(configDirectory, item)))
-      merged.compilerOptions = { ...baseCompiler, ...own }
       visited.delete(normalized)
-      return merged
+      checked.add(normalized)
     }
-    if (configContents.has(configKey)) {
-      const config = readConfig(configKey, 0)
-      const raw = (config.compilerOptions && typeof config.compilerOptions === 'object' ? config.compilerOptions : {}) as Record<string, unknown>
-      const effectiveBaseUrl = typeof raw.baseUrl === 'string' ? resolve(root, raw.baseUrl) : root
-      if (raw.paths && typeof raw.paths === 'object') {
-        const finalPaths: Record<string, string[]> = {}
-        for (const [pattern, substitutions] of Object.entries(raw.paths as Record<string, unknown>))
-          if (Array.isArray(substitutions)) finalPaths[pattern] = substitutions.filter((item): item is string => typeof item === 'string').map((item) => relative(effectiveBaseUrl, resolve(root, item)))
-        raw.paths = finalPaths
-      }
-      const options: ts.CompilerOptions = {
-        ...compilerOptions,
-        ...(raw.baseUrl || raw.paths ? { baseUrl: effectiveBaseUrl } : {}),
-        ...(raw.paths && typeof raw.paths === 'object' ? { paths: raw.paths as Record<string, string[]> } : {}),
-        ...(Array.isArray(raw.rootDirs) ? { rootDirs: raw.rootDirs.filter((item): item is string => typeof item === 'string').map((item) => resolve(root, item)) } : {}),
-      }
-      if (typeof raw.module === 'string' && ts.ModuleKind[raw.module as keyof typeof ts.ModuleKind] !== undefined)
-        options.module = ts.ModuleKind[raw.module as keyof typeof ts.ModuleKind] as ts.ModuleKind
-      if (typeof raw.moduleResolution === 'string' && ts.ModuleResolutionKind[raw.moduleResolution as keyof typeof ts.ModuleResolutionKind] !== undefined)
-        options.moduleResolution = ts.ModuleResolutionKind[raw.moduleResolution as keyof typeof ts.ModuleResolutionKind] as ts.ModuleResolutionKind
-      compilerOptions = options
-    } else if (tsconfigPath) diagnostics.push(`unavailable verified tsconfig: ${configKey}`)
+    checkChain(configKey, 0)
+    const parseHost: ts.ParseConfigFileHost = {
+      useCaseSensitiveFileNames: true,
+      getCurrentDirectory: () => root,
+      fileExists: (file) => allowedConfigPaths.has(relative(root, resolve(file)).split(sep).join('/')),
+      readFile: (file) => {
+        const logical = relative(root, resolve(file)).split(sep).join('/')
+        return allowedConfigPaths.has(logical) ? configContents.get(logical)?.text : undefined
+      },
+      readDirectory: () => [],
+      directoryExists: (directory) => [...allowedConfigPaths].some((file) => inside(resolve(directory), resolve(root, file))),
+      getDirectories: () => [],
+      realpath: (file) => resolve(file),
+      onUnRecoverableConfigFileDiagnostic: (diagnostic) => diagnostics.push(`tsconfig: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`),
+    }
+    const configFileName = resolve(root, configKey)
+    const parsed = ts.getParsedCommandLineOfConfigFile(configFileName, undefined, parseHost)
+    if (parsed) {
+      diagnostics.push(...parsed.errors
+        .filter((diagnostic) => diagnostic.code !== 18003)
+        .map((diagnostic) => `tsconfig: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`))
+      compilerOptions = parsed.options
+    } else diagnostics.push(`unavailable verified tsconfig: ${configKey}`)
   }
+  // JavaScript включён намеренно: переданные JS-файлы анализируются и проверяются.
+  // Пути, типы и плагины остаются ограничены явной политикой закрытого анализа.
+  const effectiveOptions = { ...compilerOptions }
+  delete effectiveOptions.plugins
+  delete effectiveOptions.typeRoots
+  compilerOptions = { ...effectiveOptions, allowJs: true, checkJs: true, noLib: true, noEmit: true, types: [] }
+  const canonical = (value: unknown, stack = new Set<object>()): unknown => {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return value
+    if (typeof value !== 'object') throw new TypeError('Compiler options contain a non-serializable value')
+    if (stack.has(value)) throw new TypeError('Compiler options contain a cycle')
+    stack.add(value)
+    let result: unknown
+    if (Array.isArray(value)) result = value.map((item) => canonical(item, stack))
+    else {
+      const prototype = Object.getPrototypeOf(value)
+      if (prototype !== Object.prototype && prototype !== null) throw new TypeError('Compiler options contain a non-plain object')
+      result = Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonical(item, stack)]))
+    }
+    stack.delete(value)
+    return result
+  }
+  const pathOptions = new Set(['baseUrl', 'pathsBasePath', 'rootDir', 'rootDirs', 'rootDirsBasePath', 'typeRoots', 'outDir', 'outFile', 'declarationDir', 'tsBuildInfoFile'])
+  const optionsForHash: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(compilerOptions)) {
+    if (key === 'configFilePath' || value === undefined) continue
+    const relativize = (entry: unknown): unknown => typeof entry === 'string' && isAbsolute(entry) ? (relative(root, entry) || '.') : entry
+    optionsForHash[key] = pathOptions.has(key)
+      ? Array.isArray(value) ? value.map(relativize) : key === 'paths' ? value : relativize(value)
+      : value
+  }
+  const compilerOptionsHash = createHash('sha256').update(JSON.stringify(canonical({
+    typescriptVersion: ts.version,
+    configPath: configIdentity,
+    options: optionsForHash,
+    policy: { allowJs: true, checkJs: true, noLib: true, noEmit: true, types: [], typeRoots: 'disabled', plugins: 'disabled', filesystem: 'verified-map-only' },
+  }))).digest('hex')
 
   const dirs = new Set<string>([root])
   for (const file of absoluteToLogical.keys()) for (let dir = dirname(file); inside(root, dir); dir = dirname(dir)) { dirs.add(dir); if (dir === root) break }
@@ -128,6 +155,7 @@ export function createVerifiedSourceResolver(rootInput: string, sources: readonl
   return {
     compilerOptions,
     diagnostics,
+    compilerOptionsHash,
     resolve(fromPath, specifier) {
       if (!specifier || specifier.includes('\0')) return null
       const containing = resolve(root, fromPath)

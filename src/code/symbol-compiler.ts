@@ -13,6 +13,7 @@ export interface VerifiedSymbolProgram {
   fileByAbsolutePath: Map<string, VerifiedSymbolSource>
   configDiagnostics: string[]
   typescriptVersion: string
+  compilerOptionsHash: string
   libraryProfileId: string | null
   libraryAssets: string[]
 }
@@ -74,7 +75,7 @@ export async function compileVerifiedSymbolSources(
     const kind = sourceScriptKind(source.path)
     if (kind === null) continue
     const absolute = virtualFilename(root, source.path)
-    const sourceFile = ts.createSourceFile(absolute, source.text, ts.ScriptTarget.Latest, true, kind)
+    const sourceFile = ts.createSourceFile(absolute, source.text, resolver.compilerOptions.target ?? ts.ScriptTarget.Latest, true, kind)
     sourceByPath.set(source.path, sourceFile)
     fileByAbsolutePath.set(absolute, source)
     if (++parsedCount % 32 === 0) await new Promise<void>((resolveTurn) => setImmediate(resolveTurn))
@@ -92,8 +93,8 @@ export async function compileVerifiedSymbolSources(
     }
   }
   const options: ts.CompilerOptions = {
-    ...resolver.compilerOptions, allowJs: true, checkJs: true, noResolve: false,
-    noLib: true, noEmit: true, skipLibCheck: true, types: [],
+    ...resolver.compilerOptions, allowJs: true, checkJs: true,
+    noLib: true, noEmit: true, types: [],
   }
   const host = ts.createCompilerHost(options, true)
   const getVerifiedSourceFile: ts.CompilerHost['getSourceFile'] = (fileName, _languageVersion, onError) => {
@@ -151,6 +152,7 @@ export async function compileVerifiedSymbolSources(
     fileByAbsolutePath,
     configDiagnostics: resolver.diagnostics,
     typescriptVersion: ts.version,
+    compilerOptionsHash: resolver.compilerOptionsHash,
     libraryProfileId: libraries?.profileId ?? null,
     libraryAssets: libraries?.assets.map((asset) => asset.name) ?? [],
   }
