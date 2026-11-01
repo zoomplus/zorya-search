@@ -169,6 +169,13 @@ function toIsoNullable(value: Date | string | null | undefined): string | null {
   return toIso(value)
 }
 
+function limitExcerptToUtf16Length(excerpt: string): string {
+  const bounded = excerpt.slice(0, KNOWLEDGE_HISTORY_EXCERPT_MAX)
+  if (bounded.length === excerpt.length) return bounded
+  const lastCodeUnit = bounded.charCodeAt(bounded.length - 1)
+  return lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? bounded.slice(0, -1) : bounded
+}
+
 function mapCurrentVersion(row: z.infer<typeof sourceRowSchema>) {
   if (
     !row.currentVersionId ||
@@ -187,7 +194,7 @@ function mapCurrentVersion(row: z.infer<typeof sourceRowSchema>) {
     game: row.currentGame ?? null,
     gameVersion: row.currentGameVersion ?? null,
     language: row.currentLanguage,
-    excerpt: row.currentExcerpt ?? '',
+    excerpt: limitExcerptToUtf16Length(row.currentExcerpt ?? ''),
   }
 }
 
@@ -212,7 +219,7 @@ function mapVersionRow(row: z.infer<typeof versionRowSchema>) {
     game: row.game ?? null,
     gameVersion: row.gameVersion ?? null,
     language: row.language,
-    excerpt: row.excerpt ?? '',
+    excerpt: limitExcerptToUtf16Length(row.excerpt ?? ''),
     isCurrent: row.isCurrent,
   }
 }
