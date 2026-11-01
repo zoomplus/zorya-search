@@ -319,7 +319,7 @@ test(
         entry,
         "mcp",
         "--config",
-        config,
+        await realpath(config),
       ]);
       assert.deepEqual(clientConfig.installedCodex.args, [
         "mcp",
@@ -334,7 +334,7 @@ test(
         "@zorya/search@0.1.0",
         "mcp",
         "--config",
-        config,
+        await realpath(config),
       ]);
       assert.equal(clientConfig.credentialsIncluded, false);
       const coldClient = new Client(

@@ -127,9 +127,10 @@ globalThis.fetch=async (input,init)=>{
       assert.equal((cancelled.structuredContent as { state?: string }).state, 'cancelled')
       const ownedResult = await ownedCli.closed
       assert.equal(ownedResult.code, 1, ownedResult.err)
-      const ownedStatus = JSON.parse(ownedResult.out) as { indexingJob?: { jobId?: string; state?: string } }
-      assert.equal(ownedStatus.indexingJob?.jobId, ownerJobId)
-      assert.equal(ownedStatus.indexingJob?.state, 'cancelled')
+      const ownedEnvelope = JSON.parse(ownedResult.out) as { structuredContent?: { indexingJob?: { jobId?: string; state?: string } } }
+      assert.ok(ownedEnvelope.structuredContent?.indexingJob)
+      assert.equal(ownedEnvelope.structuredContent.indexingJob.jobId, ownerJobId)
+      assert.equal(ownedEnvelope.structuredContent.indexingJob.state, 'cancelled')
     } else {
       ownedCli.child.kill('SIGINT')
       const ownedResult = await ownedCli.closed
@@ -152,9 +153,10 @@ globalThis.fetch=async (input,init)=>{
       await writeFile(release2, 'release')
       const peerResult = await peerCli.closed
       assert.equal(peerResult.code, 0, peerResult.err)
-      const peerStatus = JSON.parse(peerResult.out) as { indexingJob?: { jobId?: string; state?: string } }
-      assert.equal(peerStatus.indexingJob?.jobId, peerJobId)
-      assert.equal(peerStatus.indexingJob?.state, 'completed')
+      const peerEnvelope = JSON.parse(peerResult.out) as { structuredContent?: { indexingJob?: { jobId?: string; state?: string } } }
+      assert.ok(peerEnvelope.structuredContent?.indexingJob)
+      assert.equal(peerEnvelope.structuredContent.indexingJob.jobId, peerJobId)
+      assert.equal(peerEnvelope.structuredContent.indexingJob.state, 'completed')
     } else {
       peerCli.child.kill('SIGINT')
       const peerResult = await peerCli.closed

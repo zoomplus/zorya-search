@@ -686,12 +686,12 @@ test('cancelled queued jobs release queue capacity for later admissions', async 
 
 test('retry progress counts only checkpoint writes made during that attempt', async () => {
   const f = await fixture()
-  await writeFile(join(f.a, 'units.ts'), Array.from({ length: 65 }, (_, index) => `export function stage${index}() { return ${index} }`).join('\n') + '\n')
   let calls = 0
   const fetch: typeof globalThis.fetch = async (_input, init) => {
     calls++
-    if (calls === 2 || calls === 3) {
-      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true }))
+    const callNumber = calls
+    if (callNumber === 2 || callNumber === 3) {
+      await waitForAbort(init?.signal)
     }
     const body = JSON.parse(String(init?.body)) as { input?: string[] }
     return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
@@ -705,6 +705,9 @@ test('retry progress counts only checkpoint writes made during that attempt', as
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
   try {
     runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await runtime.indexRepository({ rootId: 'a' })
+    calls = 0
+    await writeFile(join(f.a, 'units.ts'), Array.from({ length: 65 }, (_, index) => `export function stage${index}() { return ${index} }`).join('\n') + '\n')
     const admission = runtime.startIndexing({ rootId: 'a' })
     await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'failed', 7000)
     const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
@@ -895,12 +898,18 @@ test('paused watcher probes the indexed source and ignores unrelated events', as
   try {
     runtime = await openSearchRuntime({ config, backgroundWatchStartup: true, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
     await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).retryOnChange)
+    const failedJob = (await runtime.indexStatus({ rootId: 'a' })).indexingJob
+    assert.equal(failedJob?.state, 'failed')
     await mkdir(join(f.a, '.git'))
     await writeFile(join(f.a, '.git', 'untracked'), 'ignored')
     await new Promise((resolve) => setTimeout(resolve, 650))
     assert.equal(calls, 1)
     await writeFile(join(f.a, 'nested', 'missed-event.ts'), 'export const recoveredFromNestedEdit = true\n')
     await waitFor(async () => calls === 2, 5000)
+    const resumedJob = (await runtime.indexStatus({ rootId: 'a' })).indexingJob
+    assert.ok(resumedJob)
+    assert.notEqual(resumedJob.jobId, failedJob?.jobId)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: resumedJob.jobId })).indexingJob?.state === 'completed', 5000)
     await waitFor(async () => runtime!.watchStatus({ rootId: 'a' }).errorCode === null, 5000)
     const result = await runtime.searchCode({ rootId: 'a', query: 'recoveredFromNestedEdit', mode: 'lexical' })
     assert.equal(result.hits[0]?.path, 'nested/missed-event.ts')
