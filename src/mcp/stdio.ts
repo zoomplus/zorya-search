@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { isIP } from 'node:net'
 import { SEARCH_MCP_TOOL_CONTRACTS } from './server.js'
+import { PACKAGE_VERSION } from '../package-version.js'
 
 /** Запускает stdio proxy: PGlite и SearchRuntime остаются у уже работающего daemon. */
 export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string) {
@@ -14,7 +15,7 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
     throw new Error('MCP_ENDPOINT_INVALID')
   if (!bearerToken || bearerToken.length > 8192) throw new Error('MCP_CREDENTIAL_INVALID')
   const client = new Client(
-    { name: 'zorya-search-stdio-proxy', version: '0.1.1' },
+    { name: 'zorya-search-stdio-proxy', version: PACKAGE_VERSION },
     { versionNegotiation: { mode: 'auto' } },
   )
   const clientTransport = new StreamableHTTPClientTransport(endpoint, {
@@ -34,7 +35,7 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
   try {
     await client.connect(clientTransport)
     const remote = await client.listTools()
-    server = new McpServer({ name: 'zorya-search-stdio-proxy', version: '0.1.1' })
+    server = new McpServer({ name: 'zorya-search-stdio-proxy', version: PACKAGE_VERSION })
     for (const tool of remote.tools) {
       if (!Object.hasOwn(SEARCH_MCP_TOOL_CONTRACTS, tool.name)) continue
       const contract =

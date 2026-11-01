@@ -4,17 +4,17 @@
 
 ## Релиз и установка
 
-Требуется Node.js `>=20.19.0`. Установите `v0.1.1` в проект без глобальной установки:
+Требуется Node.js `>=20.19.0`. Установите закреплённый архив из GitHub `v0.1.3` как точную зависимость проекта, чтобы он сохранялся в `package.json` и lockfile, затем создайте конфигурацию для текущего корня:
 
 ```sh
-npm install --no-save --no-package-lock https://github.com/zoomplus/zorya-search/releases/download/v0.1.1/zorya-search-0.1.1.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.3/zorya-search-0.1.3.tgz
 npm exec -- zorya-search setup --root .
-npm exec -- zorya-search index
-npm exec -- zorya-search search --query "где обрабатывается запрос"
 npm exec -- zorya-search client-config
 ```
 
-`v0.1.0` доступен как [неизменяемый GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/download/v0.1.0/zorya-search-0.1.0.tgz) для локального MCP с owner bearer; SDK этой версии также принимал переданный приложением `authorize` callback, но не включал готовую OAuth policy/CLI службу. `serve-remote` и новые provider-поля ошибок входят в `v0.1.1`. Пакет распространяется через GitHub archives с точным номером версии; установка не подключает Search к текущему чату автоматически.
+Команда `client-config` только печатает варианты конфигурации: регистрацию MCP в Codex или другом клиенте нужно выполнить отдельно. После подключения клиенту отдельно выдаются нужные разрешения; индексацию также запускают явно командой `npm exec -- zorya-search index`. Разрешение использовать модели и передача им кода включаются отдельно. Эта инструкция сохраняет архив из GitHub конкретной версии как зависимость проекта; npm registry вариант `client-config` применим только после публикации соответствующей версии в npm.
+
+Исторический [GitHub prerelease `v0.1.0`](https://github.com/zoomplus/zorya-search/releases/download/v0.1.0/zorya-search-0.1.0.tgz) предназначался для локального MCP с owner bearer и не включал готовую OAuth policy/CLI службу. `serve-remote` впервые появился в `v0.1.1`; детали версии и соответствующие ограниченные проверки описаны в [руководстве удалённого MCP](docs/mcp.md). Установка пакета не подключает Search к чату автоматически.
 
 По умолчанию поиск лексический и не обращается к моделям. Для code-профиля задайте ключ OpenRouter в окружении процесса владельца; для Brave — `BRAVE_SEARCH_API_KEY`:
 

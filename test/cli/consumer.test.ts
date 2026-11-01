@@ -21,6 +21,9 @@ import { ownerDir } from "../../src/cli/files.js";
 
 const node = process.execPath;
 const entry = resolve("dist/cli/entry.js");
+const installedManifest = JSON.parse(
+  await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+) as { name: string; version: string };
 const canRunBuiltConsumer = existsSync(entry);
 const mechanismConfigSupported = runtimeConfigSchema.safeParse({
   version: 1,
@@ -71,6 +74,10 @@ test(
     const common = ["--config", config];
     const transports: StdioClientTransport[] = [];
     try {
+      assert.equal(installedManifest.name, "@zorya/search");
+      const versionResult = await run(["--version"], dir);
+      assert.equal(versionResult.code, 0, versionResult.err);
+      assert.equal(versionResult.out.trim(), installedManifest.version);
       let r = await run([
         "setup",
         "--root",
@@ -417,7 +424,7 @@ test(
       ]);
       assert.deepEqual(clientConfig.registry.args, [
         "--yes",
-        "@zorya/search@0.1.1",
+        `@zorya/search@${installedManifest.version}`,
         "mcp",
         "--config",
         await realpath(config),
@@ -437,6 +444,7 @@ test(
       const coldConnection = coldClient.connect(coldTransport);
       const coldIndex = run(["index", ...common]);
       await coldConnection;
+      assert.equal(coldClient.getServerVersion()?.version, installedManifest.version);
       const coldTools = await coldClient.listTools();
       assert.ok(coldTools.tools.some((tool) => tool.name === "search_code"));
       const coldIndexResult = await coldIndex;

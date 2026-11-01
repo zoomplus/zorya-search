@@ -4,22 +4,20 @@ CLI предоставляет команды для локальной наст
 
 ## Быстрый старт
 
-Приведённые ниже `npx` команды подходят для npm-публикации пакета. Для version-specific GitHub archive установи архив по инструкции из [README](../README.md); команда запускает `node_modules/.bin/zorya-search` только в текущем проекте.
+Для Node.js `>=20.19.0` установите закреплённый GitHub archive `v0.1.3` в текущий проект и создайте конфигурацию. Команды не устанавливают MCP в чат или редактор и не запускают индексацию:
 
 ```sh
-npx --yes @zorya/search setup --root "$PWD"
-npx --yes @zorya/search doctor
-npx --yes @zorya/search index
-npx --yes @zorya/search search --query "обработка запроса"
-npx --yes @zorya/search context --query "где формируется ответ"
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.3/zorya-search-0.1.3.tgz
+npm exec -- zorya-search setup --root .
+npm exec -- zorya-search client-config
 ```
 
-`npx` запускает пакет без глобальной установки. Если пакет установлен пользователем отдельно, те же подкоманды доступны через `zorya-search`.
+`client-config` печатает готовые варианты, включая `installedCodex`; владелец отдельно регистрирует нужный вариант в существующем клиенте. После регистрации отдельно выдаются разрешения, запускается `index`, а доступ к моделям включается только при отдельной настройке профиля и ключа. Установка в workspace не использует глобальную команду и не меняет конфигурацию клиента.
 
 Для большого workspace задайте явные пределы и исключите большие evidence-деревья до индексации. Например, Assistant workspace с 24 863 chunks на принятом snapshot:
 
 ```sh
-npx --yes @zorya/search setup --root "$PWD" --exclude 'docs/evidence/**' \
+npm exec -- zorya-search setup --root "$PWD" --exclude 'docs/evidence/**' \
   --max-files 20000 --max-chunks 50000 --max-scan-chunks 50000 --watch
 ```
 
@@ -78,7 +76,7 @@ Classifier задаётся через `--classifier-model MODEL --classifier-en
 - `root-add --root-id ID --root PATH [--watch] [--watch-interval-ms N]` — добавить корень. Watch вступает в силу при следующем запуске службы; конфигурация не перезаписывается при активном владельце.
 - `serve` — запустить локальную службу на loopback в foreground. При ручном запуске CLI сам создаёт приватные owner и control секреты; внутренние параметры секретных файлов используются только launcher-ом. На Node 24 для этого ограниченного workaround можно запустить entry как `node --wasm-wrapper-tiering-budget=1000000000 <entry> serve --config <path>`; обычная команда `zorya-search serve` сохраняет стандартные настройки Node. Команды, автоматически создающие владельца службы, применяют флаг к собственному Node 24 daemon.
 - `mcp` — предоставить MCP stdio и подключиться к общей локальной службе. Данные протокола идут только в stdout; диагностика — в stderr.
-- `client-config` — вывести готовые варианты JSON `command`/`args`: `installed` запускает текущий установленный package entry через абсолютные `process.execPath` и путь entry и пригоден из другого cwd; `installedCodex` — соответствующий `codex mcp add`. `registry` и `registryCodex` используют закреплённый npm version `@zorya/search@0.1.0`; публикация в npm и GitHub Release — отдельные каналы поставки. Команда только показывает конфигурацию, не меняя профиль клиента.
+- `client-config` — вывести готовые варианты JSON `command`/`args`: `installed` запускает текущий установленный package entry через абсолютные `process.execPath` и путь entry и пригоден из другого cwd; `installedCodex` печатает соответствующую команду `codex mcp add`. Варианты `registry` и `registryCodex` адресуют одноимённую версию из npm и работают только после публикации этой версии в npm; используйте `installed` для установленного GitHub archive. Команда только показывает конфигурацию, не регистрирует MCP и не меняет профиль клиента.
 - `service` — показать статус; `service --stop` отправляет отдельный случайный секрет по owner-specific локальному IPC каналу после проверки текущего daemon токена. PID из редактируемого descriptor не используется для остановки процесса.
 
 Для help и version не читаются конфигурация, секреты или база. Диагностика возвращает структурированные значения; `doctor` различает установленный CLI, валидную конфигурацию, подтверждённый локальный сервис и фактическую проверку провайдера.
@@ -104,4 +102,4 @@ zorya-search serve-remote \
 
 Команда оставляет daemon на `127.0.0.1`; публикацию HTTPS выполняет настроенный владельцем reverse proxy. Не используйте `serve` и `serve-remote` одновременно с одним каталогом данных. Требования к issuer, JWT claims, PKCE `S256`, scopes и proxy приведены в [руководстве MCP](mcp.md#удалённый-oauth-endpoint-v011).
 
-`v0.1.0` prerelease не содержит `serve-remote`; для локального MCP с owner bearer скачайте [архив `v0.1.0`](https://github.com/zoomplus/zorya-search/releases/download/v0.1.0/zorya-search-0.1.0.tgz). Для удалённого OAuth используйте [version-specific архив `v0.1.1`](https://github.com/zoomplus/zorya-search/releases/download/v0.1.1/zorya-search-0.1.1.tgz).
+`v0.1.0` prerelease не содержит `serve-remote`; исторический локальный MCP с owner bearer описан в [архиве `v0.1.0`](https://github.com/zoomplus/zorya-search/releases/download/v0.1.0/zorya-search-0.1.0.tgz). Для актуальных команд используйте установленную [version-specific версию из README](../README.md); описание OAuth-архитектуры ниже относится к функции, впервые добавленной в `v0.1.1`.

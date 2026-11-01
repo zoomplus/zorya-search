@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer as createHttpServer, request as httpRequest } from 'node:http'
@@ -14,6 +14,9 @@ import { startSearchDaemon } from '../../src/daemon/index.js'
 import { runSearchMcpStdioProxy } from '../../src/mcp/stdio.js'
 
 test('loopback daemon serves real negotiated MCP clients and isolates root grants', async (t) => {
+  const installedManifest = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { name: string; version: string }
   const dir = await mkdtemp(join(tmpdir(), 'zorya-mcp-daemon-'))
   const alpha = join(dir, 'alpha')
   const beta = join(dir, 'beta')
@@ -148,6 +151,8 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       return client
     }
     const modern = await makeClient('auto', alphaToken)
+    assert.equal(installedManifest.name, '@zorya/search')
+    assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
     assert.equal(listed.tools.length, 13)
     assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)

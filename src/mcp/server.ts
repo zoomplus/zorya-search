@@ -25,6 +25,7 @@ import {
   startIndexingRequest,
   cancelIndexingRequest,
 } from '../runtime/requests.js'
+import { PACKAGE_VERSION } from '../package-version.js'
 
 export type SearchMcpRuntime = Awaited<ReturnType<typeof openSearchRuntime>>
 export interface SearchMcpAccess {
@@ -165,7 +166,7 @@ export function createSearchMcpServer(
   )
     throw new Error('MCP_ACCESS_INVALID')
   const operations = new Set(operationValues)
-  const server = new McpServer({ name: 'zorya-search', version: '0.1.1' })
+  const server = new McpServer({ name: 'zorya-search', version: PACKAGE_VERSION })
 
   const add = <K extends keyof typeof SEARCH_MCP_TOOL_CONTRACTS>(
     name: K,

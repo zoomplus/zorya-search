@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { PACKAGE_VERSION } from "../package-version.js";
 import { node24DaemonExecArgv } from "./node24.js";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -105,7 +106,7 @@ async function authenticated(owner: Owner, configPath: string) {
   try {
     const token = await ownerToken(owner, configPath);
     const client = new Client(
-      { name: "zorya-search-cli", version: "0.1.1" },
+      { name: "zorya-search-cli", version: PACKAGE_VERSION },
       { versionNegotiation: { mode: "auto" } },
     );
     await client.connect(

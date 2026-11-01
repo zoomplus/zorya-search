@@ -21,8 +21,9 @@ import { canonicalFuturePath } from "../runtime/path.js";
 import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
 import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadataUrl, remoteOAuthScopes, validateRemoteOAuthRoots } from "../daemon/remote-oauth.js";
 import { startSearchDaemon } from "../daemon/index.js";
+import { PACKAGE_VERSION } from "../package-version.js";
 
-const CLI_VERSION = "0.1.1";
+const CLI_VERSION = PACKAGE_VERSION;
 const cliEntryPath = fileURLToPath(import.meta.url);
 const help = `Zorya Search — локальный поиск по коду и источникам
 
