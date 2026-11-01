@@ -25,6 +25,30 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
+function makeTextPdf(contentStream: string, pageWidth = 300): Buffer {
+  const stream = `${contentStream}\n`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} 100] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+  ]
+  let document = '%PDF-1.4\n'
+  const offsets = [0]
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(document))
+    document += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`
+  }
+  const xrefOffset = Buffer.byteLength(document)
+  document += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets.slice(1)) {
+    document += `${String(offset).padStart(10, '0')} 00000 n \n`
+  }
+  document += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  return Buffer.from(document)
+}
+
 test('Mechanism presets stay pinned and multimodal OpenRouter embedding sends only bounded caller bytes', async () => {
   assert.deepEqual(MECHANISM_RETRIEVAL_PRESETS.code, {
     model: 'voyageai/voyage-code-4', dimensions: 1024, candidateLimit: 30,
@@ -726,6 +750,250 @@ test("Brave source deduplicates, caps discovery, parses documents, and blocks pr
   );
 });
 
+test('Brave reader preserves literal formats, HTML code whitespace, and explicit source dates', async () => {
+  const inputs = [
+    {
+      type: 'text/html',
+      body: '<html><head><title>Guide</title><meta property="article:published_time" content="2025-02-03T04:05:06Z"></head><body><nav>hidden nav</nav><p>pre<span>fix</span> <code> x  y</code></p><pre>\tconst x = 1;\n  next()</pre><pre>\n   leading\n\n\n\nend\n</pre><p>a<br>b</p><script>"</script><p>post</p><pre>ONE</pre><pre>TWO</pre><pre>tail\n\n\n</pre></body></html>',
+    },
+    { type: 'text/plain', body: '  first\n\tsecond  ' },
+    {
+      type: 'text/markdown',
+      body: '---\ntitle: Notes\npublished: 2023-03-04T00:00:00Z\n---\n# Title\n\n- one\n  - two',
+    },
+    {
+      type: 'application/json',
+      body: '{"title":"Record","datePublished":"2024-01-02T00:00:00Z","dateModified":"2024-02-03T00:00:00Z","body":"line one\\n  line two"}',
+    },
+    {
+      type: 'application/rss+xml',
+      body: '<rss><channel><title>Feed</title><item><title>old item</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate><description>item &amp; detail</description></item><item><title>new item</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate></item></channel></rss>',
+    },
+    {
+      type: 'application/vnd.example+json',
+      body: '{"title":"Structured","values":[1,true,null,"source order"]}',
+    },
+    {
+      type: 'application/x-custom+xml',
+      body: '<custom><title><![CDATA[Actual ]]><part>title</part></title><dateModified>2022-08-09T00:00:00Z</dateModified><value><![CDATA[first <literal>]]><part>second</part></value></custom>',
+    },
+  ];
+  for (const item of inputs) {
+    const web = createBraveWebSource({
+      loader: async (url) => ({
+        status: 200,
+        headers: { 'content-type': `${item.type}; charset=utf-8` },
+        body: Buffer.from(item.body),
+        url,
+      }),
+    });
+    const doc = await web.fetchDocument('https://example.org/doc', new AbortController().signal);
+    if (item.type === 'text/html') {
+      assert.match(doc.text, /prefix  x  y/);
+      assert.match(doc.text, /\tconst x = 1;\n  next\(\)/);
+      assert.match(doc.text, /\n   leading\n\n\n\nend\n/);
+      assert.match(doc.text, /a\nb/);
+      assert.match(doc.text, /ONE\n\nTWO/);
+      assert.ok(doc.text.endsWith('tail\n\n\n'));
+      assert.doesNotMatch(doc.text, /hidden nav/);
+      assert.equal(doc.publishedAt, '2025-02-03T04:05:06.000Z');
+      assert.equal(doc.sourceUpdatedAt, null);
+    }
+    if (item.type === 'text/plain') assert.equal(doc.text, item.body);
+    if (item.type === 'text/markdown') {
+      assert.equal(doc.text, item.body);
+      assert.equal(doc.title, 'Notes');
+      assert.equal(doc.publishedAt, '2023-03-04T00:00:00.000Z');
+    }
+    if (item.type === 'application/json') {
+      assert.equal(doc.text, item.body);
+      assert.equal(doc.title, 'Record');
+      assert.equal(doc.publishedAt, '2024-01-02T00:00:00.000Z');
+      assert.equal(doc.sourceUpdatedAt, '2024-02-03T00:00:00.000Z');
+    }
+    if (item.type === 'application/rss+xml') {
+      assert.equal(doc.text, item.body);
+      assert.equal(doc.title, 'Feed');
+      assert.equal(doc.publishedAt, null);
+    }
+    if (item.type === 'application/vnd.example+json') assert.equal(doc.text, item.body);
+    if (item.type === 'application/x-custom+xml') {
+      assert.equal(doc.text, item.body);
+      assert.equal(doc.title, 'Actual title');
+      assert.equal(doc.sourceUpdatedAt, '2022-08-09T00:00:00.000Z');
+    }
+  }
+
+  for (const body of ['42', 'true', 'false', 'null', '[1,true,null,"value"]', '[{"title":"item 1","datePublished":"1990-01-01"},{"title":"item 2","datePublished":"2020-01-01"}]', '{"date":"2024-01-02"}']) {
+    const web = createBraveWebSource({
+      loader: async (url) => ({
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: Buffer.from(body),
+        url,
+      }),
+    });
+    const doc = await web.fetchDocument('https://example.org/value', new AbortController().signal);
+    assert.equal(doc.text, body);
+    if (body === '{"date":"2024-01-02"}') assert.equal(doc.publishedAt, null);
+    if (body.startsWith('[{')) {
+      assert.equal(doc.title, 'example.org');
+      assert.equal(doc.publishedAt, null);
+    }
+  }
+
+  for (const dateValue of ['2026-02-30', '2026-02-29', '2026-02-03T10:20:30', '0']) {
+    const markdown = `---\npublished: ${dateValue}\n---\nbody`;
+    const web = createBraveWebSource({
+      loader: async (url) => ({
+        status: 200,
+        headers: { 'content-type': 'text/markdown; charset=utf-8' },
+        body: Buffer.from(markdown),
+        url,
+      }),
+    });
+    const doc = await web.fetchDocument('https://example.org/invalid-date', new AbortController().signal);
+    assert.equal(doc.publishedAt, null);
+  }
+
+  const modified = createBraveWebSource({
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT' },
+      body: Buffer.from('untrimmed literal'),
+      url,
+    }),
+  });
+  const modifiedDocument = await modified.fetchDocument('https://example.org/modified', new AbortController().signal);
+  assert.equal(modifiedDocument.text, 'untrimmed literal');
+  assert.equal(modifiedDocument.sourceUpdatedAt, '2015-10-21T07:28:00.000Z');
+
+  const feedBody = '<rss><channel><title>Whole feed</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate><item><title>first entry</title><pubDate>Mon, 01 Jan 1990 00:00:00 GMT</pubDate></item><item><title>second entry</title><pubDate>Mon, 01 Jan 2000 00:00:00 GMT</pubDate></item></channel></rss>';
+  const feed = createBraveWebSource({
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'application/rss+xml; charset=utf-8' },
+      body: Buffer.from(feedBody),
+      url,
+    }),
+  });
+  const feedDocument = await feed.fetchDocument('https://example.org/feed', new AbortController().signal);
+  assert.equal(feedDocument.title, 'Whole feed');
+  assert.equal(feedDocument.publishedAt, '2024-01-02T00:00:00.000Z');
+
+  const oversizedUnicode = createBraveWebSource({
+    limits: { maxResponseBytes: 4 },
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+      body: Buffer.from('ёёё'),
+      url,
+    }),
+  });
+  await assert.rejects(
+    oversizedUnicode.fetchDocument('https://example.org/large', new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'budget',
+  );
+
+  for (let index = 0; index < 32; index += 1) {
+    const marker = `__SOURCE_${index}_&lt;tag&gt;&amp;__`;
+    const decodedMarker = marker.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+    const html = `<p>left<span>${marker}</span>right</p><pre>\t${marker}\n  ${marker}</pre>`;
+    const web = createBraveWebSource({
+      loader: async (url) => ({
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: Buffer.from(html),
+        url,
+      }),
+    });
+    const doc = await web.fetchDocument('https://example.org/marker', new AbortController().signal);
+    assert.ok(doc.text.includes(`left${decodedMarker}right`));
+    assert.ok(doc.text.includes(`\t${decodedMarker}\n  ${decodedMarker}`));
+  }
+});
+
+test('Brave PDF reading is lazy, bounded, cancellable, and extracts actual text', async () => {
+  const pdf = makeTextPdf('BT /F1 12 Tf 20 60 Td (tiny extracted) Tj 1 0 0 1 20 40 Tm (phrase) Tj 1 0 0 1 20 20 Tm (second line) Tj ET');
+  const web = createBraveWebSource({
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+      body: pdf,
+      url,
+    }),
+  });
+  const doc = await web.fetchDocument('https://example.org/tiny.pdf', new AbortController().signal);
+  assert.match(doc.text, /tiny extracted\nphrase/);
+  assert.match(doc.text, /phrase\nsecond line/);
+  assert.equal(doc.publishedAt, null);
+  assert.equal(doc.sourceUpdatedAt, null);
+
+  const malformed = createBraveWebSource({
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+      body: Buffer.from('%PDF-broken'),
+      url,
+    }),
+  });
+  await assert.rejects(
+    malformed.fetchDocument('https://example.org/bad.pdf', new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+  );
+
+  const bounded = createBraveWebSource({
+    limits: { maxResponseBytes: 8 },
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+      body: pdf,
+      url,
+    }),
+  });
+  await assert.rejects(
+    bounded.fetchDocument('https://example.org/large.pdf', new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'budget',
+  );
+
+  const overTextBudgetPdf = makeTextPdf(`BT /F1 12 Tf 20 60 Td (${ 'x'.repeat(200_001) }) Tj ET`, 2_000_000);
+  const textBounded = createBraveWebSource({
+    loader: async (url) => ({
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+      body: overTextBudgetPdf,
+      url,
+    }),
+  });
+  await assert.rejects(
+    textBounded.fetchDocument('https://example.org/over-text-budget.pdf', new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'budget',
+  );
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    web.fetchDocument('https://example.org/tiny.pdf', preAborted.signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'cancel',
+  );
+
+  const cancelController = new AbortController();
+  const cancellingWeb = createBraveWebSource({
+    loader: async (url, operationSignal) => {
+      const addListener = operationSignal.addEventListener.bind(operationSignal);
+      operationSignal.addEventListener = ((type, listener, options) => {
+        addListener(type, listener, options);
+        if (type === 'abort') queueMicrotask(() => cancelController.abort());
+      }) as typeof operationSignal.addEventListener;
+      return { status: 200, headers: { 'content-type': 'application/pdf' }, body: pdf, url };
+    },
+  });
+  await assert.rejects(
+    cancellingWeb.fetchDocument('https://example.org/cancel.pdf', cancelController.signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'cancel',
+  );
+});
+
 test("Brave continues only when more results are available to replace duplicates and blocked URLs", async () => {
   const offsets: number[] = [];
   const web = createBraveWebSource({
@@ -1218,6 +1486,7 @@ test("semaphore deadline includes queue wait and provider limits have hard serve
 
 test("Brave reader performs a pinned loopback request and settles an aborted in-flight response", async () => {
   let requestCount = 0;
+  let acceptHeader = "";
   let clientClosed = false;
   let notifyClientClosed!: () => void;
   const closeObserved = new Promise<void>((resolve) => {
@@ -1225,6 +1494,7 @@ test("Brave reader performs a pinned loopback request and settles an aborted in-
   });
   const server = createServer((request, response) => {
     requestCount++;
+    acceptHeader = String(request.headers.accept ?? "");
     if (request.url === "/slow") {
       response.writeHead(200, { "content-type": "text/plain" });
       response.write("partial");
@@ -1264,9 +1534,13 @@ test("Brave reader performs a pinned loopback request and settles an aborted in-
       new AbortController().signal,
     );
     assert.equal(doc.title, "Guide & Tips");
-    assert.match(doc.text, /one two three/);
+    assert.match(doc.text, /one two\n\nthree/);
     assert.doesNotMatch(doc.text, /menu text|bad\(\)|hidden/);
     assert.equal(requestCount, 2);
+    assert.match(acceptHeader, /application\/rss\+xml/);
+    assert.match(acceptHeader, /application\/atom\+xml/);
+    assert.match(acceptHeader, /\*\/\*;q=0\.1/);
+    assert.doesNotMatch(acceptHeader, /application\/\*\+xml/);
     assert.deepEqual(resolvedHosts, ["fixture.invalid", "fixture.invalid"]);
     const controller = new AbortController();
     const pending = web.fetchDocument(`${origin}/slow`, controller.signal);

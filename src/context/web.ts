@@ -457,8 +457,7 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 function* chunk(text: string, size: number): Generator<string> {
-  const normalized = text.replace(/\s+/gu, ' ').trim()
-  for (let i = 0; i < normalized.length; i += size) yield normalized.slice(i, i + size)
+  for (let i = 0; i < text.length; i += size) yield text.slice(i, i + size)
 }
 function tokens(s: string) {
   return s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
