@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { documentSchema, webDateRangeSchema, type WebDateRange, type WebSource } from '../core/contracts.js'
 import { canonicalUrl } from '../core/retrieval.js'
-import type { ProviderProfile } from '../providers/contracts.js'
+import { ProviderError, type ProviderErrorCode, type ProviderProfile } from '../providers/contracts.js'
 import { createLifecycle } from './lifecycle.js'
 
 export interface WebContextModels {
@@ -77,6 +77,11 @@ export interface WebSearchResult {
       | 'EMBEDDING_INVALID'
       | 'RERANK_FAILED'
       | 'INVALID_RANKING'
+    provider?: {
+      code: ProviderErrorCode
+      httpStatus?: number
+      retryAfterMs?: number
+    }
   }>
   partial: boolean
   budget: { usedChars: number; maxChars: number }
@@ -155,10 +160,11 @@ export function createWebSearch(options: {
           urls = [...normalized].slice(0, limits.maxDocuments)
         } catch (error) {
           signal.throwIfAborted()
+          const provider = providerFailureContext(error)
           return {
             passages: [],
             rankingMode: 'lexical',
-            errors: [{ stage: 'discovery', code: 'DISCOVERY_FAILED' }],
+            errors: [{ stage: 'discovery', code: 'DISCOVERY_FAILED', ...(provider ? { provider } : {}) }],
             partial: true,
             budget: { usedChars: 0, maxChars },
           }
@@ -188,10 +194,12 @@ export function createWebSearch(options: {
             }
           } catch (error) {
             signal.throwIfAborted()
+            const provider = providerFailureContext(error)
             errors.push({
               stage: 'document',
               url,
               code: documentErrorCode(error),
+              ...(provider ? { provider } : {}),
             })
             return null
           }
@@ -237,7 +245,12 @@ export function createWebSearch(options: {
             denseRanks = new Map(ranked.map((x, i) => [x.index, i + 1]))
           } catch (error) {
             signal.throwIfAborted()
-            errors.push({ stage: 'embedding', code: providerErrorCode(error, 'EMBEDDING_FAILED') })
+            const provider = providerFailureContext(error)
+            errors.push({
+              stage: 'embedding',
+              code: providerErrorCode(error, 'EMBEDDING_FAILED'),
+              ...(provider ? { provider } : {}),
+            })
           }
         }
         const candidates = new Set([...lexicalRanks.keys(), ...denseRanks.keys()])
@@ -284,7 +297,12 @@ export function createWebSearch(options: {
             rerankRanks = new Map(reranked.map((x, i) => [x.index, i + 1]))
           } catch (error) {
             signal.throwIfAborted()
-            errors.push({ stage: 'rerank', code: providerErrorCode(error, 'RERANK_FAILED') })
+            const provider = providerFailureContext(error)
+            errors.push({
+              stage: 'rerank',
+              code: providerErrorCode(error, 'RERANK_FAILED'),
+              ...(provider ? { provider } : {}),
+            })
           }
         }
         const passages: WebPassage[] = []
@@ -582,4 +600,36 @@ function providerErrorCode(
   if (e instanceof Error && e.message === 'INVALID_EMBEDDING') return 'EMBEDDING_INVALID'
   if (e instanceof Error && e.message === 'INVALID_RANKING') return 'INVALID_RANKING'
   return fallback
+}
+
+function providerFailureContext(
+  error: unknown,
+): { code: ProviderErrorCode; httpStatus?: number; retryAfterMs?: number } | undefined {
+  if (!(error instanceof ProviderError)) return undefined
+  const validCodes: readonly ProviderErrorCode[] = [
+    'auth',
+    'quota',
+    'rate_limit',
+    'timeout',
+    'cancel',
+    'malformed',
+    'unavailable',
+    'budget',
+  ]
+  if (!validCodes.includes(error.code)) return undefined
+  const context: { code: ProviderErrorCode; httpStatus?: number; retryAfterMs?: number } = {
+    code: error.code,
+  }
+  const status = error.status
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599)
+    context.httpStatus = status
+  const retryAfterMs = error.retryAfterMs
+  if (
+    typeof retryAfterMs === 'number' &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs >= 0 &&
+    retryAfterMs <= 86_400_000
+  )
+    context.retryAfterMs = retryAfterMs
+  return context
 }
