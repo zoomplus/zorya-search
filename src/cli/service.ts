@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { node24DaemonExecArgv } from "./node24.js";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import {
@@ -235,6 +236,7 @@ export async function ensureOwner(configPath: string) {
         child = spawn(
           process.execPath,
           [
+            ...node24DaemonExecArgv(process.versions.node),
             entry,
             "serve",
             "--config",
