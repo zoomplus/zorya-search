@@ -101,15 +101,15 @@ jobs:
         with:
           version: 9.15.9
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
       - name: Pack, install, and exercise the published entry points
         run: |
           node -e '
           const { execFileSync, execSync } = require("node:child_process");
-          const { mkdtempSync } = require("node:fs");
+          const { existsSync, mkdtempSync } = require("node:fs");
           const { tmpdir } = require("node:os");
           const { join, resolve } = require("node:path");
           const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+          if (existsSync("dist")) throw new Error("packed-consumer must pack from clean source without dist");
           const packed = JSON.parse(execFileSync(npm, ["pack", "--json"], { encoding: "utf8", shell: process.platform === "win32" }));
           if (packed.length !== 1 || !packed[0].filename) throw new Error("npm pack did not return exactly one archive");
           const consumer = mkdtempSync(join(tmpdir(), "zorya-search-consumer-"));
