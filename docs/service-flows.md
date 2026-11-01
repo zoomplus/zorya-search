@@ -8,7 +8,7 @@
 | Storage | [Владение и repository](../src/storage/README.md) | Owned embedded DB и заимствованные adapters. |
 | Code | [Индекс, retrieval и freshness](../src/code/README.md) | Snapshot chunks, BM25/dense, RRF, rerank, source verification. |
 | Project Text | [Docs, rules, skills](../src/project-text/README.md) | Отдельный namespace и explicit capability/profile. |
-| Providers | [Models, Brave и Jev prototype](../src/providers/README.md) | Текущий OpenRouter classifier; Jev ветка только planned/experimental. |
+| Providers | [Models, Brave и Jev Decisions](../src/providers/README.md) | OpenRouter classifier в main; Jev Decisions source-implemented в accepted feature `67e3361`, ещё не подключён в main/runtime/npm. |
 | Context | [Code/web context](../src/context/README.md) | Snapshot reads, client queries, shared reads, partial errors. |
 | Runtime | [Config, roots, lifecycle](../src/runtime/README.md) | Strict schema, capabilities, jobs и graceful drain. |
 | MCP | [Tools и grants](../src/mcp/README.md) | Existing client → grant → schema → runtime. |
@@ -30,12 +30,20 @@
 
 ## Легенда и границы
 
-- Сплошные стрелки показывают текущий код, включая отказные и error paths. Пунктирные стрелки используются только внутри явно подписанных planned/experimental схем; они не merged и не production capability.
+Статус схем:
+
+| Обозначение | Смысл |
+| --- | --- |
+| `CURRENT MAIN` | Реальный поток текущего main, включая ошибки и отказы. |
+| `ACCEPTED FEATURE 67e3361` | Принятая source-реализация на отдельной feature-ветке; не часть текущего main/runtime/npm. |
+| `planned` / пунктир | Предлагаемая будущая связь без доступного интегрированного API. |
+
+- Сплошные стрелки внутри рамки описывают статус этой рамки, включая отказные и error paths; пунктирные стрелки зарезервированы для явно обозначенных planned-схем.
 - Диаграммы используют реальные функции/типы, а не предполагают отдельные службы.
 - В code/core provider HTTP failure остаётся ошибкой; web-context может вернуть lexical passages как partial result, сохранив embedding/rerank stage error. Отсутствие/несовместимость профиля — отдельная ветка.
 - Excerpts, scores и classification — недоверенные evidence. Вызывающий агент проверяет источник и сам принимает решение; автоматического изменения кода нет.
 - Web — публичный HTTP acquisition, не browser automation; дополнительные запросы выбирает вызывающая сторона.
-- Jev Decision API и assembled reuse-context не являются текущим production flow. Смотрите [Providers](../src/providers/README.md) и [Code](../src/code/README.md).
+- Jev Decision API реализован в accepted feature commit, но не wired в main/runtime/npm; reuse-context остаётся planned. Смотрите [Providers](../src/providers/README.md) и [Code](../src/code/README.md).
 - Новые source capabilities могут отсутствовать в опубликованном npm archive `v0.1.6`; package inclusion проверяется отдельно.
 
 При изменении поведения, контракта, ownership или error branch обновляйте соответствующую диаграмму и таблицу решений. Не копируйте сюда устаревающие status tables: эта страница только маршрутизирует к модульным картам.
