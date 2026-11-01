@@ -193,7 +193,7 @@ test('reuse context preserves original query, maps Jev choices to verified symbo
       for (const question of questions) {
         if (question.id === 'taskIntent') answers[question.id] = { type: 'choice', choice: 'explain_behavior' }
         else if (question.id === 'sourceScope') answers[question.id] = { type: 'choice', choice: 'unspecified' }
-        else if (question.id === 'file') answers[question.id] = { type: 'choice', choice: 'f0', probabilities: { f0: 1, none: 0 } }
+        else if (question.type === 'noul') answers[question.id] = { type: 'noul', noul: 0.9 }
         else answers[question.id] = { type: 'choice', choice: 's0', probabilities: { s0: 1, none: 0 } }
       }
       return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 } }
@@ -205,6 +205,10 @@ test('reuse context preserves original query, maps Jev choices to verified symbo
   assert.ok(observedQueries.includes(originalQuery))
   assert.equal(result.selection.selected[0]?.symbol.id, symbol.id)
   assert.equal(observedSymbolState.questions.symbol_0.symbols.s0.name, symbol.name)
+  assert.equal(observedSymbolState.questions.symbol_0.symbols.s0.evidence.fileHash, fileHash)
+  assert.equal(observedSymbolState.questions.symbol_0.symbols.s0.evidence.range.lineStart, 1)
+  assert.equal(typeof observedSymbolState.questions.symbol_0.symbols.s0.evidence.text, 'string')
+  assert.ok(observedSymbolState.questions.symbol_0.symbols.s0.evidence.text.length > 0)
   assert.match(observedSymbolQuestion.criteria.s0, /applyChange/u)
   assert.match(observedSymbolQuestion.instructions, /untrusted data/u)
   assert.equal(result.context.sections.some((section) => section.path === 'a.ts'), true)

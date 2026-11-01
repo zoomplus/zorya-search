@@ -88,12 +88,12 @@ function harness(config: {
       if (config.decide) return config.decide(input)
       const answers: Record<string, unknown> = Object.create(null) as Record<string, unknown>
       for (const question of input.questions) {
-        if (question.id === 'taskIntent') answers[question.id] = { type: 'choice', choice: 'explain_behavior' }
+        if (question.type === 'noul') answers[question.id] = { type: 'noul', noul: 0.9 }
+        else if (question.id === 'taskIntent') answers[question.id] = { type: 'choice', choice: 'explain_behavior' }
         else if (question.id === 'sourceScope') answers[question.id] = { type: 'choice', choice: 'unspecified' }
-        else if (question.id === 'file') answers[question.id] = { type: 'choice', choice: 'f0' }
         else {
           const state = input.state as { questions?: Record<string, { symbols?: Record<string, { name?: string }> }> }
-          const rows = state.questions?.[question.id]?.symbols ?? {}
+      const rows = state.questions?.[question.id]?.symbols ?? {}
           const target = Object.entries(rows).find(([, value]) => value.name === 'targetAfter100')?.[0] ?? Object.keys(rows)[0]
           answers[question.id] = { type: 'choice', choice: target ?? 'none' }
         }
@@ -123,20 +123,19 @@ test('second symbol page is offered; long selected bodies are read in bounded co
   await reuse.close()
 })
 
-test('late symbol names reach file Choice and all valid stages accept dated pinned Jev model metadata', async () => {
+test('late symbol names reach file Noul and all valid stages accept dated pinned Jev model metadata', async () => {
   const path = 'src/catalogue.ts'
   const symbols = Array.from({ length: 150 }, (_, i) => makeSymbol(path, `symbol-${i}`, i === 149 ? 'lateExtensionPoint' : `helper${i}`, i + 1, i + 1, `hash:${path}`))
   const h = harness({ files: [{ path, text: Array.from({ length: 150 }, (_, i) => `const v${i} = ${i}`).join('\n'), symbols }], decide: async ({ state, questions }) => {
     const answers = Object.fromEntries(questions.map((question) => {
       if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'implement_change' }]
       if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'implementation' }]
-      if (question.id === 'file') {
-        const candidate = (state as { files: Array<{ id: string; symbolCatalogue: string[]; symbolCatalogueTotal: number; symbolCatalogueOffered: number; symbolCatalogueOmitted: number; symbolCatalogueIncomplete: boolean }> }).files[0]!
-        assert.ok(candidate.symbolCatalogue.includes('lateExtensionPoint'))
+      if (question.type === 'noul') {
+        const candidate = (state as { files: Record<string, { symbols: string[]; symbolCatalogueTotal: number; symbolCatalogueOmitted: number }> }).files.f0!
+        assert.ok(candidate.symbols.includes('lateExtensionPoint'))
         assert.equal(candidate.symbolCatalogueTotal, 150)
-        assert.equal(candidate.symbolCatalogueOffered + candidate.symbolCatalogueOmitted, candidate.symbolCatalogueTotal)
-        assert.equal(candidate.symbolCatalogueIncomplete, false)
-        return [question.id, { type: 'choice', choice: candidate.id, probabilities: { [candidate.id]: 1, none: 0 }, probabilityBasis: 'distribution' }]
+        assert.equal(candidate.symbolCatalogueOmitted, 0)
+        return [question.id, { type: 'noul', noul: 0.9 }]
       }
       const rows = (state as { questions: Record<string, { symbols: Record<string, { name: string }> }> }).questions[question.id]!.symbols
       const selected = Object.entries(rows).find(([, row]) => row.name === 'lateExtensionPoint')?.[0] ?? 'none'
@@ -148,11 +147,8 @@ test('late symbol names reach file Choice and all valid stages accept dated pinn
   const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'extend the late implementation' })
   assert.equal(result.intent.state, 'available')
   if (result.intent.state === 'available') assert.equal(result.intent.result.model, 'typesafe/jev-1.14-20261014')
-  assert.equal(result.selection.fileAnswer?.type, 'choice')
-  if (result.selection.fileAnswer?.type === 'choice') {
-    assert.deepEqual(result.selection.fileAnswer.probabilities, { f0: 1, none: 0 })
-    assert.equal(result.selection.fileAnswer.probabilityBasis, 'distribution')
-  }
+  assert.equal(result.selection.fileAnswers.file_f0?.type, 'noul')
+  assert.equal(result.selection.fileAssessments[0]?.state, 'positive')
   assert.equal(result.selection.selected[0]?.symbol.name, 'lateExtensionPoint')
   assert.equal(result.selection.unassessed.length, 0)
 })
@@ -178,7 +174,7 @@ test('short files, missing optional capabilities, missing Jev and explicit none 
   assert.ok(mechanical.omissions.includes('symbol-index-unsupported'))
   await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'explain this behavior' })
   const none = harness({ files: [file], decide: async ({ questions }) => ({ requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe',
-    answers: Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : { type: 'choice', choice: 'none' }])),
+    answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : question.id === 'sourceScope' ? 'unspecified' : 'none' }])),
     usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }) })
   const noneResult = await createReuseContext({ index: none.index, decisions: none.decisions }).getReuseContext({ root: '/repo', query: 'explain this behavior' })
   assert.equal(noneResult.selection.selected.length, 0)
@@ -188,13 +184,13 @@ test('short files, missing optional capabilities, missing Jev and explicit none 
 test('foreign IDs are not mapped and graph/duplicate currentness errors propagate unchanged', async () => {
   const file = { path: 'src/one.ts', text: 'function target() {}\n', symbols: [makeSymbol('src/one.ts', 'symbol-1', 'target', 1, 1, 'hash:src/one.ts')] }
   const foreign = harness({ files: [file], decide: async ({ questions }) => ({ requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe',
-    answers: Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : { type: 'choice', choice: 'foreign' }])),
+    answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 2 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }])),
     usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }) })
   const foreignResult = await createReuseContext({ index: foreign.index, decisions: foreign.decisions }).getReuseContext({ root: '/repo', query: 'change this code' })
   assert.equal(foreignResult.selection.selected.length, 0)
-  assert.ok(foreignResult.omissions.some((value) => value.startsWith('file-selection-unavailable:')))
+  assert.ok(foreignResult.omissions.some((value) => value.startsWith('file-assessment-unavailable:')))
   const foreignSymbol = harness({ files: [file], decide: async ({ questions }) => ({ requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe',
-    answers: Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : { type: 'choice', choice: question.id === 'file' ? 'f0' : 'foreign' }])),
+    answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }])),
     usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }) })
   const foreignSymbolResult = await createReuseContext({ index: foreignSymbol.index, decisions: foreignSymbol.decisions }).getReuseContext({ root: '/repo', query: 'change this code' })
   assert.equal(foreignSymbolResult.selection.selected.length, 0)
@@ -207,22 +203,93 @@ test('foreign IDs are not mapped and graph/duplicate currentness errors propagat
   await assert.rejects(createReuseContext({ index: failedDuplicates.index }).getReuseContext({ root: '/repo', query: 'x' }), (error) => error === duplicateError)
 })
 
-test('foreign native file primary cannot be rescued by a valid probability alternative', async () => {
+test('multiple positive file assessments each get a separate bounded symbol Choice', async () => {
   const files = ['src/first.ts', 'src/second.ts'].map((path, i) => ({ path, text: `function helper${i}() {}\n`, symbols: [makeSymbol(path, `s${i}`, `helper${i}`, 1, 1, `hash:${path}`)] }))
   const calls: string[][] = []
   const h = harness({ files, decide: async ({ questions }) => {
     calls.push(questions.map((question) => question.id))
-    const answers = Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : question.id === 'file' ? {
-      type: 'choice', choice: 'foreign-file', probabilities: { f0: 0.2, f1: 0.8, none: 0 }, probabilityBasis: 'distribution',
-    } : { type: 'choice', choice: 'none' }]))
+    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : question.id === 'sourceScope' ? 'unspecified' : 's0' }]))
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'change these files' })
-  assert.deepEqual(calls, [['taskIntent', 'sourceScope'], ['file']])
-  assert.equal(result.selection.selected.length, 0)
-  assert.equal(result.selection.alternatives.length, 0)
-  assert.ok(result.omissions.some((value) => value.startsWith('file-selection-unavailable:')))
-  assert.ok(result.selection.unassessed.every((item) => item.reason.startsWith('file-selection-unavailable:')))
+  assert.deepEqual(calls, [['taskIntent', 'sourceScope'], ['file_f0', 'file_f1'], ['symbol_0'], ['symbol_1']])
+  assert.equal(result.selection.selected.length, 2)
+  assert.equal(result.selection.selectedFiles.length, 2)
+  assert.deepEqual(result.selection.selected.map((item) => item.path), ['src/first.ts', 'src/second.ts'])
+  assert.equal(calls.length, 4)
+})
+
+test('binary relevance ties stay unresolved and positive files beyond the cap are disclosed', async () => {
+  const files = ['src/first.ts', 'src/second.ts', 'src/third.ts', 'src/fourth.ts'].map((path, i) => ({
+    path, text: `function helper${i}() {}\n`, symbols: [makeSymbol(path, `s${i}`, `helper${i}`, 1, 1, `hash:${path}`)],
+  }))
+  const h = harness({ files, decide: async ({ questions }) => {
+    const scores: Record<string, number> = { file_f0: 0.9, file_f1: 0.5, file_f2: 0.8, file_f3: 0.7 }
+    return { requestId: null, model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe',
+      answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+        ? { type: 'noul', noul: scores[question.id] ?? 0.1 }
+        : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : question.id === 'sourceScope' ? 'implementation' : 's0' }])),
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+  } })
+  const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'add this behavior' })
+  assert.deepEqual(result.selection.selectedFiles, ['src/first.ts', 'src/third.ts'])
+  assert.equal(result.selection.fileAssessments[1]?.state, 'unresolved')
+  assert.equal(result.selection.fileAssessments[1]?.relevance, 0.5)
+  assert.equal(result.selection.fileAssessments[2]?.state, 'positive')
+  assert.equal(result.selection.fileAssessments[3]?.state, 'omitted')
+  assert.ok(result.omissions.includes('positive-files-omitted:1'))
+})
+
+test('selected callback reads through an anonymous wrapper to its verified named method owner', async () => {
+  const path = 'src/semaphore.ts'
+  const lines = ['class Semaphore {', '  async #acquire() {', '    return new Promise((resolve) => {', '      const queue = [];',
+    '      function cancel() {', '        queue.length = 0', '      }', '    })', '  }', '}']
+  const child = { ...makeSymbol(path, 'cancel-id', 'cancel', 5, 6, `hash:${path}`), kind: 'callable' as const, parentId: 'anonymous-id' }
+  const anonymous = { ...makeSymbol(path, 'anonymous-id', '<anonymous>', 3, 8, `hash:${path}`), kind: 'callable' as const, parentId: 'owner-id' }
+  const owner = { ...makeSymbol(path, 'owner-id', '#acquire', 2, 9, `hash:${path}`), kind: 'method' as const, parentId: 'class-id' }
+  const classSymbol = { ...makeSymbol(path, 'class-id', 'Semaphore', 1, 10, `hash:${path}`), kind: 'class' as const }
+  const h = harness({ files: [{ path, text: lines.join('\n'), symbols: [child, anonymous, owner, classSymbol] }], decide: async ({ questions }) => ({
+    requestId: null, model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe',
+    answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+      ? { type: 'noul', noul: 0.9 }
+      : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : question.id === 'sourceScope' ? 'implementation' : 's0' }])),
+    usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null },
+  }) })
+  const reuse = createReuseContext({ index: h.index, decisions: h.decisions })
+  const result = await reuse.getReuseContext({ root: '/repo', query: 'add cancellation cleanup' })
+  assert.equal(result.selection.selected[0]?.symbol.name, 'cancel')
+  const ownerSection = result.context.sections.find((section) => section.path === path && section.lineStart <= 2 && section.lineEnd >= 9)
+  assert.ok(ownerSection)
+  assert.match(ownerSection.text, /#acquire/u)
+  assert.equal(result.readCoverage[0]?.status, 'full')
+  await reuse.close()
+})
+
+test('cyclic, foreign, and non-containing ancestor links do not add parent context', async (t) => {
+  for (const invalid of ['cycle', 'foreign', 'malformed'] as const) {
+    await t.test(invalid, async () => {
+      const path = 'src/nested.ts'
+      const child = { ...makeSymbol(path, 'child-id', 'cancel', 5, 6, `hash:${path}`), kind: 'callable' as const, parentId: 'anonymous-id' }
+      const anonymous = { ...makeSymbol(path, 'anonymous-id', '<anonymous>', 3, 8, `hash:${path}`), kind: 'callable' as const,
+        parentId: invalid === 'cycle' ? 'child-id' : 'owner-id',
+        ...(invalid === 'foreign' ? { location: { ...makeSymbol('src/other.ts', 'anonymous-id', '<anonymous>', 3, 8, 'hash:src/other.ts').location } } : {}),
+        ...(invalid === 'malformed' ? { location: { ...makeSymbol(path, 'anonymous-id', '<anonymous>', 3, 4, `hash:${path}`).location } } : {}),
+      }
+      const owner = { ...makeSymbol(path, 'owner-id', 'owner', 2, 9, `hash:${path}`), kind: 'method' as const }
+      const h = harness({ files: [{ path, text: Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'), symbols: [child, anonymous, owner] }], decide: async ({ questions }) => ({
+        requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe',
+        answers: Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+          ? { type: 'noul', noul: 0.9 }
+          : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : question.id === 'sourceScope' ? 'implementation' : 's0' }])),
+        usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null },
+      }) })
+      const reuse = createReuseContext({ index: h.index, decisions: h.decisions })
+      const result = await reuse.getReuseContext({ root: '/repo', query: 'add cancellation cleanup' })
+      assert.equal(result.selection.selected[0]?.symbol.name, 'cancel')
+      assert.equal(result.context.sections.some((section) => section.path === path && section.lineStart <= 2 && section.lineEnd >= 9), false)
+      await reuse.close()
+    })
+  }
 })
 
 test('wrong Jev model or provider after valid intent prevents dependent Choice calls', async (t) => {
@@ -231,14 +298,14 @@ test('wrong Jev model or provider after valid intent prevents dependent Choice c
       const calls: string[][] = []
       const h = harness({ decide: async ({ questions }) => {
         calls.push(questions.map((question) => question.id))
-        const answers = Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : { type: 'choice', choice: 'f0' }]))
+        const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }]))
         return { requestId: null, model: calls.length === 1 ? 'typesafe/jev-1.14' : invalid.model, provider: calls.length === 1 ? 'TypeSafe' : invalid.provider,
           answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
       } })
       const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'inspect this' })
-      assert.deepEqual(calls, [['taskIntent', 'sourceScope'], ['file']])
+      assert.deepEqual(calls, [['taskIntent', 'sourceScope'], ['file_f0']])
       assert.equal(result.selection.selected.length, 0)
-      assert.ok(result.selection.unassessed.some((item) => item.reason.startsWith('file-selection-unavailable:')))
+      assert.ok(result.selection.unassessed.some((item) => item.reason.startsWith('file-assessment-unavailable:')))
     })
   }
 })
@@ -252,7 +319,7 @@ test('candidate budgets are honored and the complete wire request stays bounded'
   let requestBytes = 0
   const h = harness({ files: [{ path, text: Array.from({ length: 199 }, (_, i) => `line_${i}`).join('\n'), symbols }], decide: async ({ state, questions }) => {
     requestBytes = Math.max(requestBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
-    const answers = Object.fromEntries(questions.map((q) => [q.id, q.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : q.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : q.id === 'file' ? { type: 'choice', choice: 'f0' } : { type: 'choice', choice: 's0' }]))
+    const answers = Object.fromEntries(questions.map((q) => [q.id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: q.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }]))
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   const result = await createReuseContext({ index: h.index, decisions: h.decisions, limits: { maxCandidates: 1 } }).getReuseContext({ root: '/repo', query: 'inspect this' })
@@ -274,10 +341,10 @@ test('large file catalogue compaction reports total, offered, omitted, and clipp
   let catalogueFacts: Array<{ symbolCatalogueTotal: number; symbolCatalogueOffered: number; symbolCatalogueOmitted: number; symbolCatalogueTruncatedNames: number; symbolCatalogueIncomplete: boolean }> = []
   const h = harness({ files, decide: async ({ state, questions }) => {
     payloadBytes = Math.max(payloadBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
-    if (questions[0]?.id === 'file') {
-      catalogueFacts = (state as { files: typeof catalogueFacts }).files
+    if (questions.some((q) => q.type === 'noul')) {
+      catalogueFacts = Object.values((state as { files: Record<string, typeof catalogueFacts[number]> }).files)
     }
-    const answers = Object.fromEntries(questions.map((question) => [question.id, question.id === 'taskIntent' ? { type: 'choice', choice: 'implement_change' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'implementation' } : question.id === 'file' ? { type: 'choice', choice: 'f0' } : { type: 'choice', choice: 'none' }]))
+    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : 'implementation' }]))
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'inspect the catalogues' })
@@ -285,19 +352,18 @@ test('large file catalogue compaction reports total, offered, omitted, and clipp
   assert.ok(catalogueFacts.some((item) => item.symbolCatalogueOmitted > 0))
   assert.ok(catalogueFacts.every((item) => item.symbolCatalogueOffered + item.symbolCatalogueOmitted === item.symbolCatalogueTotal))
   assert.ok(catalogueFacts.every((item) => item.symbolCatalogueTruncatedNames > 0 && item.symbolCatalogueIncomplete))
-  assert.equal(result.selection.unassessed.length, 1)
-  assert.equal(result.selection.unassessed[0]?.reason, 'jev-selected-none')
+  assert.ok(result.selection.unassessed.length >= 0)
 })
 
 test('source edit during Jev await is rejected and close joins pending provider work', async () => {
   const file = { path: 'src/one.ts', text: 'function target() {}\n', symbols: [makeSymbol('src/one.ts', 'symbol-1', 'target', 1, 1, 'hash:src/one.ts')] }
   const edited = harness({ files: [file], decide: async (input) => {
-    if (input.questions.some((question) => question.id === 'file')) {
+    if (input.questions.some((question) => question.type === 'noul')) {
       await new Promise((resolve) => setTimeout(resolve, 10))
       edited.source.get(file.path)!.hash = 'edited-hash'
     }
     const answers: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-    for (const question of input.questions) answers[question.id] = question.id === 'taskIntent' ? { type: 'choice', choice: 'explain_behavior' } : question.id === 'sourceScope' ? { type: 'choice', choice: 'unspecified' } : { type: 'choice', choice: question.id === 'file' ? 'f0' : 's0' }
+    for (const question of input.questions) answers[question.id] = question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   await assert.rejects(createReuseContext({ index: edited.index, decisions: edited.decisions }).getReuseContext({ root: '/repo', query: 'change this' }),

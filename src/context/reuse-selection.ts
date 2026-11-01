@@ -6,20 +6,6 @@ export function safeId(prefix: string, index: number): string {
   return `${prefix}${index.toString(36)}`
 }
 
-export function topAlternate(
-  answer: JevAnswer | undefined,
-  excluded: string,
-  allowed: ReadonlySet<string>,
-): string | undefined {
-  if (!answer || answer.type !== 'choice' || !answer.probabilities) return undefined
-  const ranked = Object.entries(answer.probabilities)
-    .filter(([key, probability]) =>
-      key !== excluded && allowed.has(key) && Number.isFinite(probability) && probability >= 0 && probability <= 1,
-    )
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-  return ranked[0]?.[0]
-}
-
 export function choiceAnswer(
   answer: JevAnswer | undefined,
   allowed: ReadonlySet<string>,
@@ -36,27 +22,7 @@ export function validateChoiceStageResult(
   questions: readonly Extract<JevQuestion, { type: 'choice' }>[],
   profile: JevDecisionsPort['profile'],
 ): Record<string, Extract<JevAnswer, { type: 'choice' }>> {
-  if (!isRecord(value)) throw new ProviderError('malformed')
-  if (
-    value.provider !== 'TypeSafe' ||
-    !isPinnedJevModel(profile.model) ||
-    typeof value.model !== 'string' ||
-    !isPinnedJevModel(value.model) ||
-    !(typeof value.requestId === 'string' || value.requestId === null) ||
-    (typeof value.requestId === 'string' && value.requestId.length > 256) ||
-    !isRecord(value.usage) ||
-    !validNullableCount(value.usage.inputTokens) ||
-    !validNullableCount(value.usage.outputTokens) ||
-    !validNullableCount(value.usage.totalTokens) ||
-    !validNullableCost(value.usage.estimatedCost) ||
-    !isRecord(value.answers)
-  )
-    throw new ProviderError('malformed')
-  const questionIds = questions.map((question) => question.id)
-  const answers = value.answers as Record<string, unknown>
-  const answerIds = Object.keys(answers)
-  if (answerIds.length !== questionIds.length || questionIds.some((id) => !Object.hasOwn(answers, id)))
-    throw new ProviderError('malformed')
+  const answers = validateResultEnvelope(value, questions, profile)
   const validated: Record<string, Extract<JevAnswer, { type: 'choice' }>> =
     Object.create(null) as Record<string, Extract<JevAnswer, { type: 'choice' }>>
   for (const question of questions) {
@@ -92,6 +58,44 @@ export function validateChoiceStageResult(
     validated[question.id] = structuredClone(answer) as Extract<JevAnswer, { type: 'choice' }>
   }
   return validated
+}
+
+export function validateNoulStageResult(
+  value: unknown,
+  questions: readonly Extract<JevQuestion, { type: 'noul' }>[],
+  profile: JevDecisionsPort['profile'],
+): Record<string, Extract<JevAnswer, { type: 'noul' }>> {
+  const answers = validateResultEnvelope(value, questions, profile)
+  if (Object.keys(answers).length !== questions.length || questions.some((question) => !Object.hasOwn(answers, question.id)))
+    throw new ProviderError('malformed')
+  const validated: Record<string, Extract<JevAnswer, { type: 'noul' }>> = Object.create(null) as Record<string, Extract<JevAnswer, { type: 'noul' }>>
+  for (const question of questions) {
+    const answer = answers[question.id]
+    if (!isRecord(answer) || answer.type !== 'noul' || !hasOnlyKeys(answer, ['type', 'noul', 'confidence']) ||
+        !probability(answer.noul) || (answer.confidence !== undefined && !probability(answer.confidence)))
+      throw new ProviderError('malformed')
+    validated[question.id] = structuredClone(answer) as Extract<JevAnswer, { type: 'noul' }>
+  }
+  return validated
+}
+
+function validateResultEnvelope(
+  value: unknown,
+  questions: readonly JevQuestion[],
+  profile: JevDecisionsPort['profile'],
+): Record<string, unknown> {
+  if (!isRecord(value) || value.provider !== 'TypeSafe' || !isPinnedJevModel(profile.model) ||
+      typeof value.model !== 'string' || !isPinnedJevModel(value.model) ||
+      !(typeof value.requestId === 'string' || value.requestId === null) ||
+      (typeof value.requestId === 'string' && value.requestId.length > 256) ||
+      !isRecord(value.usage) || !validNullableCount(value.usage.inputTokens) ||
+      !validNullableCount(value.usage.outputTokens) || !validNullableCount(value.usage.totalTokens) ||
+      !validNullableCost(value.usage.estimatedCost) || !isRecord(value.answers))
+    throw new ProviderError('malformed')
+  const answers = value.answers
+  if (Object.keys(answers).length !== questions.length || questions.some((question) => !Object.hasOwn(answers, question.id)))
+    throw new ProviderError('malformed')
+  return answers
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

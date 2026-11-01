@@ -217,7 +217,7 @@ test('reuse context resolves an actual indexed symbol beyond the first symbol pa
       const answers = Object.fromEntries(questions.map((question) => {
         if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'explain_behavior' }]
         if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'unspecified' }]
-        if (question.id === 'file') return [question.id, { type: 'choice', choice: 'f0' }]
+        if (question.type === 'noul') return [question.id, { type: 'noul', noul: 0.9 }]
         const choices = Object.entries(stateObject.questions?.[question.id]?.symbols ?? {})
         const selected = choices.find(([, symbol]) => symbol.name === 'targetAfter100')?.[0] ?? 'none'
         return [question.id, { type: 'choice', choice: selected }]

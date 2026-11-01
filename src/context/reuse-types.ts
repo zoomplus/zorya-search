@@ -25,8 +25,7 @@ export interface ReuseFileCandidate {
   id: string
   path: string
   evidence: 'search-hit' | 'dependency-graph'
-  preview: string
-  symbols: Array<{ id: string; name: string; qualifiedName: string; kind: string; lineStart: number; lineEnd: number; signature: string }>
+  symbols: Array<{ id: string; name: string; nameTruncated: boolean; qualifiedName: string; qualifiedNameTruncated: boolean; kind: string; lineStart: number; lineEnd: number; signature: string }>
   symbolCatalogue: string[]
   symbolCatalogueTotal: number
   symbolCatalogueOffered: number
@@ -44,10 +43,11 @@ export interface ReuseContextResult {
   intent: { state: 'available'; result: QueryIntentResult } | { state: 'unavailable'; reason: string }
   candidates: { files: ReuseFileCandidate[]; hits: CodeHit[]; graph?: CodeDependencyGraph; graphState: 'available' | 'unsupported' | 'unavailable' }
   selection: {
-    fileAnswer?: JevAnswer
+    fileAnswers: Record<string, JevAnswer>
+    fileAssessments: Array<{ path: string; candidateId: string; relevance: number | null; state: 'positive' | 'negative' | 'unresolved' | 'unassessed' | 'omitted'; reason?: string }>
+    selectedFiles: string[]
     symbolAnswers: Record<string, JevAnswer>
     selected: Array<{ path: string; symbol: ReuseFileCandidate['symbols'][number] }>
-    alternatives: Array<{ path: string; symbol: ReuseFileCandidate['symbols'][number] }>
     unassessed: Array<{ path: string; reason: string }>
   }
   symbolAnalysis: Pick<CodeSymbolAnalysisStatus, 'state' | 'complete' | 'coverageTotalFiles' | 'coverageOmittedFiles' | 'coverageCounts' | 'truncation'> | null
