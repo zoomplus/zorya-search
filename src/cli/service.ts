@@ -105,7 +105,7 @@ async function authenticated(owner: Owner, configPath: string) {
   try {
     const token = await ownerToken(owner, configPath);
     const client = new Client(
-      { name: "zorya-search-cli", version: "0.1.0" },
+      { name: "zorya-search-cli", version: "0.1.1" },
       { versionNegotiation: { mode: "auto" } },
     );
     await client.connect(

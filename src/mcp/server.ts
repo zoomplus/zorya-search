@@ -129,7 +129,7 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
   },
 } as const
 
-const requiredOperation: Record<string, 'read' | 'index' | 'web' | 'classify' | 'visual'> = {
+export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, 'read' | 'index' | 'web' | 'classify' | 'visual'>> = {
   list_roots: 'read',
   capabilities: 'read',
   index_status: 'read',
@@ -150,6 +150,8 @@ export function createSearchMcpServer(
   runtime: SearchMcpRuntime,
   access: SearchMcpAccess,
   ownerSignal?: AbortSignal,
+  filterUnauthorizedTools = false,
+  oauthScopesAdvertised = false,
 ) {
   const roots = new Set([...access.rootIds])
   const operationValues = [...access.operations]
@@ -163,7 +165,7 @@ export function createSearchMcpServer(
   )
     throw new Error('MCP_ACCESS_INVALID')
   const operations = new Set(operationValues)
-  const server = new McpServer({ name: 'zorya-search', version: '0.1.0' })
+  const server = new McpServer({ name: 'zorya-search', version: '0.1.1' })
 
   const add = <K extends keyof typeof SEARCH_MCP_TOOL_CONTRACTS>(
     name: K,
@@ -172,6 +174,7 @@ export function createSearchMcpServer(
       signal?: AbortSignal,
     ) => Promise<unknown> | unknown,
   ) => {
+    if (filterUnauthorizedTools && !operations.has(SEARCH_MCP_TOOL_OPERATIONS[name]!)) return
     const contract = SEARCH_MCP_TOOL_CONTRACTS[name]
     server.registerTool(
       name,
@@ -179,9 +182,12 @@ export function createSearchMcpServer(
         description: contract.description,
         inputSchema: contract.schema as unknown as StandardSchemaWithJSON,
         annotations: contract.annotations,
+        ...(oauthScopesAdvertised
+          ? { _meta: { securitySchemes: [{ type: 'oauth2', scopes: [`zorya:${SEARCH_MCP_TOOL_OPERATIONS[name]}`] }] } }
+          : {}),
       },
       async (input, ctx) => {
-        if (!operations.has(requiredOperation[name]!)) return failure('ACCESS_DENIED')
+        if (!operations.has(SEARCH_MCP_TOOL_OPERATIONS[name]!)) return failure('ACCESS_DENIED')
         const parsed = contract.schema.safeParse(input)
         if (!parsed.success) return failure('INVALID_REQUEST')
         input = parsed.data as typeof input
@@ -206,7 +212,20 @@ export function createSearchMcpServer(
     )
   }
   add('list_roots', () => runtime.listRoots().filter((root) => roots.has(root.id)))
-  add('capabilities', () => runtime.capabilities())
+  add('capabilities', () => {
+    const capabilities = runtime.capabilities()
+    if (!filterUnauthorizedTools) return capabilities
+    const web = operations.has('web')
+    return {
+      ...capabilities,
+      webEmbedding: web && capabilities.webEmbedding,
+      webReranking: web && capabilities.webReranking,
+      webRead: web && capabilities.webRead,
+      webDiscovery: web && capabilities.webDiscovery,
+      classification: operations.has('classify') && capabilities.classification,
+      visual: operations.has('visual') && capabilities.visual,
+    }
+  })
   add('index_status', (input, signal) =>
     runtime.indexStatus({ rootId: input.rootId, ...(input.jobId ? { jobId: input.jobId } : {}), ...(signal ? { signal } : {}) }),
   )

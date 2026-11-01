@@ -417,7 +417,7 @@ test(
       ]);
       assert.deepEqual(clientConfig.registry.args, [
         "--yes",
-        "@zorya/search@0.1.0",
+        "@zorya/search@0.1.1",
         "mcp",
         "--config",
         await realpath(config),

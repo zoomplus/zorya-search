@@ -15,12 +15,13 @@ import {
 import { NodeStreamableHTTPServerTransport, toNodeHandler } from '@modelcontextprotocol/node'
 import { openSearchRuntime, openSearchRuntimeFromFile } from '../runtime/index.js'
 import type { RuntimeOptions } from '../runtime/index.js'
-import { createSearchMcpServer, type SearchMcpAccess } from '../mcp/server.js'
+import { createSearchMcpServer, SEARCH_MCP_TOOL_OPERATIONS, type SearchMcpAccess } from '../mcp/server.js'
 import { hostAllowed, originAllowed, parseBearer } from './http-policy.js'
 import { normalizeIncomingMessage, readWebRequest } from './http-request.js'
 
 export interface SearchDaemonOptions {
   config?: unknown
+  configDir?: string
   configPath?: string
   runtimeOptions?: Omit<RuntimeOptions, 'config' | 'configDir'>
   host?: string
@@ -28,16 +29,28 @@ export interface SearchDaemonOptions {
   /** Owner-local bearer credential. Keep it in a private secret store, never in a URL or argv. */
   bearerToken?: string
   /** Trusted verifier for remote principals. The caller cannot supply its own grants. */
-  authorize?: (
-    bearer: string,
-    signal: AbortSignal,
-  ) => Promise<(SearchMcpAccess & { principalId: string }) | undefined>
+  authorize?: SearchDaemonAuthorizer
   allowedHosts?: readonly string[]
   allowedOrigins?: readonly string[]
+  /** Absolute public OAuth resource identity and metadata exposed by remote mode. */
+  protectedResource?: { resource: string; issuer: string; scopes: readonly string[]; metadataUrl: string }
   path?: string
   maxLegacySessions?: number
   legacyIdleTimeoutMs?: number
 }
+
+export interface SearchDaemonInsufficientScope {
+  kind: 'insufficient_scope'
+  scope: string
+}
+export interface SearchDaemonAuthorizedAccess extends SearchMcpAccess {
+  principalId: string
+  permittedScopes?: readonly string[]
+}
+export type SearchDaemonAuthorizer = (
+    bearer: string,
+    signal: AbortSignal,
+  ) => Promise<SearchDaemonAuthorizedAccess | SearchDaemonInsufficientScope | undefined>
 
 type LegacySession = {
   transport: NodeStreamableHTTPServerTransport
@@ -50,6 +63,29 @@ type LegacySession = {
 export async function startSearchDaemon(options: SearchDaemonOptions) {
   const host = options.host ?? '127.0.0.1'
   const local = host === '127.0.0.1' || host === '::1' || host === 'localhost'
+  const remote = options.protectedResource
+  let protectedResource: SearchDaemonOptions['protectedResource']
+  let allowedHosts = options.allowedHosts
+  let allowedOrigins = options.allowedOrigins
+  if (remote) {
+    let resourceUrl: URL
+    let issuerUrl: URL
+    try {
+      resourceUrl = new URL(remote.resource)
+      issuerUrl = new URL(remote.issuer)
+    } catch { throw new Error('DAEMON_REMOTE_RESOURCE_INVALID') }
+    const issuerCanonical = issuerUrl.href === remote.issuer || (issuerUrl.pathname === '/' && remote.issuer === issuerUrl.origin)
+    const metadataUrl = `${resourceUrl.origin}/.well-known/oauth-protected-resource${resourceUrl.pathname}`
+    if (
+      !options.authorize || host !== '127.0.0.1' || (options.path ?? '/mcp') !== '/mcp' || resourceUrl.protocol !== 'https:' || resourceUrl.username || resourceUrl.password || resourceUrl.search || resourceUrl.hash || resourceUrl.pathname !== '/mcp' || resourceUrl.href !== remote.resource ||
+      issuerUrl.protocol !== 'https:' || issuerUrl.username || issuerUrl.password || issuerUrl.search || issuerUrl.hash || !issuerCanonical ||
+      remote.metadataUrl !== metadataUrl || !Array.isArray(remote.scopes) || remote.scopes.length < 1 || remote.scopes.length > 5 || remote.scopes.some((scope) => typeof scope !== 'string' || !/^zorya:(read|index|web|classify|visual)$/.test(scope)) || new Set(remote.scopes).size !== remote.scopes.length ||
+      !options.allowedHosts || options.allowedHosts.length !== 1 || options.allowedHosts[0] !== resourceUrl.host || !options.allowedOrigins
+    ) throw new Error('DAEMON_REMOTE_RESOURCE_INVALID')
+    protectedResource = Object.freeze({ resource: remote.resource, issuer: remote.issuer, metadataUrl, scopes: Object.freeze([...remote.scopes]) })
+    allowedHosts = Object.freeze([...options.allowedHosts])
+    allowedOrigins = Object.freeze([...options.allowedOrigins])
+  }
   if (
     !local &&
     (!options.authorize || !options.allowedHosts?.length || !options.allowedOrigins?.length)
@@ -73,7 +109,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
     throw new Error('DAEMON_OWNER_TOKEN_REQUIRED')
   const runtime = options.configPath
     ? await openSearchRuntimeFromFile(options.configPath, { backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}) })
-    : await openSearchRuntime({ backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}), config: options.config })
+    : await openSearchRuntime({ backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}), ...(options.configDir ? { configDir: options.configDir } : {}), config: options.config })
   const path = options.path ?? '/mcp'
   if (!/^\/[A-Za-z0-9/_-]{1,127}$/.test(path) || path.includes('//')) {
     await runtime.close()
@@ -151,7 +187,14 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
           res.writeHead(503).end()
           return
         }
-        if (req.url?.split('?')[0] !== path) {
+        const requestPath = req.url?.split('?')[0]
+        const metadataPath = protectedResource ? new URL(protectedResource.metadataUrl).pathname : undefined
+        const isMetadataRequest = requestPath === metadataPath && req.method === 'GET'
+        if (requestPath !== path && !isMetadataRequest) {
+          res.writeHead(404).end()
+          return
+        }
+        if (isMetadataRequest && req.url !== metadataPath) {
           res.writeHead(404).end()
           return
         }
@@ -163,19 +206,37 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         const origin = req.headers.origin
         const address = httpServer.address()
         const boundPort = address && typeof address === 'object' ? address.port : -1
-        const hostIsAllowed = hostAllowed(hostHeader, boundPort, options.allowedHosts, local)
-        const originIsAllowed = originAllowed(origin, boundPort, options.allowedOrigins, local)
+        const protectedHost = protectedResource ? new URL(protectedResource.resource).host : undefined
+        const hostIsAllowed = (!protectedHost || hostHeader === protectedHost) && hostAllowed(hostHeader, boundPort, allowedHosts, local)
+        const originIsAllowed = originAllowed(origin, boundPort, allowedOrigins, local)
         if (!hostIsAllowed || !originIsAllowed) {
           res.writeHead(403).end()
+          return
+        }
+        if (isMetadataRequest) {
+          const metadata = protectedResource!
+          res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'public, max-age=300',
+            'access-control-allow-origin': origin ?? '*',
+            'vary': 'Origin',
+          }).end(JSON.stringify({
+            resource: metadata.resource,
+            authorization_servers: [metadata.issuer],
+            bearer_methods_supported: ['header'],
+            scopes_supported: [...metadata.scopes],
+          }))
           return
         }
         const authorization = req.headers.authorization
         const bearer = parseBearer(authorization)
         if (!bearer) {
-          res.writeHead(401, { 'www-authenticate': 'Bearer' }).end()
+          res.writeHead(401, { 'www-authenticate': protectedResource ? `Bearer resource_metadata="${protectedResource.metadataUrl}"` : 'Bearer' }).end()
           return
         }
         let access: (SearchMcpAccess & { principalId: string }) | undefined
+        let insufficientScope: string | undefined
+        let permittedScopes: readonly string[] = []
         try {
           if (options.authorize) {
             if (authorizationJobs.size >= maxAuthorizationJobs) {
@@ -207,11 +268,12 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
               }, 10_000)
             })
             try {
-              access = snapshotAccess(
-                await Promise.race([job, timed]),
-                runtime.listRoots().map((root) => root.id),
-                true,
-              )
+              const authorized = await Promise.race([job, timed])
+              if (authorized && typeof authorized === 'object' && 'kind' in authorized && authorized.kind === 'insufficient_scope' && typeof authorized.scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(authorized.scope)) insufficientScope = authorized.scope
+              else {
+                if (authorized && typeof authorized === 'object' && 'permittedScopes' in authorized && Array.isArray(authorized.permittedScopes) && authorized.permittedScopes.length <= 5 && authorized.permittedScopes.every((scope) => typeof scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(scope))) permittedScopes = Object.freeze([...authorized.permittedScopes])
+                access = snapshotAccess(authorized, runtime.listRoots().map((root) => root.id), true)
+              }
             } finally {
               if (timeout) clearNodeTimeout(timeout)
               finishAuthWait?.()
@@ -230,7 +292,11 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
           return
         }
         if (!access) {
-          res.writeHead(401, { 'www-authenticate': 'Bearer' }).end()
+          if (protectedResource && insufficientScope) {
+            res.writeHead(403, { 'www-authenticate': `Bearer resource_metadata="${protectedResource.metadataUrl}", error="insufficient_scope", scope="${insufficientScope}"` }).end()
+            return
+          }
+          res.writeHead(401, { 'www-authenticate': protectedResource ? `Bearer resource_metadata="${protectedResource.metadataUrl}", error="invalid_token"` : 'Bearer' }).end()
           return
         }
         const principal = access.principalId
@@ -252,6 +318,21 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
           requestController.signal,
           1_048_576,
         )
+        if (protectedResource && parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
+          const body = parsedBody as { method?: unknown; params?: unknown }
+          const params = body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params as Record<string, unknown> : undefined
+          const toolName = typeof params?.name === 'string' ? params.name : undefined
+          const required = body.method === 'tools/call' && toolName ? SEARCH_MCP_TOOL_OPERATIONS[toolName] : undefined
+          if (required && !access.operations.includes(required) && permittedScopes.includes(`zorya:${required}`)) {
+            const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments as Record<string, unknown> : undefined
+            if (args?.rootId !== undefined && (typeof args.rootId !== 'string' || !access.rootIds.includes(args.rootId))) {
+              res.writeHead(404).end()
+              return
+            }
+            res.writeHead(403, { 'www-authenticate': `Bearer resource_metadata="${protectedResource.metadataUrl}", error="insufficient_scope", scope="zorya:${required}"` }).end()
+            return
+          }
+        }
         if (
           req.method === 'POST' &&
           !isJsonContentType(webRequest.headers.get('content-type') ?? '')
@@ -270,7 +351,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         }
         if (closing || requestController.signal.aborted) return
         const handler = createMcpHandler(
-          () => createSearchMcpServer(runtime, access!, requestController.signal),
+          () => createSearchMcpServer(runtime, access!, requestController.signal, Boolean(protectedResource), Boolean(protectedResource)),
           { legacy: 'reject', maxRequestBodySize: 1_048_576 },
         )
         modernHandlers.add(handler)
@@ -343,7 +424,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         if (transport.sessionId) sessions.delete(transport.sessionId)
       }
       try {
-        await createSearchMcpServer(runtime, access, ownerController.signal).connect(transport)
+        await createSearchMcpServer(runtime, access, ownerController.signal, Boolean(protectedResource), Boolean(protectedResource)).connect(transport)
         await transport.handleRequest(req, res, body)
       } finally {
         initializing--
@@ -368,19 +449,22 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
       closing = true
       ownerController.abort(new Error('DAEMON_CLOSED'))
       for (const controller of requestControllers) controller.abort(new Error('DAEMON_CLOSED'))
-      await Promise.all([...sessions.values()].map(closeSession))
-      await Promise.all(
-        [...modernHandlers].map((handler) => handler.close().catch(() => undefined)),
-      )
-      await Promise.allSettled([...activeHttpRequests])
-      const serverClosed = new Promise<void>((resolve, reject) =>
-        httpServer.close((error) => (error ? reject(error) : resolve())),
-      )
-      for (const socket of sockets) socket.destroy()
-      await serverClosed
-      await Promise.allSettled([...authorizationJobs])
-      clearInterval(sweep)
-      await runtime.close()
+      try {
+        await Promise.all([...sessions.values()].map(closeSession))
+        await Promise.all(
+          [...modernHandlers].map((handler) => handler.close().catch(() => undefined)),
+        )
+        await Promise.allSettled([...activeHttpRequests])
+        const serverClosed = new Promise<void>((resolve, reject) =>
+          httpServer.close((error) => (error ? reject(error) : resolve())),
+        )
+        for (const socket of sockets) socket.destroy()
+        await serverClosed
+        await Promise.allSettled([...authorizationJobs])
+      } finally {
+        clearInterval(sweep)
+        await runtime.close()
+      }
     })())
   await new Promise<void>((resolve, reject) => {
     httpServer.once('error', reject)

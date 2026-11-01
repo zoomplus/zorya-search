@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpath, mkdir, lstat, open, unlink } from "node:fs/promises";
+import { realpath, mkdir, lstat, open, unlink, readFile } from "node:fs/promises";
 import { dirname, resolve, join, isAbsolute } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
@@ -19,8 +19,10 @@ import { createSetupConfig, setupMode } from "./setup-config.js";
 import { parseRuntimeConfig } from "../runtime/config.js";
 import { canonicalFuturePath } from "../runtime/path.js";
 import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
+import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadataUrl, remoteOAuthScopes, validateRemoteOAuthRoots } from "../daemon/remote-oauth.js";
+import { startSearchDaemon } from "../daemon/index.js";
 
-const CLI_VERSION = "0.1.0";
+const CLI_VERSION = "0.1.1";
 const cliEntryPath = fileURLToPath(import.meta.url);
 const help = `Zorya Search — локальный поиск по коду и источникам
 
@@ -33,12 +35,16 @@ const help = `Zorya Search — локальный поиск по коду и и
   search         искать в коде (--query ТЕКСТ)
   context        собрать контекст (--query ТЕКСТ)
   serve          запустить владельца службы в foreground
+  serve-remote   запустить OAuth-защищённый HTTP MCP endpoint в foreground
   mcp            подключить stdio MCP к общей локальной службе
   client-config  вывести команду подключения Codex и JSON для совместимого клиента
   root-add       добавить разрешённый корень в конфигурацию
   service        проверить службу или остановить только подтверждённого владельца
 
-Параметры: --config ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
+Для serve-remote задайте --config ПУТЬ runtime-конфигурации и --policy ПУТЬ JSON-политики.
+Служба слушает только loopback; публичный TLS завершается на настроенном владельцем proxy.
+
+Параметры: --config ПУТЬ, --policy ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
 
 Для поиска по web задайте модель для текста страниц: --web-embedding-model,
 --web-embedding-dimensions и --web-embedding-env. По умолчанию используется OpenRouter.
@@ -423,6 +429,7 @@ async function main() {
       "non-interactive",
     ],
     serve: ["config", "token-file", "control-file"],
+    "serve-remote": ["config", "policy"],
     "client-config": ["config"],
     doctor: ["config"],
     "root-add": ["config", "root-id", "root", "watch", "watch-interval-ms"],
@@ -452,6 +459,40 @@ async function main() {
         ? get(opts, "control-file")
         : undefined,
     );
+    return;
+  }
+  if (command === "serve-remote") {
+    const policyPath = resolve(get(opts, "policy"));
+    const policyStat = await lstat(policyPath).catch(() => undefined);
+    if (!policyStat?.isFile() || policyStat.size > 262_144) throw new Error("REMOTE_POLICY_FILE_INVALID");
+    const policy = parseRemoteOAuthPolicy(JSON.parse(await readFile(policyPath, "utf8")));
+    const loadedRuntime = await readConfig(configPath);
+    validateRemoteOAuthRoots(policy, loadedRuntime.config.roots.map((root) => root.id));
+    const resourceUrl = new URL(policy.resource);
+    const resourceHost = resourceUrl.hostname.replace(/^\[|\]$/g, "");
+    if (resourceHost === "localhost" || resourceHost.endsWith(".localhost") || resourceHost.startsWith("127.") || resourceHost === "::1") throw new Error("REMOTE_RESOURCE_MUST_BE_PUBLIC_HTTPS");
+    const metadataUrl = remoteOAuthMetadataUrl(policy.resource);
+    const authorize = createRemoteOAuthAuthorizer(policy);
+    const daemon = await startSearchDaemon({
+      config: loadedRuntime.config,
+      configDir: loadedRuntime.configDir,
+      host: "127.0.0.1",
+      port: policy.port,
+      allowedHosts: [resourceUrl.host],
+      allowedOrigins: policy.allowedOrigins,
+      authorize,
+      protectedResource: { resource: policy.resource, issuer: policy.issuer, scopes: remoteOAuthScopes(policy), metadataUrl },
+    });
+    try {
+      stdout.write(JSON.stringify({ event: "ready", host: daemon.host, port: daemon.port, resource: policy.resource, metadataUrl }) + "\n");
+      await new Promise<void>((resolveSignal) => {
+        const stop = () => { void daemon.close().then(resolveSignal, resolveSignal); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+    } finally {
+      try { await daemon.close() } finally { await authorize.close() }
+    }
     return;
   }
   if (command === "client-config") {

@@ -14,7 +14,7 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
     throw new Error('MCP_ENDPOINT_INVALID')
   if (!bearerToken || bearerToken.length > 8192) throw new Error('MCP_CREDENTIAL_INVALID')
   const client = new Client(
-    { name: 'zorya-search-stdio-proxy', version: '0.1.0' },
+    { name: 'zorya-search-stdio-proxy', version: '0.1.1' },
     { versionNegotiation: { mode: 'auto' } },
   )
   const clientTransport = new StreamableHTTPClientTransport(endpoint, {
@@ -34,7 +34,7 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
   try {
     await client.connect(clientTransport)
     const remote = await client.listTools()
-    server = new McpServer({ name: 'zorya-search-stdio-proxy', version: '0.1.0' })
+    server = new McpServer({ name: 'zorya-search-stdio-proxy', version: '0.1.1' })
     for (const tool of remote.tools) {
       if (!Object.hasOwn(SEARCH_MCP_TOOL_CONTRACTS, tool.name)) continue
       const contract =
