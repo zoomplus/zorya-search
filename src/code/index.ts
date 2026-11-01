@@ -48,6 +48,21 @@ type Stored = CodeChunk & { vector_json: unknown; current_snapshot?: string }
 const sha = (value: string) => createHash('sha256').update(value).digest('hex')
 const checkAbort = (signal?: AbortSignal) => signal?.throwIfAborted()
 
+function exactDeclarationQuery(query: string): string | null {
+  const trimmed = query.trim()
+  return /^[$_\p{ID_Start}][$\u200c\u200d_\p{ID_Continue}]*$/u.test(trimmed)
+    ? trimmed
+    : null
+}
+
+function isExactDeclarationSymbol(symbol: string | null, query: string): boolean {
+  if (!symbol) return false
+  const base = symbol.replace(/#\d+$/u, '')
+  if (base === query) return true
+  const overloadPrefix = `${query}@`
+  return base.startsWith(overloadPrefix) && /^\d+$/u.test(base.slice(overloadPrefix.length))
+}
+
 function validateProfile(profile: CodeEmbeddingProfile | undefined): CodeEmbeddingProfile {
   if (
     !profile ||
@@ -802,6 +817,27 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     } else if (mode === 'hybrid' && models)
       degradedReason = denseReason(snapshot.profileId, true, profileId) ?? undefined
     const ranked = reciprocalRankFusion(filtered, lexicalRanks, denseRanks)
+    const exactQuery = exactDeclarationQuery(input.query)
+    const rankedById = exactQuery ? new Map(ranked.map((item) => [item.row.id, item])) : undefined
+    const exactDeclarations = exactQuery
+      ? filtered
+          .filter((row) => isExactDeclarationSymbol(row.symbol, exactQuery))
+          .map((row) => rankedById?.get(row.id) ?? {
+            row,
+            lexicalRank: null,
+            denseRank: null,
+            score: 0,
+          })
+          .sort(
+            (left, right) =>
+              Number(/#\d+$/u.test(left.row.symbol ?? '')) -
+                Number(/#\d+$/u.test(right.row.symbol ?? '')) ||
+              left.row.path.localeCompare(right.row.path) ||
+              left.row.lineStart - right.row.lineStart ||
+              (left.row.symbol ?? '').localeCompare(right.row.symbol ?? '') ||
+              left.row.id.localeCompare(right.row.id),
+          )
+      : []
     let result = ranked.slice(0, mode === 'hybrid' && models?.rerank ? (rerankCandidateLimit || cap) : cap)
     let rerankRanks = new Map<string, number>()
     if (mode === 'hybrid' && models?.rerank && profile && !degradedReason && result.length) {
@@ -837,6 +873,10 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           return item ? [item] : []
         })
         .concat(result.filter((item) => !rerankRanks.has(item.row.id)))
+    }
+    if (exactDeclarations.length) {
+      const exactIds = new Set(exactDeclarations.map((item) => item.row.id))
+      result = [...exactDeclarations, ...result.filter((item) => !exactIds.has(item.row.id))]
     }
     result = result.slice(0, cap)
     const hits: CodeHit[] = result.map(({ row, lexicalRank, denseRank, score }) => ({

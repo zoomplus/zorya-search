@@ -105,6 +105,109 @@ test('bounded rerank shortlist can promote a candidate beyond the requested outp
   assert.equal(result.hits.length, 1)
 })
 
+test('exact symbol queries put AST declarations first while retaining usages and respecting filters', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'a-usage.ts'), `export function chatter() { return ${'exactTarget + '.repeat(24)}0 }\n`)
+  await writeFile(join(root, 'z-declaration.ts'), 'export function exactTarget() { return 1 }\n')
+  await writeFile(join(root, 'other.js'), 'export function exactTarget() { return 2 }\n')
+  await writeFile(join(root, 'dollar.js'), 'export function $() { return 3 }\n')
+  await commit(root, 'exact declaration fixture')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+
+  const all = await code.searchCode({ root, query: ' exactTarget ', mode: 'lexical', limit: 8 })
+  assert.equal(all.hits[0]?.path, 'other.js')
+  assert.equal(all.hits[0]?.symbol, 'exactTarget')
+  assert.ok(all.hits.some((hit) => hit.path === 'a-usage.ts' && hit.symbol === 'chatter'))
+  assert.equal(
+    (await code.searchCode({ root, query: 'exactTarget', mode: 'lexical', limit: 1 })).hits[0]?.path,
+    'other.js',
+  )
+  const scoped = await code.searchCode({
+    root,
+    query: 'exactTarget',
+    mode: 'lexical',
+    paths: ['z-declaration.ts'],
+    language: 'ts',
+    limit: 8,
+  })
+  assert.deepEqual(scoped.hits.map((hit) => hit.path), ['z-declaration.ts'])
+  assert.equal((await code.searchCode({ root, query: 'ExactTarget', mode: 'lexical' })).hits[0]?.symbol, 'chatter')
+  assert.ok((await code.searchCode({ root, query: 'exactTarget suffix', mode: 'lexical' })).hits[0]?.symbol !== 'exactTarget')
+  assert.deepEqual((await code.searchCode({ root, query: 'noSuchSymbol', mode: 'lexical' })).hits, [])
+  const dollar = await code.searchCode({ root, query: '$', mode: 'lexical', limit: 1 })
+  assert.equal(dollar.hits[0]?.symbol, '$')
+  assert.equal(
+    (await code.readSource({ root, path: dollar.hits[0]!.path, lineStart: dollar.hits[0]!.lineStart })).stale,
+    false,
+  )
+  await code.close()
+})
+
+test('exact declarations survive hybrid candidate caps and adversarial reranking', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'usage.ts'), `export function chatter() { return ${'hybridTarget + '.repeat(24)}0 }\n`)
+  await writeFile(join(root, 'declaration.ts'), 'export function hybridTarget() { return 1 }\n')
+  await commit(root, 'hybrid exact declaration fixture')
+  const profile = {
+    provider: 'mock', space: 'exact-declaration', model: 'fixture', dimensions: 2,
+    inputType: 'text' as const, chunkerVersion: 'ts-ast-symbol-v1',
+  }
+  let offeredDocuments: string[] = []
+  const { code } = await index(root, {
+    async embed({ texts }) {
+      return texts.map((text) =>
+        text.includes('export function hybridTarget') ? [1, 0] : [0, 1],
+      )
+    },
+    async rerank({ documents }) {
+      offeredDocuments = [...documents]
+      return documents.map((_, index) => ({ index, score: index }))
+    },
+  }, profile, undefined, undefined, 1)
+  await code.indexRepository({ root })
+  const result = await code.searchCode({ root, query: 'hybridTarget', mode: 'hybrid', limit: 3 })
+  assert.equal(result.hits[0]?.path, 'declaration.ts')
+  assert.equal(result.hits[0]?.ranking.mode, 'hybrid')
+  assert.equal(result.hits[0]?.ranking.rerankRank, null)
+  assert.equal(result.hits[1]?.path, 'usage.ts')
+  assert.equal(result.hits[1]?.ranking.rerankRank, 1)
+  assert.equal(offeredDocuments.length, 1)
+  await code.close()
+})
+
+test('exact symbol promotion keeps first class chunks and overload declarations in source order', async () => {
+  const root = await repository()
+  await writeFile(
+    join(root, 'symbols.ts'),
+    [
+      'export function overloadedTarget(value: string): string',
+      'export function overloadedTarget(value: number): number',
+      'export function overloadedTarget(value: string | number) { return value }',
+      'export class SplitTarget {',
+      ...Array.from({ length: 20 }, (_, index) => `  method${index}() { return ${index} }`),
+      '}',
+    ].join('\n'),
+  )
+  await writeFile(join(root, 'other-class.ts'), 'export class SplitTarget { close() {} }\n')
+  await commit(root, 'overload and split declaration fixture')
+  const { code } = await index(root, undefined, undefined, { maxChunkChars: 96 })
+  await code.indexRepository({ root })
+
+  const overloads = await code.searchCode({ root, query: 'overloadedTarget', mode: 'lexical', limit: 8 })
+  assert.deepEqual(
+    overloads.hits.filter((hit) => hit.symbol?.startsWith('overloadedTarget')).map((hit) => hit.symbol),
+    ['overloadedTarget', 'overloadedTarget@2', 'overloadedTarget@3'],
+  )
+  const classChunks = await code.searchCode({ root, query: 'SplitTarget', mode: 'lexical', limit: 8 })
+  const matchedChunks = classChunks.hits.filter((hit) => hit.symbol?.startsWith('SplitTarget'))
+  assert.equal(matchedChunks[0]?.symbol, 'SplitTarget')
+  assert.ok(matchedChunks.some((hit) => hit.symbol === 'SplitTarget#2'))
+  const boundedClassChunks = await code.searchCode({ root, query: 'SplitTarget', mode: 'lexical', limit: 2 })
+  assert.deepEqual(boundedClassChunks.hits.map((hit) => hit.symbol), ['SplitTarget', 'SplitTarget'])
+  await code.close()
+})
+
 test('read snapshots preserve dense results, rerank inputs, cancellation ownership, and admission limits', async () => {
   const root = await repository()
   await writeFile(join(root, 'first.ts'), 'export const sharedNeedle = "first"\n')
