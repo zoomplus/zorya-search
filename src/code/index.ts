@@ -37,6 +37,7 @@ import {
 import { watchCodeRoot } from './watch.js'
 import { walkDependencyGraph } from './dependency-graph.js'
 import { codeFilterCacheKey, codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from './filters.js'
+import { persistCodeChunks } from './chunk-storage.js'
 import { prepareSymbolAnalysis } from './symbol-indexing.js'
 import { loadTypeScriptLibraryBundle } from './symbol-libraries.js'
 import { analysisProfileId, claimSymbolRefresh, DEFAULT_SYMBOL_LIMITS, loadSymbolAnalysis, publishIndexedSymbolAnalysis, publishSymbolRefresh } from './symbol-storage.js'
@@ -553,26 +554,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           chunks.length,
         ],
       )
-      for (let index = 0; index < chunks.length; index++) {
-        const chunk = chunks[index]!
-        await tx.query(
-          `INSERT INTO zorya_code_chunks(snapshot_id,id,path,line_start,line_end,symbol,language,body,content_hash,parser_version,vector_json)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) ON CONFLICT(snapshot_id,id) DO NOTHING`,
-          [
-            identity.snapshotId,
-            chunk.id,
-            chunk.path,
-            chunk.lineStart,
-            chunk.lineEnd,
-            chunk.symbol,
-            chunk.language,
-            chunk.text,
-            chunk.contentHash,
-            chunk.parserVersion,
-            vectors[index] ? JSON.stringify(vectors[index]) : null,
-          ],
-        )
-      }
+      await persistCodeChunks(tx, identity.snapshotId, chunks, vectors, signal)
       if (files.length)
         await tx.query(
           `INSERT INTO zorya_code_files(snapshot_id,path,content_hash,bytes) VALUES ${files.map((_, i) => `($1,$${2 + i * 3},$${3 + i * 3},$${4 + i * 3})`).join(',')} ON CONFLICT DO NOTHING`,

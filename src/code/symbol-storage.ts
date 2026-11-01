@@ -4,7 +4,10 @@ import type { CodeSymbol, CodeSymbolReference, SymbolExtractionResult } from './
 import type { CodeSymbolAnalysisProfile, CodeSymbolAnalysisStatus } from './symbol-api.js'
 import { CodeIndexError } from './errors.js'
 import { CODE_SYMBOL_EXTRACTOR_VERSION } from './symbol-types.js'
+import { yieldToEventLoop } from './chunk-storage.js'
 import ts from 'typescript'
+
+const SYMBOL_PERSIST_BATCH_SIZE = 128
 
 export interface SymbolAnalysisLimits {
   maxFiles: number
@@ -110,9 +113,9 @@ export async function persistSymbolAnalysis(
         reference.targetKind === 'unresolved').length],
   )
   const files = new Map(result.files.map((file) => [file.path, file.language]))
-  for (let offset = 0; offset < result.symbols.length; offset += 64) {
+  for (let offset = 0; offset < result.symbols.length; offset += SYMBOL_PERSIST_BATCH_SIZE) {
     signal?.throwIfAborted()
-    const batch = result.symbols.slice(offset, offset + 64)
+    const batch = result.symbols.slice(offset, offset + SYMBOL_PERSIST_BATCH_SIZE)
     const values: unknown[] = [snapshotId, profile.id]
     const rows = batch.map((symbol, index) => {
       const base = 3 + index * 11
@@ -127,11 +130,13 @@ export async function persistSymbolAnalysis(
         line_start,line_end,file_hash,language,parent_symbol_id,dto_json) VALUES ${rows.join(',')} ON CONFLICT DO NOTHING`,
       values,
     )
+    await yieldToEventLoop()
+    signal?.throwIfAborted()
   }
   await tx.exec('ANALYZE zorya_code_symbols')
-  for (let offset = 0; offset < result.references.length; offset += 64) {
+  for (let offset = 0; offset < result.references.length; offset += SYMBOL_PERSIST_BATCH_SIZE) {
     signal?.throwIfAborted()
-    const batch = result.references.slice(offset, offset + 64)
+    const batch = result.references.slice(offset, offset + SYMBOL_PERSIST_BATCH_SIZE)
     const values: unknown[] = [snapshotId, profile.id]
     const rows = batch.map((reference, index) => {
       const base = 3 + index * 10
@@ -147,6 +152,8 @@ export async function persistSymbolAnalysis(
        VALUES ${rows.join(',')} ON CONFLICT DO NOTHING`,
       values,
     )
+    await yieldToEventLoop()
+    signal?.throwIfAborted()
   }
   await tx.query(
     `DELETE FROM zorya_code_analysis WHERE snapshot_id=$1 AND analysis_profile_id<>$2 AND analysis_profile_id NOT IN

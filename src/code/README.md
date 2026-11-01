@@ -2,6 +2,8 @@
 
 `createCodeIndex` связывает code chunks со snapshot repository/worktree. Индексация использует bounded enumeration, AST-aware chunking, checkpoints и staging; current snapshot меняется только при совпадении поколения.
 
+Публикация группирует записи в ограниченные SQL batches: до 64 code chunks и до 128 symbols или references за запрос. Между batches процесс уступает event loop и повторно проверяет отмену. Записи остаются внутри существующей транзакции публикации: отмена или ошибка откатывает незавершённый snapshot. Эти пределы описывают размер записи, а не обещают время индексации.
+
 ```mermaid
 flowchart TD
  A["Корень + IndexOptions"] --> B["Identity, fingerprint, лимиты и exclusions"]
