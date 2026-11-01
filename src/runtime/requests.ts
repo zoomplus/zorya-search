@@ -146,6 +146,10 @@ export const webSearchRequest = z
     limit: z.number().int().min(1).max(100).optional(),
     maxChars: z.number().int().min(1).max(100_000).optional(),
     dateRange: webDateRangeSchema.optional(),
+    additionalQueries: z
+      .array(z.string().min(1).max(2000).refine((query) => query.trim().length > 0))
+      .max(7)
+      .optional(),
   })
   .strict()
 export const webReadRequest = z

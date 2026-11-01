@@ -1529,6 +1529,7 @@ async function createOwnedRuntime(
       limit?: number
       maxChars?: number
       dateRange?: WebDateRange
+      additionalQueries?: string[]
       signal?: AbortSignal
     }): Promise<WebSearchResult> {
       const { request, signal } = captureRequest(webSearchRequest, input)
@@ -1555,6 +1556,9 @@ async function createOwnedRuntime(
             ...(request.limit === undefined ? {} : { limit: request.limit }),
             ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),
             ...(request.dateRange === undefined ? {} : { dateRange: request.dateRange }),
+            ...(request.additionalQueries === undefined
+              ? {}
+              : { additionalQueries: request.additionalQueries }),
             signal: operationSignal,
           })
         } finally {
