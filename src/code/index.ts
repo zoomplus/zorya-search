@@ -1132,10 +1132,13 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       readEdges: async (frontier, limit, signal) => {
         checkAbort(signal)
         const result = await database.query<{ from_path: string; to_path: string }>(
-        `SELECT from_path,to_path FROM zorya_code_imports
-         WHERE snapshot_id=$1 AND (from_path=ANY($2::text[]) OR to_path=ANY($2::text[]))
-         ORDER BY CASE WHEN from_path=ANY($2::text[]) THEN 0 ELSE 1 END,from_path,to_path LIMIT $3`,
-        [snapshot.snapshot, frontier, limit],
+          `SELECT from_path,to_path FROM (
+             SELECT DISTINCT from_path,to_path FROM zorya_code_imports
+             WHERE snapshot_id=$1 AND (from_path=ANY($2::text[]) OR to_path=ANY($2::text[]))
+           ) AS unique_edges
+           ORDER BY CASE WHEN from_path=ANY($2::text[]) THEN 0 ELSE 1 END,from_path,to_path
+           LIMIT $3`,
+          [snapshot.snapshot, frontier, limit],
         )
         return result.rows.map((row) => ({ from: row.from_path, to: row.to_path }))
       },

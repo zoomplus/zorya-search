@@ -1193,6 +1193,27 @@ test('dependency graph edge budget counts unique edges across BFS levels', async
   assert.equal(graph.reachedDepth, 2)
 })
 
+test('dependency graph applies edge caps to unique file pairs rather than import aliases', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'a.ts'), "import './b.js'\nimport './b.ts'\nimport '././b.js'\nimport './z.js'\n")
+  await writeFile(join(root, 'b.ts'), 'export const b = 1\n')
+  await writeFile(join(root, 'z.ts'), 'export const z = 1\n')
+  await commit(root, 'dependency import alias fixture')
+  const { code, database } = await index(root)
+  const status = await code.indexRepository({ root })
+  const storedImports = await database.query<{ from_path: string; to_path: string; specifier: string }>(
+    'SELECT from_path,to_path,specifier FROM zorya_code_imports WHERE snapshot_id=$1 AND from_path=$2 ORDER BY specifier',
+    [status.identity!.snapshotId, 'a.ts'],
+  )
+  assert.equal(storedImports.rows.length, 4)
+  assert.equal(storedImports.rows.filter((row) => row.to_path === 'b.ts').length, 3)
+
+  const graph = await code.dependencyGraph!({ root, seeds: ['a.ts'], maxDepth: 2, maxEdges: 2 })
+  assert.deepEqual(graph.edges.map(({ from, to }) => `${from}->${to}`), ['a.ts->b.ts', 'a.ts->z.ts'])
+  assert.deepEqual(graph.nodes.map((node) => node.path), ['a.ts', 'b.ts', 'z.ts'])
+  assert.deepEqual(graph.limits, { depth: false, nodes: false, edges: false })
+})
+
 test('dependency graph scoped reads reject source changes and close joins canceled SQL', async () => {
   const makeFixture = async (prefix: string) => {
     const root = await repository()
