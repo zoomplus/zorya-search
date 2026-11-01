@@ -17,9 +17,11 @@ import {
   canonicalUrl,
   chunkDocuments,
   createSearchService,
+  ProviderError,
   reciprocalRankFusion,
   searchRequestSchema,
 } from '../../src/index.js'
+import { createBraveWebSource } from '../../src/providers/brave.js'
 
 const date = '2026-10-09T00:00:00.000Z'
 function sourceDocument(url: string, text = `Guide for ${url}`): SourceDocument {
@@ -371,4 +373,93 @@ await test('continues with another query facet after discovery rate limiting', a
   assert.equal(result.documents.length, 1)
   assert.equal(result.attempted, 1)
   assert.deepEqual(result.errors, [{ stage: 'discovery', queryIndex: 0, code: 'BRAVE_HTTP_429' }])
+})
+
+await test('typed Brave discovery refusals stop only this operation and keep cache fallback', async () => {
+  for (const [status, code] of [
+    [401, 'DISCOVERY_AUTH'],
+    [402, 'DISCOVERY_QUOTA'],
+    [429, 'DISCOVERY_RATE_LIMIT'],
+  ] as const) {
+    let calls = 0
+    const fixture = setup([passage], 0.4)
+    fixture.deps.web = createBraveWebSource({
+      apiKey: 'fixture',
+      limits: { attempts: 1 },
+      fetch: async () => {
+        calls++
+        return new Response('', { status })
+      },
+    })
+    const first = fixture.service.startSearch({ query: 'boss', language: 'en', targetSources: 3 })
+    const result = await fixture.service.result(first.jobId)
+    assert.equal(result.origin, 'database')
+    assert.equal(result.partial, true)
+    assert.equal(result.passages[0]?.id, passage.id)
+    assert.deepEqual(result.errors, [{ stage: 'discovery', queryIndex: 0, code }])
+    assert.equal(calls, 1)
+
+    const second = fixture.service.startSearch({ query: 'another request', language: 'en', targetSources: 3 })
+    await fixture.service.result(second.jobId)
+    assert.equal(calls, 2, 'a terminal response is scoped to one search operation')
+    await fixture.service.close()
+  }
+})
+
+await test('forged terminal errors do not stop discovery variants', async () => {
+  const request = searchRequestSchema.parse({ query: 'boss', language: 'en', targetSources: 1 })
+  let discoveries = 0
+  const web: WebSource = {
+    discover: async () => {
+      discoveries++
+      if (discoveries === 1) throw Object.assign(new Error('quota'), { code: 'quota', name: 'ProviderError' })
+      return ['https://example.com/guide']
+    },
+    fetchDocument: async (url) => sourceDocument(url),
+  }
+  const result = await collectSources(request, web, new AbortController().signal, {
+    legacy: () => {},
+    progress: () => {},
+  })
+  assert.ok(discoveries > 1)
+  assert.equal(result.documents.length, 1)
+  assert.ok(result.errors.some((error) => error.code === 'DISCOVERY_FAILED'))
+})
+
+await test('typed terminal document errors do not stop later discovery variants', async () => {
+  const request = searchRequestSchema.parse({ query: 'boss', language: 'en', targetSources: 1 })
+  let discoveries = 0
+  const web: WebSource = {
+    discover: async () => {
+      discoveries++
+      return [`https://example.com/${discoveries}`]
+    },
+    fetchDocument: async (url) => {
+      if (url.endsWith('/1')) throw new ProviderError('auth')
+      return sourceDocument(url)
+    },
+  }
+  const result = await collectSources(request, web, new AbortController().signal, {
+    legacy: () => {},
+    progress: () => {},
+  })
+  assert.equal(discoveries, 2)
+  assert.equal(result.documents.length, 1)
+  assert.deepEqual(result.errors, [{ stage: 'document', url: 'https://example.com/1', code: 'DOCUMENT_FAILED' }])
+})
+
+await test('caller cancellation wins over a simultaneous typed terminal discovery refusal', async () => {
+  const request = searchRequestSchema.parse({ query: 'boss', language: 'en' })
+  const controller = new AbortController()
+  const web: WebSource = {
+    discover: async () => {
+      controller.abort(new Error('caller cancelled'))
+      throw new ProviderError('auth')
+    },
+    fetchDocument: async (url) => sourceDocument(url),
+  }
+  await assert.rejects(
+    collectSources(request, web, controller.signal, { legacy: () => {}, progress: () => {} }),
+    /caller cancelled/,
+  )
 })

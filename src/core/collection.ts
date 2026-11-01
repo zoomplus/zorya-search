@@ -8,6 +8,7 @@ import type {
 
 import { documentSchema } from './contracts.js'
 import { buildSearchQueries, canonicalUrl } from './retrieval.js'
+import { ProviderError } from '../providers/contracts.js'
 
 interface Collection {
   documents: SourceDocument[]
@@ -27,6 +28,7 @@ interface CollectionContext {
   seenUrls: Set<string>
   seenContent: Set<string>
   queryCount: number
+  stopDiscoveryQueries: boolean
 }
 export async function collectSources(
   request: SearchRequest,
@@ -37,7 +39,7 @@ export async function collectSources(
   const queries = buildSearchQueries(request)
   const context = createContext(request, web, signal, emit, queries.length)
   for (const [queryIndex, query] of queries.entries()) {
-    if (!canContinue(context)) break
+    if (!canContinue(context) || context.stopDiscoveryQueries) break
     const urls = await discoverUrls(query, queryIndex, context)
     if (!urls) {
       if (context.budget.aborted) break
@@ -64,6 +66,7 @@ function createContext(
     budget,
     emit,
     queryCount,
+    stopDiscoveryQueries: false,
     result: { documents: [], errors: [], attempted: 0, budgetExpired: false },
     attemptedUrls: new Set(),
     seenUrls: new Set(),
@@ -101,7 +104,10 @@ async function discoverUrls(
     return urls
   } catch (error) {
     callerSignal.throwIfAborted()
-    const code = errorCode(error, budget.aborted, 'DISCOVERY_FAILED')
+    const terminalCode = budget.aborted ? undefined : terminalDiscoveryCode(error)
+    const code = terminalCode ?? errorCode(error, budget.aborted, 'DISCOVERY_FAILED')
+    if (terminalCode)
+      context.stopDiscoveryQueries = true
     result.errors.push({
       stage: 'discovery',
       queryIndex,
@@ -229,4 +235,18 @@ function errorCode(error: unknown, timedOut: boolean, fallback: string): string 
   )
     return message === 'Unsupported URL protocol' ? 'INVALID_SOURCE_URL' : message
   return fallback
+}
+
+function terminalDiscoveryCode(error: unknown): string | undefined {
+  if (!(error instanceof ProviderError)) return undefined
+  switch (error.code) {
+    case 'auth':
+      return 'DISCOVERY_AUTH'
+    case 'quota':
+      return 'DISCOVERY_QUOTA'
+    case 'rate_limit':
+      return 'DISCOVERY_RATE_LIMIT'
+    default:
+      return undefined
+  }
 }
