@@ -1,10 +1,31 @@
 # Zorya Search
 
-`@zorya/search` — SDK и MCP-сервис поиска по разрешённым репозиториям и внешним источникам. Его вызывает существующее приложение или агент, который сам выбирает, когда искать и как проверить результат. Search возвращает источники и кандидаты; он не меняет код, prompt, модель, память или настройки клиента.
+**Repository code search and retrieval for SDK and MCP clients, with optional code embeddings, semantic search, and reranking.**
 
-## Релиз и установка
+**[Читать по-русски](README.ru.md)**
 
-Требуется Node.js `>=20.19.0`. Установите закреплённый архив из GitHub `v0.1.6` как точную зависимость проекта, чтобы он сохранялся в `package.json` и lockfile, затем создайте конфигурацию для текущего корня:
+[![CI](https://github.com/zoomplus/zorya-search/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zoomplus/zorya-search/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/github/license/zoomplus/zorya-search)](LICENSE)
+[![Node.js >=20.19](https://img.shields.io/badge/Node.js-%3E%3D20.19-339933?logo=node.js&logoColor=white)](package.json)
+
+Zorya Search gives an existing app or agent a fast way to search an approved repository, inspect the current source behind a result, and gather related evidence. Use the SDK from a Node.js service or expose the same capabilities to a client through MCP. Search returns bounded source-backed results; the caller decides when to search, what to trust, and what to do next.
+
+It is useful for questions such as “where is this initiative trigger handled?”, checking callers and tests around a known symbol, or finding repeated code bodies worth reviewing. It can also find and read public web sources when the owner enables web access. It does not replace the agent, edit files, or automatically repair a project.
+
+## What it can do
+
+| Need | Search provides |
+| --- | --- |
+| Find code and verify it | Lexical or configured embedding-backed retrieval, current source reads, bounded context, paths, line ranges, and snapshot identity. |
+| Explore code structure | Duplicate candidates in release `v0.1.6`; current-main source adds exact symbol lookup, static references/call tracing, and opt-in logical context. |
+| Retrieve other sources | Optional Brave web discovery and page reading; optional classification and caller-provided visual references. |
+| Connect an existing client | Node.js SDK, local stdio/loopback MCP, or owner-hosted remote MCP with separately configured OAuth. |
+
+The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. Web search and web text models are configured separately. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
+
+## Install the available release
+
+Node.js `>=20.19.0` is required. The currently available artifact is the GitHub release archive `v0.1.6`:
 
 ```sh
 npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
@@ -12,42 +33,93 @@ npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
-Команда `client-config` только печатает варианты конфигурации: регистрацию MCP в Codex или другом клиенте нужно выполнить отдельно. После подключения клиенту отдельно выдаются нужные разрешения; индексацию также запускают явно командой `npm exec -- zorya-search index`. Разрешение использовать модели и передача им кода включаются отдельно. Эта инструкция сохраняет архив из GitHub конкретной версии как зависимость проекта; npm registry вариант `client-config` применим только после публикации соответствующей версии в npm.
+`client-config` prints connection examples; you register one with your chosen client, grant only the required access, and start indexing explicitly with `npm exec -- zorya-search index`. Installation alone does not connect a client or start indexing. See the [English quickstart](docs/getting-started.en.md) or [Russian quickstart](docs/getting-started.md).
 
-Драйверы локальной и PostgreSQL базы входят в обычные зависимости, поэтому остаются доступны после `npm install`, `npm ci` и `npm ci --omit=optional`. PDF-парсер остаётся необязательным. Импорт SDK не загружает движок базы: storage-модули импортируются только при создании соответствующего хранилища.
+## SDK example
 
-Исторический [GitHub prerelease `v0.1.0`](https://github.com/zoomplus/zorya-search/releases/download/v0.1.0/zorya-search-0.1.0.tgz) предназначался для локального MCP с owner bearer и не включал готовую OAuth policy/CLI службу. `serve-remote` впервые появился в `v0.1.1`; детали версии и соответствующие ограниченные проверки описаны в [руководстве удалённого MCP](docs/mcp.md). Установка пакета не подключает Search к чату автоматически.
+This runnable example uses the public `v0.1.6` SDK, lexical search, current-source verification, and duplicate candidates. Install the archive above and save this as `search.mjs` in that Node.js project:
 
-По умолчанию поиск лексический и не обращается к моделям. Для code-профиля задайте ключ OpenRouter в окружении процесса владельца; для Brave — `BRAVE_SEARCH_API_KEY`:
+```js
+import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { openEmbeddedDatabase } from '@zorya/search'
+import { createCodeIndex } from '@zorya/search/code'
 
-```sh
-npm exec -- zorya-search setup --root . --code-env OPENROUTER_API_KEY --web-env BRAVE_SEARCH_API_KEY
+const rootInput = process.env.ZORYA_SEARCH_ROOT
+const dataInput = process.env.ZORYA_SEARCH_DATA_DIR
+if (!rootInput || !dataInput || !isAbsolute(rootInput) || !isAbsolute(dataInput)) {
+  throw new Error('Set absolute ZORYA_SEARCH_ROOT and ZORYA_SEARCH_DATA_DIR paths')
+}
+
+const root = resolve(rootInput)
+const dataDir = resolve(dataInput)
+const dataFromRoot = relative(root, dataDir)
+if (dataFromRoot === '' || (!dataFromRoot.startsWith(`..${sep}`) && dataFromRoot !== '..' && !isAbsolute(dataFromRoot))) {
+  throw new Error('ZORYA_SEARCH_DATA_DIR must be outside the indexed repository')
+}
+
+const database = await openEmbeddedDatabase(dataDir)
+const index = createCodeIndex({ database })
+try {
+  await index.indexRepository({ root })
+  const result = await index.searchCode({
+    root,
+    query: 'initiative trigger',
+    mode: 'lexical',
+    limit: 5,
+  })
+  const hit = result.hits[0]
+  const source = hit
+    ? await index.readSource({
+        root,
+        path: hit.path,
+        lineStart: hit.lineStart,
+        lineEnd: hit.lineEnd,
+        snapshotId: hit.snapshotId,
+      })
+    : undefined
+  const duplicates = await index.findCodeDuplicates?.({ root, limit: 5 })
+  console.log({ hits: result.hits, source: source?.text, duplicates: duplicates?.groups })
+} finally {
+  try {
+    await index.close()
+  } finally {
+    await database.close()
+  }
+}
 ```
 
-Передавайте имена переменных, а не значения ключей. Настройка поискового профиля и подключение MCP-клиента — отдельные действия. См. [CLI](docs/cli.md), [MCP и удалённая служба](docs/mcp.md), [подключение клиентских агентов](docs/agent-clients.md) и [архитектуру](docs/architecture.md).
+Run it with absolute paths; keep the database outside the repository:
 
-Лексический поиск не требует сетевого ключа. Для кода preset использует `voyageai/voyage-code-4` и `voyageai/rerank-2.5-lite`; поиск ссылок Brave не требует текстовой модели. Visual-поиск выключен по умолчанию и работает только с переданными клиентом references. Он не делает desktop capture.
+```sh
+ZORYA_SEARCH_ROOT=/absolute/path/to/repository \
+ZORYA_SEARCH_DATA_DIR=/absolute/path/to/private/search-data \
+node search.mjs
+```
 
-## Удалённый MCP для чата и Codex
+The sample is read-only with respect to source files and does not call an embedding provider. Index creation and database use are explicit. The caller can inspect duplicate groups and decide whether any are worth reviewing; Search does not merge or change them. It uses the default index limits; for a large repository, set suitable validated limits for your project as described in the [CLI guide](docs/cli.md) or [SDK reference](docs/sdk.md).
 
-Версия `v0.1.1` добавляет `serve-remote`: daemon остаётся привязан к loopback, а владелец публикует `/mcp` через собственный TLS reverse proxy. Для авторизации владелец настраивает внешний OIDC-совместимый провайдер входа, который выдаёт подписанные JWT access tokens. Пакет не содержит IdP и не размещает службу. Подробная инструкция и конфигурации находятся в [руководстве удалённого MCP](docs/mcp.md).
+## Which version has which features?
 
-После запуска hosted MCP подключается отдельно в интерфейсе нужного клиента. Для ChatGPT нужны доступная извне HTTPS-служба, её OAuth-настройка и разрешённый redirect URI, который показывает сама настройка ChatGPT; локальная проверка Codex не доказывает подключение к hosted ChatGPT. Официальные инструкции: [авторизация MCP](https://developers.openai.com/plugins/build/auth) и [подключение собственного MCP-сервера](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+The GitHub archive `v0.1.6` includes code search/source reading/context, duplicate candidates, indexing/status, and optional web and classification capabilities. Current main adds exact symbol/reference queries, bounded static call tracing, and `includeLogical` for `getCodeContext` / `get_code_context`. `includeLogical` is off by default and independent of `includeRelated`; its coverage and omissions are explicit, and it does not claim complete runtime calls or dynamic dispatch. These additions are source-only and are not in archive `v0.1.6`.
 
-## Руководства
+Current indexing supports Markdown `.md`/`.mdx` and selected source/config formats, but not editor rule files `.mdc` or plain `.txt`. A separate embedding feature for repository documentation, rules, and skills has been requested and is not implemented. See the [capability guide](docs/capabilities.md) for details.
 
-- [Архитектура и границы продукта](docs/architecture.md)
-- [SDK и exports](docs/sdk.md)
-- [MCP, локальный daemon и удалённая OAuth-служба](docs/mcp.md)
-- [CLI и локальная настройка](docs/cli.md)
-- [Профили Voyage для code и visual](docs/voyage-profiles.md)
-- [Навыки поиска по коду](skills/code-retrieval/SKILL.md) и [по web-источникам](skills/web-source-retrieval/SKILL.md)
-- [Инструкции клиентским агентам](docs/agent-clients.md)
+## Guides
 
-## Статус проверок
+- [Getting started (English)](docs/getting-started.en.md) · [Начало работы (русский)](docs/getting-started.md)
+- [Capabilities and version boundaries (Russian)](docs/capabilities.md)
+- [SDK reference (Russian)](docs/sdk.md)
+- [MCP, local service, and remote OAuth (Russian)](docs/mcp.md)
+- [CLI setup and operation (Russian)](docs/cli.md)
+- [Connect agent clients (Russian)](docs/agent-clients.md)
+- [Architecture (Russian)](docs/architecture.md)
+- [Changelog](CHANGELOG.md)
+- [Code retrieval skill (Russian)](skills/code-retrieval/SKILL.md)
+- [Web-source retrieval skill (Russian)](skills/web-source-retrieval/SKILL.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
-`v0.1.0` прошёл проверки, перечисленные в [журнале prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.0); они относятся только к этому неизменяемому архиву.
+## Project status
 
-Для `v0.1.1` независимая TLS-проверка OAuth прошла с изолированным тестовым issuer, двумя сетевыми namespace, CLI из архива разработки и настоящим Codex CLI. Проверялись metadata discovery, PKCE, отказ для неверной подписи/issuer/audience/subject/scope/срока, ограничения root и чтение по TLS. Проверка не использовала публичный интернет или настоящий ChatGPT. Подключение из hosted ChatGPT, внешний IdP и пользовательский production deployment не квалифицированы.
+The source and package checks passed for the current main snapshot, including the full CI matrix. That verifies the tested source/package scope; it does not claim hosted ChatGPT, user-device/game, provider-quality, or full-program acceptance. The public GitHub artifact remains `v0.1.6`; npm publication has not happened. Use Search when its repository index, current-source identity, or configured retrieval capabilities help. Ordinary search and file-reading tools may be all a task needs.
 
-MIT License. См. [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE).

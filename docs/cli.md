@@ -14,9 +14,11 @@ npm exec -- zorya-search client-config
 
 `client-config` печатает готовые варианты, включая `installedCodex`; владелец отдельно регистрирует нужный вариант в существующем клиенте. После регистрации отдельно выдаются разрешения, запускается `index`, а доступ к моделям включается только при отдельной настройке профиля и ключа. Установка в workspace не использует глобальную команду и не меняет конфигурацию клиента.
 
+`setup` создаёт файл конфигурации один раз и завершится `CONFIG_ALREADY_EXISTS`, если путь уже занят. Команды `setup` ниже показывают **альтернативные варианты первоначальной настройки**, а не последовательные обновления одной конфигурации. Выполните только одну подходящую команду для нового профиля. Для существующей конфигурации остановите владельца (`zorya-search service --stop --config PATH`), сохраните копию и отредактируйте текущий файл явно; не создавайте второй профиль через новый путь, если хотели изменить существующий. После правки перезапустите того же владельца и передавайте прежний `--config PATH` последующим командам.
+
 Пакеты локального PGlite и PostgreSQL-драйвер `pg` являются обычными зависимостями, поэтому их не удаляет следующий `npm install` или `npm ci --omit=optional`. PDF-парсер остаётся необязательным; код SDK загружает драйвер базы только при открытии выбранного хранилища.
 
-Для большого workspace задайте явные пределы и исключите большие evidence-деревья до индексации. Например, Assistant workspace с 24 863 chunks на принятом snapshot:
+Если для нового профиля нужен большой workspace, выберите эту команду **вместо** короткой `setup` выше: задайте явные пределы и исключите большие evidence-деревья до индексации. Например, Assistant workspace с 24 863 chunks на принятом snapshot:
 
 ```sh
 npm exec -- zorya-search setup --root "$PWD" --exclude 'docs/evidence/**' \
@@ -34,23 +36,27 @@ npm exec -- zorya-search setup --root "$PWD" --exclude 'docs/evidence/**' \
 Частоту запросов discovery владелец может задать в `web.discovery.limits.maxRequestsPerSecond`: значение от 1 до 100, по умолчанию 1 запрос в секунду для discovery-провайдера в этом runtime. Brave может дополнительно ограничивать запросы согласно объявленной квоте и возвращать заголовки ограничений частоты; см. [официальное описание ограничений Brave](https://api-dashboard.search.brave.com/documentation/guides/rate-limiting). Настройка runtime не задаёт общий лимит для нескольких процессов.
 
 ```sh
-zorya-search setup --root "$PWD" \
+npm exec -- zorya-search setup --root "$PWD" \
   --code-env VOYAGE_CODE_KEY \
   --web-env BRAVE_SEARCH_API_KEY
 ```
+
+Это самостоятельный вариант первого `setup`, если нужен code preset и Brave discovery; он не предназначен для запуска после короткого setup или большого-workspace setup. Для уже созданного профиля сначала остановите службу и меняйте текущий runtime JSON явно.
 
 Кодовый профиль Voyage и поиск ссылок независимы. Если добавить текстовую модель web embedding, укажите собственные модель и размерность, поддерживаемые выбранной OpenRouter-моделью. Для примера ниже предварительно задайте `WEB_TEXT_MODEL` и `WEB_TEXT_DIMENSIONS` из конфигурации своего аккаунта; Search не выбирает модель автоматически:
 
 ```sh
 : "${WEB_TEXT_MODEL:?Укажите OpenRouter-модель для текста страниц}"
 : "${WEB_TEXT_DIMENSIONS:?Укажите её размерность}"
-zorya-search setup --root "$PWD" \
+npm exec -- zorya-search setup --root "$PWD" \
   --code-env VOYAGE_CODE_KEY \
   --web-env BRAVE_SEARCH_API_KEY \
   --web-embedding-model "$WEB_TEXT_MODEL" \
   --web-embedding-dimensions "$WEB_TEXT_DIMENSIONS" \
   --web-embedding-env OPENROUTER_API_KEY
 ```
+
+Этот пример тоже заменяет первоначальный `setup` выше: он создаёт один новый профиль с выбранными code, web и web-embedding настройками. Не выполняйте его для уже созданной конфигурации.
 
 Команды задают имена секретных env-переменных, а не их значения. Эти значения должны быть доступны процессу владельца; не передавайте ключи в argv. Текстовая web-модель применяется только к web-поиску и не заменяет кодовый профиль Voyage или отдельный visual profile. Для собственного OpenAI-compatible сервера вместе задайте `--web-embedding-endpoint HTTPS_URL` и `--web-embedding-profile PROFILE_ID`; неполная пара отклоняется. Переранжирование web-результатов независимо от web embedding и задаётся через `--web-reranker-model MODEL --web-reranker-env NAME`.
 
