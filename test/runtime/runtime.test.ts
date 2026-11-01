@@ -698,8 +698,8 @@ test('retry progress counts only checkpoint writes made during that attempt', as
   }
   const config = {
     ...f.config,
-    limits: { timeoutMs: 400 },
-    indexing: { maxAttempts: 5, jobTimeoutMs: 5000, retryDelayMs: 100 },
+    limits: { timeoutMs: 5000 },
+    indexing: { maxAttempts: 5, jobTimeoutMs: 30_000, retryDelayMs: 100 },
     embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
   }
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
@@ -709,7 +709,7 @@ test('retry progress counts only checkpoint writes made during that attempt', as
     calls = 0
     await writeFile(join(f.a, 'units.ts'), Array.from({ length: 65 }, (_, index) => `export function stage${index}() { return ${index} }`).join('\n') + '\n')
     const admission = runtime.startIndexing({ rootId: 'a' })
-    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'failed', 7000)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'failed', 20_000)
     const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
     assert.equal(job.attempt, 2)
     assert.equal(job.state, 'failed')

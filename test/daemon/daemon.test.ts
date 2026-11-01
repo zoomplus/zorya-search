@@ -65,6 +65,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
   const alphaToken = 'token-alpha-'.padEnd(40, 'x')
   const betaToken = 'token-beta-'.padEnd(40, 'y')
   let betaExpiresAt = Number.POSITIVE_INFINITY
+  let stage = 'daemon startup'
   try {
     daemon = await startSearchDaemon({
       host: '127.0.0.1',
@@ -80,6 +81,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       },
     })
     const base = `http://127.0.0.1:${daemon.port}${daemon.path}`
+    stage = 'Host header rejection'
     const hostDenied = await new Promise<number>((resolve, reject) => {
       const req = httpRequest(
         {
@@ -97,8 +99,11 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       req.end()
     })
     assert.equal(hostDenied, 403)
+    stage = 'Origin rejection'
     assert.equal((await fetch(base, { headers: { Origin: 'https://evil.example' } })).status, 403)
+    stage = 'missing bearer rejection'
     assert.equal((await fetch(base)).status, 401)
+    stage = 'oversized request rejection'
     assert.equal(
       (
         await fetch(base, {
@@ -111,6 +116,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     )
 
     const makeClient = async (mode: 'auto' | 'legacy', token: string) => {
+      stage = `${mode} MCP client negotiation`
       const client = new Client(
         { name: `test-${mode}`, version: '1.0.0' },
         mode === 'auto' ? { versionNegotiation: { mode: 'auto' } } : {},
@@ -436,6 +442,8 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       headers: { Authorization: `Bearer ${betaToken}`, 'Mcp-Session-Id': legacySessionId! },
     })
     assert.equal(expiredSession.status, 404)
+  } catch (error) {
+    throw new Error(`DAEMON_TEST_STAGE:${stage}`, { cause: error })
   } finally {
     await Promise.all(clients.map((client) => client.close().catch(() => undefined)))
     await daemon?.close().catch(() => undefined)
