@@ -67,6 +67,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
+    "test:node24": "node --no-wasm-code-gc --import tsx --test test/**/*.test.ts",
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {
