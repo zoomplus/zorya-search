@@ -408,7 +408,8 @@ test(
       assert.ok(JSON.stringify(response).includes("secondary.ts"));
       await client.close();
       await transport.close();
-      const descriptorPath = join(ownerDir(config), "owner.json"),
+      const canonicalConfig = await realpath(config);
+      const descriptorPath = join(ownerDir(canonicalConfig), "owner.json"),
         owner = JSON.parse(await readFile(descriptorPath, "utf8")) as {
           pid: number;
         };
@@ -429,7 +430,7 @@ test(
       assert.equal(r.code, 0, r.err);
       assert.match(r.out, /search-fixture\.ts/);
       await run(["service", "--stop", ...common]);
-      const descriptor = join(ownerDir(config), "owner.json"),
+      const descriptor = join(ownerDir(canonicalConfig), "owner.json"),
         foreign = join(dir, "foreign.json");
       await writeFile(
         foreign,
