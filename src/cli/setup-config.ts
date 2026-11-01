@@ -18,6 +18,13 @@ type CustomEmbeddingInput = {
   baseUrl: string;
   env: string;
 };
+type WebEmbeddingInput = {
+  model: string;
+  dimensions: number;
+  env: string;
+  profileId?: string;
+  baseUrl?: string;
+};
 
 export interface SetupConfigInput {
   dataDir: string;
@@ -28,6 +35,7 @@ export interface SetupConfigInput {
   webReranker?: NamedModelInput;
   classifier?: NamedModelInput;
   customEmbedding?: CustomEmbeddingInput;
+  webEmbedding?: WebEmbeddingInput;
 }
 
 const envName = /^[A-Z_][A-Z0-9_]{0,127}$/;
@@ -43,8 +51,10 @@ function namedModel(input: NamedModelInput, code: string) {
   boundedName(input.model, code);
   return { model: input.model, secret: secret(input.env) };
 }
-function customEmbedding(input: CustomEmbeddingInput) {
-  boundedName(input.profileId, "CUSTOM_PROFILE_INVALID");
+function embeddingFields(input: {
+  model: string;
+  dimensions: number;
+}) {
   boundedName(input.model, "CUSTOM_MODEL_INVALID");
   if (
     !Number.isInteger(input.dimensions) ||
@@ -52,6 +62,14 @@ function customEmbedding(input: CustomEmbeddingInput) {
     input.dimensions > 4096
   )
     throw new Error("CUSTOM_DIMENSIONS_INVALID");
+  return {
+    model: input.model,
+    dimensions: input.dimensions,
+  };
+}
+function customEmbedding(input: CustomEmbeddingInput) {
+  boundedName(input.profileId, "CUSTOM_PROFILE_INVALID");
+  const fields = embeddingFields(input);
   let endpoint: URL;
   try {
     endpoint = new URL(input.baseUrl);
@@ -70,9 +88,28 @@ function customEmbedding(input: CustomEmbeddingInput) {
   return {
     provider: "openai-compatible",
     profileId: input.profileId,
-    model: input.model,
-    dimensions: input.dimensions,
+    ...fields,
     baseUrl: input.baseUrl,
+    secret: secret(input.env),
+  };
+}
+function webEmbedding(input: WebEmbeddingInput) {
+  const customProfile = input.profileId !== undefined;
+  const customEndpoint = input.baseUrl !== undefined;
+  if (customProfile !== customEndpoint)
+    throw new Error("WEB_EMBEDDING_CUSTOM_OPTIONS_PAIRED");
+  if (customProfile && customEndpoint)
+    return customEmbedding({
+      profileId: input.profileId!,
+      model: input.model,
+      dimensions: input.dimensions,
+      baseUrl: input.baseUrl!,
+      env: input.env,
+    });
+
+  return {
+    provider: "openrouter",
+    ...embeddingFields(input),
     secret: secret(input.env),
   };
 }
@@ -84,6 +121,8 @@ export function createSetupConfig(input: SetupConfigInput) {
     throw new Error("ROOT_ID_INVALID");
   if (input.codeEnv && input.customEmbedding)
     throw new Error("CODE_AND_CUSTOM_EMBEDDING_CONFLICT");
+  if (input.webEmbedding && !input.webEnv)
+    throw new Error("WEB_EMBEDDING_REQUIRES_WEB_DISCOVERY");
   const config: Record<string, unknown> = {
     version: 1,
     dataDir: input.dataDir,
@@ -95,8 +134,13 @@ export function createSetupConfig(input: SetupConfigInput) {
   if (Object.keys(mechanism).length) config.mechanism = mechanism;
   if (input.customEmbedding)
     config.embedding = customEmbedding(input.customEmbedding);
-  if (input.webEnv)
-    config.web = { discovery: { secret: secret(input.webEnv) } };
+  if (input.webEnv || input.webEmbedding)
+    config.web = {
+      ...(input.webEnv ? { discovery: { secret: secret(input.webEnv) } } : {}),
+      ...(input.webEmbedding
+        ? { embedding: webEmbedding(input.webEmbedding) }
+        : {}),
+    };
   if (input.webReranker)
     config.reranker = namedModel(input.webReranker, "WEB_RERANKER_INVALID");
   if (input.classifier)

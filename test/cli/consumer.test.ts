@@ -121,6 +121,92 @@ test(
       assert.doesNotMatch(configText, /sk-[A-Za-z0-9]{10,}/);
       assert.ok(configText.includes("docs/evidence/**"));
       assert.match(configText, /50000/);
+      const webTextDefaultConfig = join(dir, "web-text-default-config", "config.json");
+      r = await run([
+        "setup",
+        "--root",
+        repo,
+        "--data",
+        join(dir, "web-text-default-state"),
+        "--web-env",
+        "BRAVE_KEY",
+        "--web-embedding-model",
+        "fixture-web-text-model",
+        "--web-embedding-dimensions",
+        "3",
+        "--web-embedding-env",
+        "WEB_TEXT_KEY",
+        "--config",
+        webTextDefaultConfig,
+      ]);
+      assert.equal(r.code, 0, r.err);
+      const webTextDefault = JSON.parse(await readFile(webTextDefaultConfig, "utf8"));
+      assert.deepEqual(webTextDefault.web.embedding, {
+        provider: "openrouter",
+        model: "fixture-web-text-model",
+        dimensions: 3,
+        secret: { kind: "env", name: "WEB_TEXT_KEY" },
+      });
+
+      const webTextConfig = join(dir, "web-text-config", "config.json");
+      r = await run([
+        "setup",
+        "--root",
+        repo,
+        "--data",
+        join(dir, "web-text-state"),
+        "--web-env",
+        "BRAVE_KEY",
+        "--web-embedding-profile",
+        "owner-web-text-profile",
+        "--web-embedding-model",
+        "owner-web-text-model",
+        "--web-embedding-dimensions",
+        "3",
+        "--web-embedding-endpoint",
+        "https://embeddings.example.test/v1",
+        "--web-embedding-env",
+        "WEB_TEXT_KEY",
+        "--config",
+        webTextConfig,
+      ]);
+      assert.equal(r.code, 0, r.err);
+      assert.equal(JSON.parse(r.out).providerCalls, 0);
+      const webText = JSON.parse(await readFile(webTextConfig, "utf8"));
+      assert.deepEqual(webText.web, {
+        discovery: { secret: { kind: "env", name: "BRAVE_KEY" } },
+        embedding: {
+          provider: "openai-compatible",
+          profileId: "owner-web-text-profile",
+          model: "owner-web-text-model",
+          dimensions: 3,
+          baseUrl: "https://embeddings.example.test/v1",
+          secret: { kind: "env", name: "WEB_TEXT_KEY" },
+        },
+      });
+      const partialWebTextConfig = join(dir, "partial-web-text-config", "config.json");
+      r = await run([
+        "setup",
+        "--root",
+        repo,
+        "--data",
+        join(dir, "partial-web-text-state"),
+        "--web-env",
+        "BRAVE_KEY",
+        "--web-embedding-profile",
+        "owner-web-text-profile",
+        "--web-embedding-model",
+        "fixture-web-text-model",
+        "--web-embedding-dimensions",
+        "3",
+        "--web-embedding-env",
+        "WEB_TEXT_KEY",
+        "--config",
+        partialWebTextConfig,
+      ]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /WEB_EMBEDDING_CUSTOM_OPTIONS_PAIRED/);
+      await assert.rejects(readFile(partialWebTextConfig));
       const watchConfig = join(dir, "watch-config", "config.json");
       r = await run([
         "setup",

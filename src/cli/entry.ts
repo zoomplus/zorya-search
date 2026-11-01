@@ -40,6 +40,10 @@ const help = `Zorya Search — локальный поиск по коду и и
 
 Параметры: --config ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
 
+Для поиска по web задайте модель для текста страниц: --web-embedding-model,
+--web-embedding-dimensions и --web-embedding-env. По умолчанию используется OpenRouter.
+Для собственного HTTPS endpoint задайте вместе --web-embedding-profile и --web-embedding-endpoint.
+
 По умолчанию поиск lexical локален. Включение облачных embeddings отправляет выбранные
 фрагменты кода при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
 не меняет prompt или модель клиента и не устанавливает MCP в клиент автоматически.
@@ -137,7 +141,7 @@ async function setup(opts: Record<string, string | boolean>) {
   let codeEnv = explicitCodeEnv ?? legacyCodeEnv;
   let visualEnv =
     typeof opts["visual-env"] === "string" ? opts["visual-env"] : undefined;
-  const webEnv =
+  let webEnv =
     typeof opts["web-env"] === "string" ? opts["web-env"] : undefined;
   const customKeys = [
     "custom-embedding-profile",
@@ -154,6 +158,31 @@ async function setup(opts: Record<string, string | boolean>) {
         dimensions: Number(get(opts, "custom-embedding-dimensions")),
         baseUrl: get(opts, "custom-embedding-endpoint"),
         env: get(opts, "custom-embedding-env"),
+      }
+    : undefined;
+  const webEmbeddingKeys = [
+    "web-embedding-profile",
+    "web-embedding-model",
+    "web-embedding-dimensions",
+    "web-embedding-endpoint",
+    "web-embedding-env",
+  ];
+  const hasWebEmbedding = webEmbeddingKeys.some((key) => opts[key] !== undefined);
+  const hasWebEmbeddingProfile = opts["web-embedding-profile"] !== undefined;
+  const hasWebEmbeddingEndpoint = opts["web-embedding-endpoint"] !== undefined;
+  if (hasWebEmbeddingProfile !== hasWebEmbeddingEndpoint)
+    throw new Error("WEB_EMBEDDING_CUSTOM_OPTIONS_PAIRED");
+  let webEmbedding = hasWebEmbedding
+    ? {
+        model: get(opts, "web-embedding-model"),
+        dimensions: Number(get(opts, "web-embedding-dimensions")),
+        env: get(opts, "web-embedding-env"),
+        ...(hasWebEmbeddingProfile
+          ? {
+              profileId: get(opts, "web-embedding-profile"),
+              baseUrl: get(opts, "web-embedding-endpoint"),
+            }
+          : {}),
       }
     : undefined;
   const pairedModel = (modelKey: string, envKey: string, code: string) => {
@@ -202,6 +231,34 @@ async function setup(opts: Record<string, string | boolean>) {
         visualEnv = await rl.question(
           "Имя env-переменной для visual provider: ",
         );
+      if (!webEnv) {
+        const enableWeb = (
+          await rl.question("Включить поиск web-источников? [y/N] ")
+        ).trim().toLowerCase();
+        if (["y", "yes", "да"].includes(enableWeb))
+          webEnv = await rl.question("Имя env-переменной для Brave Search: ");
+      }
+      if (webEnv && !webEmbedding) {
+        const enableWebEmbedding = (
+          await rl.question("Настроить отдельный web text embedding профиль? [y/N] ")
+        ).trim().toLowerCase();
+        if (["y", "yes", "да"].includes(enableWebEmbedding)) {
+          webEmbedding = {
+            model: await rl.question("Модель для текста страниц в OpenRouter (полный ID): "),
+            dimensions: Number(await rl.question("Размерность embedding текста страниц: ")),
+            env: await rl.question("Имя env-переменной ключа web embeddings: "),
+          };
+          const useCustomEndpoint = (
+            await rl.question("Использовать свой OpenAI-compatible HTTPS endpoint? [y/N] ")
+          ).trim().toLowerCase();
+          if (["y", "yes", "да"].includes(useCustomEndpoint))
+            webEmbedding = {
+              ...webEmbedding,
+              profileId: await rl.question("Идентификатор собственного web embedding профиля: "),
+              baseUrl: await rl.question("HTTPS endpoint embeddings: "),
+            };
+        }
+      }
       const watchAnswer = (
         await rl.question(
           "Автоматически переиндексировать изменения файлов? [y/N] ",
@@ -231,6 +288,7 @@ async function setup(opts: Record<string, string | boolean>) {
     ...(codeEnv ? { codeEnv } : {}),
     ...(visualEnv ? { visualEnv } : {}),
     ...(webEnv ? { webEnv } : {}),
+    ...(webEmbedding ? { webEmbedding } : {}),
     ...(webReranker ? { webReranker } : {}),
     ...(classifier ? { classifier } : {}),
     ...(customEmbedding ? { customEmbedding } : {}),
@@ -347,6 +405,11 @@ async function main() {
       "embedding-env",
       "visual-env",
       "web-env",
+      "web-embedding-profile",
+      "web-embedding-model",
+      "web-embedding-dimensions",
+      "web-embedding-endpoint",
+      "web-embedding-env",
       "web-reranker-model",
       "web-reranker-env",
       "classifier-model",
