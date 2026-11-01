@@ -1,19 +1,21 @@
 {
   "name": "@zorya/search",
   "version": "0.1.6",
-  "description": "Local-first repository search, code retrieval, and MCP service for SDK and agent clients",
+  "description": "Local-first code and project-text retrieval, public web discovery, embeddings, reranking, and MCP for SDK clients",
   "keywords": [
     "code-search",
     "repository-search",
     "code-retrieval",
+    "semantic-search",
+    "project-text",
+    "documentation-search",
+    "web-search",
     "mcp-server",
     "model-context-protocol",
-    "semantic-search",
     "embeddings",
     "reranking",
     "typescript",
-    "local-first",
-    "web-search"
+    "local-first"
   ],
   "type": "module",
   "license": "MIT",
@@ -32,6 +34,7 @@
     "docs/getting-started.md",
     "docs/getting-started.en.md",
     "docs/capabilities.md",
+    "docs/project-text.md",
     "docs/cli.md",
     "docs/sdk.md",
     "docs/mcp.md",

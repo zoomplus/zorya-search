@@ -74,4 +74,4 @@ Remote MCP requires infrastructure you operate: the daemon stays on loopback, yo
 
 ## Indexed files and current-source features
 
-Current indexing supports `.md`/`.mdx` and selected source/config formats. It does not index `.mdc` or `.txt`. A separate embeddings feature for repository docs, rules, and skills has been requested but is not implemented. See the [capability guide](capabilities.md) for the release/current-main feature matrix.
+Archive `v0.1.6` does not include a separate documentation, rules, and skills index. Current source adds a project-text capability for supported text formats including `.md`, `.mdc`, `.txt`, `AGENTS.md`, and `SKILL.md`, separate from the code index. Caller-selected multi-query web discovery is also source-only. See the [project text guide](project-text.md) and [capability matrix](capabilities.md).

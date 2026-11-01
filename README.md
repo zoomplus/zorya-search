@@ -21,7 +21,7 @@ It is useful for questions such as “where is this initiative trigger handled?�
 | Retrieve other sources | Optional Brave web discovery and page reading; optional classification and caller-provided visual references. |
 | Connect an existing client | Node.js SDK, local stdio/loopback MCP, or owner-hosted remote MCP with separately configured OAuth. |
 
-The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. Web search and web text models are configured separately. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
+The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. A separate project-text index and caller-selected multi-query web discovery are documented for current source, but are not in archive `v0.1.6`. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
 
 ## Install the available release
 
@@ -102,13 +102,14 @@ The sample is read-only with respect to source files and does not call an embedd
 
 The GitHub archive `v0.1.6` includes code search/source reading/context, duplicate candidates, indexing/status, and optional web and classification capabilities. Current main adds exact symbol/reference queries, bounded static call tracing, and `includeLogical` for `getCodeContext` / `get_code_context`. `includeLogical` is off by default and independent of `includeRelated`; its coverage and omissions are explicit, and it does not claim complete runtime calls or dynamic dispatch. These additions are source-only and are not in archive `v0.1.6`.
 
-Current indexing supports Markdown `.md`/`.mdx` and selected source/config formats, but not editor rule files `.mdc` or plain `.txt`. A separate embedding feature for repository documentation, rules, and skills has been requested and is not implemented. See the [capability guide](docs/capabilities.md) for details.
+Archive `v0.1.6` does not contain the project-text index. Current source has a separate capability for documentation, rules, and skills in supported text formats including `.md`, `.mdc`, `.txt`, `AGENTS.md`, and `SKILL.md`. See the [project text and web discovery guide](docs/project-text.md) for SDK, CLI, and MCP examples, and the [capability guide](docs/capabilities.md) for version availability.
 
 ## Guides
 
 - [Getting started (English)](docs/getting-started.en.md) · [Начало работы (русский)](docs/getting-started.md)
 - [Capabilities and version boundaries (Russian)](docs/capabilities.md)
 - [SDK reference (Russian)](docs/sdk.md)
+- [Project text and caller-controlled web discovery (Russian, current source)](docs/project-text.md)
 - [MCP, local service, and remote OAuth (Russian)](docs/mcp.md)
 - [CLI setup and operation (Russian)](docs/cli.md)
 - [Connect agent clients (Russian)](docs/agent-clients.md)
