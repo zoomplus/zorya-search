@@ -156,6 +156,10 @@ export function createBraveWebSource(
               const remaining = deadline - Date.now();
               if (remaining <= 0) throw new ProviderError("timeout");
               await quota.acquire(deadline, operationSignal);
+              if (operationSignal.aborted)
+                throw operationSignal.reason instanceof ProviderError
+                  ? operationSignal.reason
+                  : new ProviderError("cancel");
               const controller = new AbortController();
               const abort = () => controller.abort(operationSignal.reason);
               operationSignal.addEventListener("abort", abort, { once: true });
@@ -310,7 +314,7 @@ export function createBraveWebSource(
                 )
                   throw new ProviderError("malformed", 304);
                 const responseEtag = header(fetched.headers, "etag");
-                if (responseEtag && cacheTicket.validators.etag && responseEtag !== cacheTicket.validators.etag)
+                if (responseEtag && cacheTicket.validators.etag && !weaklyMatchesETag(responseEtag, cacheTicket.validators.etag))
                   throw new ProviderError("malformed", 304);
                 const refreshed = documentCache.refresh(
                   cacheTicket,
@@ -835,4 +839,9 @@ function isSupportedWebType(contentType: string): boolean {
 function lastModifiedDate(headers: IncomingHttpHeaders): string | null {
   const value = header(headers, "last-modified");
   return parseDate(value ?? null);
+}
+
+function weaklyMatchesETag(first: string, second: string): boolean {
+  const removeWeakPrefix = (value: string) => value.trim().replace(/^W\//u, "");
+  return removeWeakPrefix(first) === removeWeakPrefix(second);
 }

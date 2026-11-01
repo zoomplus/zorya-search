@@ -46,6 +46,12 @@ export class BraveQuota {
       windowSeconds: parseWindowSeconds(policies[index] ?? ''),
     }))
     const finiteWindows = windows.filter((window) => window.limit !== null && window.limit > 0)
+    const partialExhaustedResets = remaining.flatMap((remainingValue, index) => {
+      if (parseFiniteNumber(remainingValue) !== 0) return []
+      if (parseFiniteNumber(limits[index] ?? null) === 0) return []
+      const delay = resetDelay(resets[index] ?? null, now)
+      return delay === null ? [] : [delay]
+    })
     const requestWindow = finiteWindows
       .filter((window) => window.windowSeconds === null || window.windowSeconds <= 86_400)
       .sort((left, right) => (left.windowSeconds ?? 1) - (right.windowSeconds ?? 1))[0]
@@ -55,10 +61,20 @@ export class BraveQuota {
       const exhaustedResets = finiteWindows
         .filter((window) => window.remaining === 0)
         .map((window) => window.resetMs ?? 0)
-      const delay = Math.max(retryAfter ?? 0, ...exhaustedResets, 1000)
+      const partialResets = exhaustedResets.length > 0
+        ? exhaustedResets
+        : partialExhaustedResets.length > 0
+          ? partialExhaustedResets
+          : resets.flatMap((value, index) => {
+              if (parseFiniteNumber(limits[index] ?? null) === 0) return []
+              return [resetDelay(value, now) ?? 0]
+            })
+      const delay = Math.max(retryAfter ?? 0, ...partialResets, 1000)
       this.cooldownUntil = Math.max(this.cooldownUntil, now + delay)
       return
     }
+    for (const reset of partialExhaustedResets)
+      this.cooldownUntil = Math.max(this.cooldownUntil, now + reset)
     for (const window of finiteWindows) {
       if (window.remaining === 0 && window.resetMs !== null)
         this.cooldownUntil = Math.max(this.cooldownUntil, now + window.resetMs)

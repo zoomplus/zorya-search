@@ -21,7 +21,7 @@ import { createClassificationTool } from '../context/classify.js'
 import type { ClassificationResult } from '../providers/contracts.js'
 import { createWebSearch, type WebSearchResult } from '../context/web.js'
 import { createOpenRouterClassifier } from '../providers/classifier.js'
-import { createBraveWebSource } from '../providers/brave.js'
+import { createBraveWebSource, type BraveWebSourceConfig } from '../providers/brave.js'
 import {
   createOpenAICompatibleEmbedding,
   createOpenRouterEmbedding,
@@ -38,7 +38,7 @@ import {
 import { openEmbeddedDatabase } from '../storage/embedded.js'
 import { canonicalFuturePath, isSameOrDescendantPath } from './path.js'
 import type { OwnedDatabase } from '../storage/database.js'
-import type { WebSource } from '../core/contracts.js'
+import type { WebDateRange, WebSource } from '../core/contracts.js'
 import {
   statusRequest,
   indexStatusRequest,
@@ -340,7 +340,7 @@ function createProviders(
     config.web && !testWebSource
       ? createBraveWebSource({
           ...(config.web.discovery ? { apiKey: resolveSecret(config.web.discovery.secret) } : {}),
-          ...(webLimits ? { limits: compact(webLimits) as ProviderLimits } : {}),
+          ...(webLimits ? { limits: compact(webLimits) as NonNullable<BraveWebSourceConfig['limits']> } : {}),
           ...fetchOption,
         })
       : undefined
@@ -1105,6 +1105,7 @@ async function createOwnedRuntime(
       query: string
       limit?: number
       maxChars?: number
+      dateRange?: WebDateRange
       signal?: AbortSignal
     }): Promise<WebSearchResult> {
       const { request, signal } = captureRequest(webSearchRequest, input)
@@ -1130,6 +1131,7 @@ async function createOwnedRuntime(
             query: request.query,
             ...(request.limit === undefined ? {} : { limit: request.limit }),
             ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),
+            ...(request.dateRange === undefined ? {} : { dateRange: request.dateRange }),
             signal: operationSignal,
           })
         } finally {

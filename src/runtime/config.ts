@@ -23,6 +23,9 @@ const providerLimits = z
     concurrency: z.number().int().min(1).max(16).optional(),
   })
   .strict()
+const braveDiscoveryLimits = providerLimits.extend({
+  maxRequestsPerSecond: z.number().int().min(1).max(100).optional(),
+}).strict()
 const httpsEndpoint = z
   .string()
   .url()
@@ -131,7 +134,7 @@ export const runtimeConfigSchema = z
       .object({
         embedding: embedding.optional(),
         discovery: z
-          .object({ secret: secretRef, limits: providerLimits.optional() })
+          .object({ secret: secretRef, limits: braveDiscoveryLimits.optional() })
           .strict()
           .optional(),
         limits: providerLimits.optional(),

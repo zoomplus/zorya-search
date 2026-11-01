@@ -805,6 +805,38 @@ test('Brave quota observes owner limits and shares a bounded 429 cooldown', asyn
   const ownerStarted = Date.now()
   await Promise.all(Array.from({ length: 6 }, () => higherOwnerQuota.acquire(ownerStarted + 1000, new AbortController().signal)))
   assert.ok(Date.now() - ownerStarted < 500)
+  const unlimitedMonth = new BraveQuota(8)
+  unlimitedMonth.observe(new Headers({
+    'x-ratelimit-policy': '1;w=1, 0;w=2592000',
+    'x-ratelimit-limit': '1, 0',
+    'x-ratelimit-remaining': '1, 0',
+    'x-ratelimit-reset': '1, 1234567',
+  }), 429)
+  await assert.rejects(
+    unlimitedMonth.acquire(Date.now() + 100, new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'rate_limit' && (error.retryAfterMs ?? Infinity) < 2000,
+  )
+})
+
+test('Brave source honors a standalone long rate reset before another physical request', async () => {
+  let physicalCalls = 0
+  const web = createBraveWebSource({
+    apiKey: 'fixture',
+    limits: { attempts: 2, timeoutMs: 1000, maxRequestsPerSecond: 10 },
+    fetch: async () => {
+      physicalCalls++
+      return new Response('', {
+        status: 429,
+        headers: { 'x-ratelimit-reset': '45' },
+      })
+    },
+  })
+  await assert.rejects(
+    web.discover('cooldown', 1, new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'rate_limit' && (error.retryAfterMs ?? 0) >= 44_000,
+  )
+  assert.equal(physicalCalls, 1)
+  assert.equal(web.usage().calls, 1)
 })
 
 test('concurrent Brave discoveries share pacing and remember a final-attempt 429', async () => {
@@ -883,13 +915,23 @@ test('Brave document validators are exact-path scoped and 304 preserves the pars
       }
       return
     }
+    if (path === '/weak-etag') {
+      if (etag) {
+        response.writeHead(304, { etag: '"weak-v1"' })
+        response.end()
+      } else {
+        response.writeHead(200, { 'content-type': 'text/plain', etag: 'W/"weak-v1"' })
+        response.end('weak validator source')
+      }
+      return
+    }
     if (path === '/unexpected') {
       response.writeHead(304)
       response.end()
       return
     }
     if (path === '/private') {
-      response.writeHead(200, { 'content-type': 'text/plain', etag: '"private"', 'cache-control': 'private' })
+      response.writeHead(200, { 'content-type': 'text/plain', etag: '"private"', 'cache-control': 'private="field"' })
       response.end('private source')
       return
     }
@@ -938,6 +980,10 @@ test('Brave document validators are exact-path scoped and 304 preserves the pars
     assert.equal(second.publishedAt, first.publishedAt)
     assert.notEqual(second.fetchedAt, first.fetchedAt)
     assert.equal(seen[1]?.etag, '"v1"')
+    const weakFirst = await web.fetchDocument(`${origin}/weak-etag`, new AbortController().signal)
+    const weakSecond = await web.fetchDocument(`${origin}/weak-etag`, new AbortController().signal)
+    assert.equal(weakFirst.text, weakSecond.text)
+    assert.equal(seen.at(-1)?.etag, 'W/"weak-v1"')
     unsolicited304OnRedirect = true
     await assert.rejects(
       web.fetchDocument(`${origin}/redirect-to-cached`, new AbortController().signal),

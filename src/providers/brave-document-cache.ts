@@ -145,7 +145,7 @@ function documentBytes(document: SourceDocument): number {
 function isCacheable(headers: IncomingHttpHeaders): boolean {
   if ((header(headers, 'vary') ?? '').split(',').some((value) => value.trim() === '*')) return false
   const cacheControl = header(headers, 'cache-control') ?? ''
-  return !/(?:^|,)\s*(?:no-store|private)(?:\s|,|$)/iu.test(cacheControl)
+  return !/(?:^|,)\s*(?:no-store|private)(?:\s*=|\s|,|$)/iu.test(cacheControl)
 }
 
 function safeValidator(value: string | undefined): string | undefined {

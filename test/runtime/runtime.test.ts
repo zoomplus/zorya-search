@@ -76,6 +76,24 @@ test('strict versioned owner configuration rejects unsafe extras and snapshots i
   assert.equal(mechanismCode.mechanism?.code?.secret.kind, 'env')
   assert.throws(() => parseRuntimeConfig({ ...config, mechanism: {} }), RuntimeConfigError)
   assert.throws(() => parseRuntimeConfig({ ...config, mechanism: { code: { secret: { kind: 'env', name: 'VOYAGE_KEY' } } }, embedding: { provider: 'openrouter', model: 'legacy', dimensions: 1024, secret: { kind: 'env', name: 'OTHER_KEY' } } }), RuntimeConfigError)
+  const braveRate = parseRuntimeConfig({
+    ...config,
+    web: { discovery: { secret: { kind: 'env', name: 'BRAVE_KEY' }, limits: { maxRequestsPerSecond: 8 } } },
+  })
+  assert.equal(braveRate.web?.discovery?.limits?.maxRequestsPerSecond, 8)
+  for (const maxRequestsPerSecond of [0, 101]) {
+    assert.throws(() => parseRuntimeConfig({
+      ...config,
+      web: { discovery: { secret: { kind: 'env', name: 'BRAVE_KEY' }, limits: { maxRequestsPerSecond } } },
+    }), RuntimeConfigError)
+  }
+  assert.throws(() => parseRuntimeConfig({
+    ...config,
+    embedding: {
+      provider: 'openrouter', model: 'm', dimensions: 3,
+      secret: { kind: 'env', name: 'KEY' }, limits: { maxRequestsPerSecond: 8 },
+    },
+  }), RuntimeConfigError)
   assert.doesNotThrow(() =>
     parseRuntimeConfig({
       ...config,
@@ -1822,6 +1840,7 @@ test('startup watcher-index failure unwinds DB owner and leaves later open possi
 test('web reranker capability remains independent of code embedding', async () => {
   const f = await fixture()
   let rerankCalls = 0
+  const discoveredRanges: Array<{ from: string; through: string } | undefined> = []
   const fakeFetch: typeof fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body)) as { documents?: string[] }
     rerankCalls++
@@ -1848,7 +1867,8 @@ test('web reranker capability remains independent of code embedding', async () =
         env: { RERANK_KEY: 'fixture-reranker-key', BRAVE_KEY: 'fixture-brave-key' },
         fetch: fakeFetch,
         webSource: {
-          async discover() {
+          async discover(_query, _target, _signal, options) {
+            discoveredRanges.push(options?.dateRange)
             return ['https://docs.example.test/alpha']
           },
           async fetchDocument(url) {
@@ -1869,7 +1889,10 @@ test('web reranker capability remains independent of code embedding', async () =
     assert.equal(runtime.capabilities().webReranking, true)
     assert.equal(runtime.profiles().reranking?.model, 'fixture-reranker')
     assert.equal(runtime.profiles().reranking?.profileId, 'owner-rerank-profile')
-    const results = await runtime.searchWeb({ query: 'alpha retrieval' })
+    const dateRange = { from: '2025-01-01', through: '2025-01-31' }
+    const results = await runtime.searchWeb({ query: 'alpha retrieval', dateRange })
+    assert.deepEqual(discoveredRanges, [dateRange])
+    assert.deepEqual(dateRange, { from: '2025-01-01', through: '2025-01-31' })
     assert.equal(rerankCalls, 1)
     assert.equal(results.rankingMode, 'lexical-reranked')
     assert.equal(runtime.usage().reranking?.calls, 1)
