@@ -9,7 +9,7 @@ import { OperationLimitError, OperationTimeoutError } from '../../src/context/li
 import type { CodeIndex, CodeHit, CodeSourceIdentity } from '../../src/code/types.js'
 import { createWebSearch } from '../../src/context/web.js'
 import { createClassificationTool } from '../../src/context/classify.js'
-import type { Classifier } from '../../src/providers/contracts.js'
+import { ProviderError, type Classifier } from '../../src/providers/contracts.js'
 import { createOpenRouterReranker } from '../../src/providers/openrouter.js'
 import { createCodeIndex } from '../../src/code/index.js'
 import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
@@ -307,6 +307,90 @@ test('web search reports source provenance and partial fetch errors without gene
   assert.equal(result.errors[0]?.stage, 'document')
   assert.equal('answer' in result, false)
   await web.close()
+})
+
+test('web search exposes bounded typed provider failures without leaking error text', async () => {
+  const make = (discover: () => Promise<string[]>, fetchDocument = async (url: string) => ({
+    url,
+    title: 'needle',
+    text: 'needle from a bounded source',
+    fetchedAt: '2026-01-01T00:00:00.000Z',
+    publishedAt: null,
+    sourceUpdatedAt: null,
+  })) => createWebSearch({ web: { discover, fetchDocument } })
+
+  const quota = new ProviderError('quota', 402)
+  quota.message = 'secret API key and provider response body'
+  const quotaSearch = make(async () => { throw quota })
+  const quotaResult = await quotaSearch.searchWeb({ query: 'needle' })
+  assert.deepEqual(quotaResult.errors, [
+    { stage: 'discovery', code: 'DISCOVERY_FAILED', provider: { code: 'quota', httpStatus: 402 } },
+  ])
+  assert.doesNotMatch(JSON.stringify(quotaResult), /secret|response body/i)
+  await quotaSearch.close()
+
+  const rateLimitSearch = make(async () => { throw new ProviderError('rate_limit', 429, 1500) })
+  const rateLimitResult = await rateLimitSearch.searchWeb({ query: 'needle' })
+  assert.deepEqual(rateLimitResult.errors[0]?.provider, {
+    code: 'rate_limit',
+    httpStatus: 429,
+    retryAfterMs: 1500,
+  })
+  await rateLimitSearch.close()
+
+  const untypedSearch = make(async () => {
+    throw Object.assign(new Error('secret untrusted error'), { code: 'quota', status: 402 })
+  })
+  const untypedResult = await untypedSearch.searchWeb({ query: 'needle' })
+  assert.deepEqual(untypedResult.errors, [{ stage: 'discovery', code: 'DISCOVERY_FAILED' }])
+  await untypedSearch.close()
+
+  const emptySearch = make(async () => [])
+  const emptyResult = await emptySearch.searchWeb({ query: 'needle' })
+  assert.deepEqual(emptyResult.errors, [])
+  assert.equal(emptyResult.partial, false)
+  await emptySearch.close()
+})
+
+test('web search attaches typed provider context to partial document and model failures', async () => {
+  const documentSearch = createWebSearch({
+    web: {
+      discover: async () => ['https://example.com/good', 'https://example.com/fail'],
+      fetchDocument: async (url) => {
+        if (url.endsWith('/fail')) throw new ProviderError('auth', 401)
+        return {
+          url,
+          title: 'needle',
+          text: 'needle from a bounded source',
+          fetchedAt: '2026-01-01T00:00:00.000Z',
+          publishedAt: null,
+          sourceUpdatedAt: null,
+        }
+      },
+    },
+    models: {
+      embed: {
+        profile: { provider: 'test', model: 'embed', space: 'web', dimensions: 2 },
+        embed: async () => { throw new ProviderError('timeout') },
+      },
+      rerank: {
+        profile: { provider: 'test', model: 'rank', space: 'rank' },
+        rerank: async () => { throw new ProviderError('unavailable', 503) },
+      },
+    },
+  })
+  const result = await documentSearch.searchWeb({ query: 'needle' })
+  assert.deepEqual(
+    result.errors.map(({ stage, code, provider }) => ({ stage, code, provider })),
+    [
+      { stage: 'document', code: 'DOCUMENT_FAILED', provider: { code: 'auth', httpStatus: 401 } },
+      { stage: 'embedding', code: 'EMBEDDING_FAILED', provider: { code: 'timeout' } },
+      { stage: 'rerank', code: 'RERANK_FAILED', provider: { code: 'unavailable', httpStatus: 503 } },
+    ],
+  )
+  assert.equal(result.partial, true)
+  assert.equal(result.passages.length, 1)
+  await documentSearch.close()
 })
 
 test('web search and readWebSource retain source whitespace in returned excerpts', async () => {
