@@ -9,7 +9,12 @@ import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
 import { createCodeIndex } from '../../src/code/index.js'
 import { CodeIndexError } from '../../src/code/errors.js'
 import { chunkCode, createLocalImportResolver } from '../../src/code/chunker.js'
-import { rankLexical, tokenizeCode } from '../../src/code/ranking.js'
+import {
+  prepareLexical,
+  rankLexical,
+  rankPreparedLexical,
+  tokenizeCode,
+} from '../../src/code/ranking.js'
 import type { CodeIndexLimits } from '../../src/code/types.js'
 import type { QueryableDatabase } from '../../src/storage/database.js'
 
@@ -368,6 +373,28 @@ test('read snapshots preserve dense results, rerank inputs, cancellation ownersh
     [...rerankCalls].sort((a, b) => a.query.localeCompare(b.query)),
     [...beforeRerank].sort((a, b) => a.query.localeCompare(b.query)),
   )
+  const filteredInputs = [
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, paths: ['first.ts'], limit: 8 },
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, language: 'typescript', limit: 8 },
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, paths: ['missing.ts'], limit: 8 },
+  ]
+  const scopedFiltered = await code.withReadSnapshot!(
+    root,
+    new AbortController().signal,
+    async (scoped) => {
+      await scoped.searchCode({ root, query: 'sharedNeedle', mode: 'lexical' })
+      await scoped.searchCode({ root, query: 'sharedNeedle', mode: 'hybrid' })
+      return Promise.all(filteredInputs.map((input) => scoped.searchCode(input)))
+    },
+  )
+  const directFiltered = await Promise.all(filteredInputs.map((input) => code.searchCode(input)))
+  assert.deepEqual(scopedFiltered, directFiltered)
+  const filteredFirst = await code.withReadSnapshot!(
+    root,
+    new AbortController().signal,
+    (scoped) => Promise.all(filteredInputs.map((input) => scoped.searchCode(input))),
+  )
+  assert.deepEqual(filteredFirst, directFiltered)
   let joinedChild: ReturnType<CodeIndex['searchCode']> | undefined
   await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
     joinedChild = scoped.searchCode({ root, query: 'first', mode: 'hybrid', limit: 8 })
@@ -849,6 +876,69 @@ test('prepared lexical ranking matches the prior BM25 scores and order exactly',
   ]
   for (const query of ['fetch document', 'fetchDocument', 'источника', 'nonexistent'])
     assert.deepEqual(rankLexical(rows, query), referenceRankLexical(rows, query), query)
+})
+
+test('prepared lexical corpus preserves filtered BM25 scores and order across queries', () => {
+  const rows = [
+    {
+      id: '1',
+      path: 'src/fetchDocument.ts',
+      symbol: 'fetchDocument',
+      language: 'typescript',
+      text: 'fetch data from источника',
+      lineStart: 3,
+    },
+    {
+      id: '2',
+      path: 'docs/document.md',
+      symbol: null,
+      language: 'markdown',
+      text: 'document fetch fetch from cache',
+      lineStart: 1,
+    },
+    {
+      id: '3',
+      path: 'src/fetch.ts',
+      symbol: 'fetch',
+      language: 'typescript',
+      text: 'document response source',
+      lineStart: 8,
+    },
+    {
+      id: '4',
+      path: 'src/fetch.ts',
+      symbol: 'fetch',
+      language: 'typescript',
+      text: 'document response source',
+      lineStart: 12,
+    },
+    {
+      id: '5',
+      path: 'docs/город.md',
+      symbol: null,
+      language: 'markdown',
+      text: 'источника документ',
+      lineStart: 1,
+    },
+  ]
+  const prepared = prepareLexical(rows)
+  const filters: Array<(row: (typeof rows)[number]) => boolean> = [
+    () => true,
+    (row) => row.language === 'typescript',
+    (row) => row.path.startsWith('docs/'),
+    (row) => row.path === 'src/fetch.ts',
+    () => false,
+  ]
+  for (const query of ['fetch fetch document', 'fetchDocument', 'источника документ', 'missing']) {
+    for (const include of filters) {
+      const subset = rows.filter(include)
+      assert.deepEqual(
+        rankPreparedLexical(prepared, query, include),
+        referenceRankLexical(subset, query),
+        `${query} / ${subset.map((row) => row.path).join(',')}`,
+      )
+    }
+  }
 })
 
 test('unchanged reindex validates current identity without parsing, embedding, or publishing again', async () => {

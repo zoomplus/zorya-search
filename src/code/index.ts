@@ -22,7 +22,13 @@ import {
   findTopLevelDeclarationChunks,
 } from './chunker.js'
 import { initializeCodeIndex } from './schema.js'
-import { rankLexical, reciprocalRankFusion } from './ranking.js'
+import {
+  prepareLexical,
+  rankLexical,
+  rankPreparedLexical,
+  reciprocalRankFusion,
+  type PreparedLexicalCorpus,
+} from './ranking.js'
 import { watchCodeRoot } from './watch.js'
 
 const DEFAULT_LIMITS: CodeIndexLimits = {
@@ -656,6 +662,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     rowsHaveVectors: boolean
     rowsLoading?: Promise<Stored[]>
     vectorRowsLoading?: Promise<Stored[]>
+    lexicalCorpus?: PreparedLexicalCorpus<Stored>
     active: Set<Promise<unknown>>
     controller: AbortController
     closing: boolean
@@ -753,16 +760,22 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ).rows
     if (!scope && corpus.length > limits.maxScanChunks)
       throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
-    const filtered = corpus.filter(
-      (row) =>
-        (!input.language || row.language === input.language) &&
-        (!input.paths?.length ||
-          input.paths.some(
-            (path) =>
-              row.path === path || row.path.startsWith(path.endsWith('/') ? path : `${path}/`),
-          )),
-    )
-    const lexical = rankLexical(filtered, input.query)
+    const matchesFilter = (row: Stored) =>
+      (!input.language || row.language === input.language) &&
+      (!input.paths?.length ||
+        input.paths.some(
+          (path) =>
+            row.path === path || row.path.startsWith(path.endsWith('/') ? path : `${path}/`),
+        ))
+    const filtered = corpus.filter(matchesFilter)
+    let lexical: ReturnType<typeof rankLexical<Stored>>
+    if (scope) {
+      const hasLexicalFilter = Boolean(input.language) || Boolean(input.paths?.length)
+      if (scope.lexicalCorpus || !hasLexicalFilter) {
+        scope.lexicalCorpus ??= prepareLexical(corpus)
+        lexical = rankPreparedLexical(scope.lexicalCorpus, input.query, matchesFilter)
+      } else lexical = rankLexical(filtered, input.query)
+    } else lexical = rankLexical(filtered, input.query)
     const lexicalRanks = new Map(lexical.map((item, index) => [item.row.id, index + 1]))
     let denseRanks = new Map<string, number>()
     let degradedReason =
@@ -1166,6 +1179,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         delete scope.rows
         delete scope.rowsLoading
         delete scope.vectorRowsLoading
+        delete scope.lexicalCorpus
       }
     })
 
