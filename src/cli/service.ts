@@ -19,6 +19,12 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_VERSION } from "../package-version.js";
 import { node24DaemonExecArgv } from "./node24.js";
+import {
+  createChildStartupReporter,
+  listenForStartupDiagnostics,
+  STARTUP_ID_ENV,
+  StartupDiagnostics,
+} from "./startup-status.js";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import {
@@ -224,6 +230,7 @@ export async function ensureOwner(configPath: string) {
     const controlFile = `control-${randomBytes(12).toString("hex")}.token`;
     const tokenPath = join(dir, tokenFile);
     const controlPath = join(dir, controlFile);
+    const startupId = randomBytes(16).toString("hex");
     let keepCredentials = false;
     let ownsTokenFile = false;
     let ownsControlFile = false;
@@ -232,6 +239,8 @@ export async function ensureOwner(configPath: string) {
       ownsTokenFile = true;
       await writePrivateFile(controlPath, controlSecret);
       ownsControlFile = true;
+      const startupStartedAt = Date.now();
+      const startupDiagnostics = new StartupDiagnostics(startupId);
       let child;
       try {
         child = spawn(
@@ -247,63 +256,121 @@ export async function ensureOwner(configPath: string) {
             "--control-file",
             controlPath,
           ],
-          { detached: true, stdio: "ignore", windowsHide: true },
+          {
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore", "ipc"],
+            windowsHide: true,
+            env: { ...process.env, [STARTUP_ID_ENV]: startupId },
+          },
         );
       } catch {
-        throw new Error("OWNER_START_FAILED");
+        throw new Error(
+          startupDiagnostics.format(
+            "OWNER_START_FAILED",
+            Date.now() - startupStartedAt,
+            "CHILD_SPAWN_ERROR",
+            null,
+            null,
+          ),
+        );
       }
+      const removeStartupListener = listenForStartupDiagnostics(
+        child,
+        startupDiagnostics,
+      );
       let spawnError = false;
+      let childExitCode: number | null = null;
+      let childSignal: NodeJS.Signals | null = null;
       let childClosedResolve!: () => void;
       const childClosed = new Promise<void>((resolvePromise) => {
         childClosedResolve = resolvePromise;
       });
-      child.once("error", () => {
+      const onChildError = () => {
         spawnError = true;
-      });
-      child.once("close", childClosedResolve);
-      if (!child.pid) {
-        // Ошибка запуска приходит через `error`, затем процесс завершает `close`.
+      };
+      const onChildClose = (code: number | null, signal: NodeJS.Signals | null) => {
+        childExitCode = code;
+        childSignal = signal;
+        childClosedResolve();
+      };
+      child.once("error", onChildError);
+      child.once("close", onChildClose);
+      try {
+        if (!child.pid) {
+          // Ошибка запуска приходит через `error`, затем процесс завершает `close`.
+          await childClosed;
+          throw new Error(
+            startupDiagnostics.format(
+              "OWNER_START_FAILED",
+              Date.now() - startupStartedAt,
+              "CHILD_SPAWN_ERROR",
+              childExitCode,
+              childSignal,
+            ),
+          );
+        }
+        // Watch-enabled profiles index in the background after runtime validation.
+        // Readiness waits only for the authenticated MCP endpoint.
+        const deadline = Date.now() + (await ownerReadinessTimeoutMs(configPath));
+        let ready: Owner | undefined;
+        while (Date.now() < deadline) {
+          if (spawnError || child.exitCode !== null || startupDiagnostics.failureCause)
+            break;
+          const candidate = await ownerRecord(configPath);
+          if (
+            candidate &&
+            candidate.pid === child.pid &&
+            candidate.tokenFile === tokenFile &&
+            candidate.controlFile === controlFile &&
+            (await authenticated(candidate, configPath))
+          ) {
+            ready = candidate;
+            break;
+          }
+          await sleep(100);
+        }
+        if (ready) {
+          keepCredentials = true;
+          startupDiagnostics.markAuthenticated();
+          if (child.connected) child.disconnect();
+          child.unref();
+          return { owner: ready, token };
+        }
+        const fallbackCause = startupDiagnostics.failureCause
+          ? startupDiagnostics.failureCause
+          : spawnError
+            ? "CHILD_SPAWN_ERROR"
+            : child.exitCode !== null
+              ? "CHILD_EXIT"
+              : "READINESS_TIMEOUT";
+        if (!spawnError && child.exitCode === null) {
+          child.kill("SIGTERM");
+          const closed = await Promise.race([
+            childClosed.then(() => true),
+            sleep(3000).then(() => false),
+          ]);
+          if (!closed) {
+            child.kill("SIGKILL");
+            await Promise.race([childClosed, sleep(2000)]);
+          }
+        }
         await childClosed;
-        throw new Error("OWNER_START_FAILED");
+        const prefix = spawnError ? "OWNER_START_FAILED" : "OWNER_NOT_READY";
+        throw new Error(
+          startupDiagnostics.format(
+            prefix,
+            Date.now() - startupStartedAt,
+            fallbackCause,
+            childExitCode,
+            childSignal,
+          ),
+        );
+      } finally {
+        removeStartupListener();
+        child.removeListener("error", onChildError);
+        child.removeListener("close", onChildClose);
+        if (child.connected) child.disconnect();
       }
-      // Watch-enabled profiles index in the background after runtime validation.
-      // Readiness waits only for the authenticated MCP endpoint.
-      const deadline = Date.now() + (await ownerReadinessTimeoutMs(configPath));
-      let ready: Owner | undefined;
-      while (Date.now() < deadline) {
-        if (spawnError || child.exitCode !== null) break;
-        const candidate = await ownerRecord(configPath);
-        if (
-          candidate &&
-          candidate.pid === child.pid &&
-          candidate.tokenFile === tokenFile &&
-          candidate.controlFile === controlFile &&
-          (await authenticated(candidate, configPath))
-        ) {
-          ready = candidate;
-          break;
-        }
-        await sleep(100);
-      }
-      if (ready) {
-        keepCredentials = true;
-        child.unref();
-        return { owner: ready, token };
-      }
-      if (!spawnError && child.exitCode === null) {
-        child.kill("SIGTERM");
-        const closed = await Promise.race([
-          childClosed.then(() => true),
-          sleep(3000).then(() => false),
-        ]);
-        if (!closed) {
-          child.kill("SIGKILL");
-          await Promise.race([childClosed, sleep(2000)]);
-        }
-      }
-      await childClosed;
-      if (spawnError) throw new Error("OWNER_START_FAILED");
-      throw new Error("OWNER_NOT_READY");
     } finally {
       if (!keepCredentials && ownsTokenFile)
         await unlink(tokenPath).catch(() => undefined);
@@ -322,6 +389,22 @@ export async function runOwner(
   tokenFile?: string,
   controlFile?: string,
 ) {
+  const startup = createChildStartupReporter();
+  try {
+    await runOwnerImpl(configPath, tokenFile, controlFile, startup);
+  } catch (error) {
+    await startup.fail(error);
+    throw error;
+  }
+}
+
+async function runOwnerImpl(
+  configPath: string,
+  tokenFile: string | undefined,
+  controlFile: string | undefined,
+  startup: ReturnType<typeof createChildStartupReporter>,
+) {
+  await startup.phase("child_bootstrap");
   const dir = ownerDir(configPath);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   if ((await realpath(dir)) !== resolve(dir))
@@ -350,6 +433,7 @@ export async function runOwner(
     : randomBytes(32).toString("base64url");
   if (!tokenFile) await writePrivateFile(ownTokenFile, token);
   if (!controlFile) await writePrivateFile(ownControlFile, controlSecret);
+  await startup.phase("runtime_import");
   const { startSearchDaemon } = await import("../daemon/index.js");
   let daemon: Awaited<ReturnType<typeof startSearchDaemon>> | undefined;
   let controlServer: Server | undefined;
@@ -386,12 +470,14 @@ export async function runOwner(
   };
   let descriptorInfo: { dev: number; ino: number } | undefined;
   try {
+    await startup.phase("runtime_start");
     daemon = await startSearchDaemon({
       configPath,
       port: 0,
       bearerToken: token,
       runtimeOptions: { signal: startupController.signal },
     });
+    await startup.phase("daemon_ready");
     const control = (controlServer = createServer((socket) => {
       socket.setTimeout(1500, () => socket.destroy());
       let input = "";
@@ -433,6 +519,7 @@ export async function runOwner(
       })());
     let stopPromise: Promise<void> | undefined;
     let finishResolve = () => {};
+    await startup.phase("control_listen");
     await new Promise<void>((resolvePromise, reject) => {
       control.once("error", reject);
       control.listen(endpoint, () => {
@@ -453,6 +540,7 @@ export async function runOwner(
       controlFile: ownControlFile.split(/[\\/]/).at(-1)!,
       controlEndpoint: endpoint,
     };
+    await startup.phase("descriptor_write");
     await writePrivateFile(descriptor, JSON.stringify(owner), false);
     descriptorInfo = await lstat(descriptor);
     finishRequested = () => {

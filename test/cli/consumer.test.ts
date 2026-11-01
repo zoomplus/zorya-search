@@ -48,6 +48,49 @@ function run(args: string[], cwd = process.cwd()) {
   );
 }
 test(
+  "owner startup failure reports a safe phase and known cause",
+  {
+    timeout: 60_000,
+    skip: !canRunBuiltConsumer
+      ? "Run pnpm build before the built-consumer check."
+      : false,
+  },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "zorya-cli-startup-diagnostic-"));
+    const repo = join(dir, "repo");
+    const config = join(dir, "config", "config.json");
+    const data = join(dir, "state", "data");
+    const marker = "startup-secret-sentinel";
+    try {
+      await mkdir(repo, { recursive: true });
+      await writeFile(join(repo, "fixture.ts"), "export const marker = 1\n");
+      const setup = await run(
+        ["setup", "--root", repo, "--data", data, "--config", config],
+        dir,
+      );
+      assert.equal(setup.code, 0, setup.err);
+
+      await rm(data, { recursive: true, force: true });
+      await writeFile(data, marker);
+      const result = await run(["text-status", "--config", config], dir);
+      assert.equal(result.code, 1);
+      assert.match(
+        result.err,
+        /OWNER_NOT_READY phase=runtime_start elapsedMs=\d+ cause=CONFIG_INVALID/,
+      );
+      assert.doesNotMatch(result.err, new RegExp(marker));
+      assert.doesNotMatch(result.err, /[A-Za-z]:\\[^\s]+|\/[^\s]+/);
+      const files = await import("node:fs/promises").then((fs) =>
+        fs.readdir(ownerDir(config)),
+      );
+      assert.deepEqual(files, []);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "packed-style CLI consumer setup, doctor, index, search, context, MCP, and owner stop",
   {
     timeout: 120_000,
