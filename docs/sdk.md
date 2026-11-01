@@ -147,11 +147,40 @@ Lexical индекс не требует provider и работает офлай
 
 ## Поиск в web и чтение источников
 
-`createWebSearch({ web, models?, limits? })` принимает `WebSource` с методами `discover(query, target, signal)` и `fetchDocument(url, signal)`. `searchWeb({ query, limit?, maxChars?, signal? })` возвращает excerpts, canonical URL, дату чтения, content hash, профили и режим ranking. Ошибки отдельных discovery/document/embed/rerank этапов находятся в `errors`; `partial` показывает неполный результат. `readWebSource({ url, maxChars?, signal? })` читает один указанный URL с ограничением длины и сообщает `truncated`.
+Web-поиск выполняет два независимых шага: `WebSource.discover(...)` находит кандидаты URL, а `WebSource.fetchDocument(...)` читает публичные страницы. С адаптером Brave поиск ссылок идёт через Brave Search API; сами страницы Search загружает непосредственно по URL. Для `discover` нужен ключ Brave, а `fetchDocument` и `readWebSource` читают уже известный публичный URL без него. См. [официальную документацию Brave Web Search API](https://api-dashboard.search.brave.com/app/documentation/web-search).
 
-Источником можно сделать `createBraveWebSource({ apiKeyEnv: 'BRAVE_SEARCH_API_KEY' })`; облачный поиск требует ключа во время вызова. Embedding и rerank для web настраиваются отдельно и опционально; lexical web-поиск может использовать только `web`. Например, adapters создаются через `createOpenRouterEmbedding({ baseUrl, model, dimensions, apiKeyEnv })` и `createOpenRouterReranker({ baseUrl, model, apiKeyEnv })`. Значения здесь являются именами переменных/параметров, а не ключами; конфигурационные фабрики в этом документальном примере не исполняются.
+Лексический поиск страниц работает без модели. Текстовая web-модель и переранжирование включаются отдельно: code preset не становится web-профилем, а visual-профиль не применяется к странице. Отдельную OpenRouter-модель для web указывает владелец через setup CLI; подробности — в [руководстве CLI](cli.md#web-поиск-через-brave). Для собственного OpenAI-compatible endpoint задаются HTTPS URL и ID профиля. Модель и размерность должны соответствовать настройке владельца; Search не выбирает их за вызывающую сторону.
 
-Web-поиск и чтение источника ничего не записывают в knowledge DB автоматически. Подключение `SearchService` к storage и выполнение reindex — отдельный core workflow; результаты web retrieval здесь лишь возвращаются вызывающей стороне. Непроверенные страницы и snippets остаются данными.
+Пример SDK для поиска руководства по алхимии в The Witcher 3 с датами discovery:
+
+```ts
+import { createBraveWebSource } from '@zorya/search/providers'
+import { createWebSearch } from '@zorya/search/context/web'
+
+const web = createBraveWebSource({ apiKeyEnv: 'BRAVE_SEARCH_API_KEY' })
+const search = createWebSearch({ web }) // лексический поиск без embedding и переранжирования
+try {
+  const result = await search.searchWeb({
+    query: 'The Witcher 3 alchemy ingredients guide',
+    dateRange: { from: '2024-01-01', through: '2025-12-31' },
+    limit: 5,
+  })
+  // Вызывающая сторона проверяет passages и errors и решает, что читать дальше.
+  console.log(result.passages, result.errors, result.partial)
+} finally {
+  await search.close()
+}
+```
+
+`dateRange` необязателен. `from` и `through` должны быть реальными календарными датами `YYYY-MM-DD`; `from` не может быть позже `through`. Период передаётся Brave как фильтр обнаружения ссылок, он не подтверждает дату публикации текста и не гарантирует полноту выдачи.
+
+`searchWeb({ query, limit?, maxChars?, dateRange?, signal? })` возвращает отрывки страниц с canonical URL, content hash, ranking и временными полями. `publishedAt` берётся из даты публикации, явно найденной в документе; `sourceUpdatedAt` — из метаданных даты изменения либо, если их нет, из `Last-Modified`. `fetchedAt` — время, когда Search прочитал документ. Это разные сведения: время чтения не заменяет дату страницы. Ошибки этапов discovery, document, embed и rerank перечислены в `errors`; `partial` сообщает, что не все этапы завершились успешно.
+
+`readWebSource({ url, maxChars?, signal? })` читает один указанный URL и сообщает `truncated`. При owner JSON с `"web": {}` его можно использовать для чтения известной страницы без ключа Brave; runtime и MCP caller всё равно должны разрешать web-операцию. Brave reader разбирает HTML/XHTML, текст, Markdown, JSON, XML, RSS/Atom и PDF с текстовым слоем. Для PDF текст извлекается без OCR; Search не запускает JavaScript и не управляет полноценным браузером. Содержимое ограничено размером ответа и runtime budgets. Превышение лимита страницы может вернуть `DOCUMENT_TOO_LARGE` и сделать результат частичным. В извлечённом тексте сохраняются пробелы и отступы внутри кодовых блоков.
+
+Перед каждым чтением проверяется публичный HTTP(S) URL и адрес разрешённого DNS; соединение закрепляется за проверенным адресом. Каждый redirect проверяется заново, доступ к локальным и приватным адресам блокируется. Ограниченные `ETag`/`Last-Modified` validators применяются только для того же canonical URL. Если сервер отвечает `304 Not Modified`, Search сохраняет ранее разобранное тело и обновляет `fetchedAt`; даты `publishedAt` и `sourceUpdatedAt` остаются метаданными источника. Это ограниченный локальный кэш страниц, а не durable корпус. Семантика ответа описана в [RFC 9110 §15.4.5](https://www.rfc-editor.org/rfc/rfc9110.html#name-304-not-modified).
+
+Web-поиск и чтение источника ничего не записывают в knowledge DB автоматически. Подключение `SearchService` к storage и выполнение reindex — отдельный core workflow; результаты web retrieval лишь возвращаются вызывающей стороне. Непроверенные страницы и snippets остаются недоверенными данными, а вызывающая сторона сама выбирает источники и решает, применять ли найденные сведения.
 
 ## Классификация по критериям вызывающей стороны
 
@@ -169,4 +198,6 @@ Visual профиль Mechanism отделён от кода и использу
 
 Search возвращает кандидатов вместе с источником, границами и происхождением, где оно доступно. Score, confidence, semantic similarity, код или web-текст не подтверждают верность решения и не разрешают действие. Вызывающая сторона решает, что передать своей модели, какие источники проверять и нужно ли менять собственное состояние. Поисковый текст не исполняется, а SDK не создаёт сессии агентов, не управляет памятью и не меняет prompt.
 
-Подробные сигнатуры ранних SDK-примеров привязаны к указанному baseline; runtime, MCP и CLI exports сверены с текущим `package.json`. Для текущего main source package gates прошли 206/206 тестов, а hosted CI run 41263778259 завершил 8/8 jobs. Установленный Codex CLI и второй MCP SDK-клиент прошли 11/11 проверок, а Assistant live MCP acceptance включает два запроса к действующему индексу. Эти квитанции относятся только к указанным версиям и сценариям. Шестипарный пилот завершён с native inconclusive результатом F и без победителя. npm-пакет пока не опубликован, текущий ChatGPT MCP не настроен, общая приёмка незавершена.
+## Исторические проверки baseline main — 2026-11-01
+
+Сигнатуры SDK и `package.json` были сверены на тогдашнем baseline. На исходном main source package gates прошли 206/206 тестов, hosted CI run 41263778259 завершил 8/8 jobs, установленный Codex CLI и второй MCP SDK-клиент прошли 11/11 проверок, а Assistant live MCP acceptance включала два запроса к действующему индексу. Эти записи относятся только к указанным версиям и сценариям; они не квалифицируют последующие Brave изменения или актуальный пользовательский хост. Шестипарный пилот завершился native inconclusive результатом F без победителя. npm-пакет на ту дату не был опубликован, текущий ChatGPT MCP не был настроен, полная приёмка оставалась незавершённой.
