@@ -49,6 +49,58 @@ CREATE TABLE IF NOT EXISTS zorya_code_resume_chunks (
 CREATE INDEX IF NOT EXISTS zorya_code_resume_chunks_scope ON zorya_code_resume_chunks(worktree_id,scope_id);
 `
 
+const symbolGraphMigration = `
+CREATE TABLE IF NOT EXISTS zorya_code_analysis_state (
+ worktree_id text PRIMARY KEY, snapshot_id text NOT NULL, generation bigint NOT NULL DEFAULT 0,
+ current_profile_id text, updated_at timestamptz NOT NULL DEFAULT now(),
+ FOREIGN KEY(snapshot_id) REFERENCES zorya_code_snapshots(snapshot_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS zorya_code_analysis (
+ snapshot_id text NOT NULL, analysis_profile_id text NOT NULL, extractor_version text NOT NULL,
+ typescript_version text NOT NULL, compiler_options_hash text NOT NULL, library_profile_id text,
+ limits_json jsonb NOT NULL, complete boolean NOT NULL, truncation_json jsonb NOT NULL,
+ file_coverage_json jsonb NOT NULL, symbol_count integer NOT NULL, reference_count integer NOT NULL,
+ unresolved_reference_count integer NOT NULL, unresolved_call_count integer NOT NULL,
+ indexed_at timestamptz NOT NULL DEFAULT now(), active boolean NOT NULL DEFAULT true,
+ PRIMARY KEY(snapshot_id,analysis_profile_id),
+ FOREIGN KEY(snapshot_id) REFERENCES zorya_code_snapshots(snapshot_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS zorya_code_analysis_active_snapshot
+ ON zorya_code_analysis(snapshot_id) WHERE active;
+CREATE TABLE IF NOT EXISTS zorya_code_symbols (
+ snapshot_id text NOT NULL, analysis_profile_id text NOT NULL, symbol_id text NOT NULL,
+ name text NOT NULL, qualified_name text NOT NULL, kind text NOT NULL, path text NOT NULL, language text NOT NULL,
+ line_start integer NOT NULL, line_end integer NOT NULL, file_hash text NOT NULL,
+ parent_symbol_id text, dto_json jsonb NOT NULL,
+ PRIMARY KEY(snapshot_id,analysis_profile_id,symbol_id),
+ FOREIGN KEY(snapshot_id,analysis_profile_id) REFERENCES zorya_code_analysis(snapshot_id,analysis_profile_id) ON DELETE CASCADE,
+ FOREIGN KEY(snapshot_id,analysis_profile_id,parent_symbol_id)
+   REFERENCES zorya_code_symbols(snapshot_id,analysis_profile_id,symbol_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS zorya_code_symbols_name
+ ON zorya_code_symbols(snapshot_id,analysis_profile_id,name,symbol_id);
+CREATE INDEX IF NOT EXISTS zorya_code_symbols_path
+ ON zorya_code_symbols(snapshot_id,analysis_profile_id,path,line_start,symbol_id);
+CREATE INDEX IF NOT EXISTS zorya_code_symbols_parent
+ ON zorya_code_symbols(snapshot_id,analysis_profile_id,parent_symbol_id,symbol_id);
+CREATE TABLE IF NOT EXISTS zorya_code_symbol_references (
+ snapshot_id text NOT NULL, analysis_profile_id text NOT NULL, reference_id text NOT NULL,
+ kind text NOT NULL, path text NOT NULL, line_start integer NOT NULL, line_end integer NOT NULL,
+ owner_symbol_id text, target_symbol_ids jsonb NOT NULL CHECK(jsonb_typeof(target_symbol_ids)='array'), target_kind text NOT NULL,
+ unresolved_reason text, dto_json jsonb NOT NULL,
+ PRIMARY KEY(snapshot_id,analysis_profile_id,reference_id),
+ FOREIGN KEY(snapshot_id,analysis_profile_id) REFERENCES zorya_code_analysis(snapshot_id,analysis_profile_id) ON DELETE CASCADE,
+ FOREIGN KEY(snapshot_id,analysis_profile_id,owner_symbol_id)
+   REFERENCES zorya_code_symbols(snapshot_id,analysis_profile_id,symbol_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS zorya_code_symbol_refs_owner
+ ON zorya_code_symbol_references(snapshot_id,analysis_profile_id,owner_symbol_id,kind,reference_id);
+CREATE INDEX IF NOT EXISTS zorya_code_symbol_refs_path
+ ON zorya_code_symbol_references(snapshot_id,analysis_profile_id,path,line_start,reference_id);
+CREATE INDEX IF NOT EXISTS zorya_code_symbol_refs_targets
+ ON zorya_code_symbol_references USING GIN(target_symbol_ids);
+`
+
 export async function initializeCodeIndex(database: QueryableDatabase): Promise<void> {
   const checksum = codeSha256(schema)
   await database.transaction(async (tx) => {
@@ -76,6 +128,20 @@ export async function initializeCodeIndex(database: QueryableDatabase): Promise<
       await tx.query('INSERT INTO zorya_code_migrations(id,checksum) VALUES($1,$2)', [
         'code_002_index_resume',
         resumeChecksum,
+      ])
+    }
+    const graphChecksum = codeSha256(symbolGraphMigration)
+    const graph = await tx.query<{ checksum: string }>(
+      'SELECT checksum FROM zorya_code_migrations WHERE id=$1',
+      ['code_003_symbol_graph'],
+    )
+    if (graph.rows[0] && graph.rows[0].checksum !== graphChecksum)
+      throw new CodeIndexError('CODE_INDEX_MIGRATION_CHECKSUM_MISMATCH')
+    if (!graph.rows[0]) {
+      await tx.exec(symbolGraphMigration)
+      await tx.query('INSERT INTO zorya_code_migrations(id,checksum) VALUES($1,$2)', [
+        'code_003_symbol_graph',
+        graphChecksum,
       ])
     }
   })

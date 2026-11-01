@@ -1,5 +1,9 @@
 import type { SearchModels } from '../core/contracts.js'
 import type { QueryableDatabase } from '../storage/database.js'
+import type {
+  FindCodeSymbolsInput, FindCodeSymbolsResult, FindCodeReferencesInput, FindCodeReferencesResult,
+  TraceCodeCallsInput, CodeCallTrace,
+} from './symbol-api.js'
 
 export interface CodeIndexModels {
   embed: SearchModels['embed']
@@ -240,12 +244,16 @@ export interface CodeIndex {
     stale: boolean
   }>
   dependencyGraph?(input: CodeDependencyGraphInput): Promise<CodeDependencyGraph>
+  indexCodeSymbols?(input: { root: string; signal?: AbortSignal }): Promise<import('./symbol-api.js').CodeSymbolAnalysisStatus>
+  findCodeSymbols?(input: FindCodeSymbolsInput): Promise<FindCodeSymbolsResult>
+  findCodeReferences?(input: FindCodeReferencesInput): Promise<FindCodeReferencesResult>
+  traceCodeCalls?(input: TraceCodeCallsInput): Promise<CodeCallTrace>
   withReadSnapshot?<T>(
     root: string,
     signal: AbortSignal,
     work: (
       index: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
-        Partial<Pick<CodeIndex, 'dependencyGraph'>>,
+        Partial<Pick<CodeIndex, 'dependencyGraph' | 'indexCodeSymbols' | 'findCodeSymbols' | 'findCodeReferences' | 'traceCodeCalls'>>,
     ) => Promise<T>,
   ): Promise<T>
   watchRepository(
@@ -256,3 +264,9 @@ export interface CodeIndex {
 }
 
 export type CodeIndexDatabase = QueryableDatabase
+
+export type {
+  CodeSymbolAnalysisProfile, CodeSymbolAnalysisStatus, FindCodeSymbolsInput, FindCodeSymbolsResult,
+  FindCodeReferencesInput, FindCodeReferencesResult, TraceCodeCallsInput, CodeCallTrace,
+  CodeSymbol, CodeSymbolReference, SymbolFileCoverage, ReferenceKind,
+} from './symbol-api.js'

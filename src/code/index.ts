@@ -37,6 +37,12 @@ import {
 import { watchCodeRoot } from './watch.js'
 import { walkDependencyGraph } from './dependency-graph.js'
 import { codeFilterCacheKey, codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from './filters.js'
+import { prepareSymbolAnalysis } from './symbol-indexing.js'
+import { loadTypeScriptLibraryBundle } from './symbol-libraries.js'
+import { analysisProfileId, claimSymbolRefresh, DEFAULT_SYMBOL_LIMITS, loadSymbolAnalysis, publishIndexedSymbolAnalysis, publishSymbolRefresh } from './symbol-storage.js'
+import { createSymbolQueries } from './symbol-queries.js'
+import { CODE_SYMBOL_EXTRACTOR_VERSION } from './symbol-types.js'
+import ts from 'typescript'
 
 const DEFAULT_LIMITS: CodeIndexLimits = {
   maxFiles: 5000,
@@ -178,6 +184,65 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const ensureOpen = () => {
     if (closed) throw new CodeIndexError('CODE_INDEX_CLOSED')
   }
+  const prepareAndPublishCurrentSymbols = async (
+    root: string,
+    identity: CodeSourceIdentity,
+    files: Awaited<ReturnType<typeof enumerateCode>>['files'],
+    treeHash: string,
+    signal: AbortSignal,
+  ) => {
+    const generation = await claimSymbolRefresh(database, identity.worktreeId, identity.snapshotId, signal)
+    const prepared = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal)
+    const verified = await enumerateCode(root, limits, signal, pathPolicy.excludes)
+    const reidentified = await identifyRoot(root, verified.treeHash, signal)
+    const validateSource = async () => {
+      const finalFiles = await enumerateCode(root, limits, signal, pathPolicy.excludes)
+      const finalIdentity = await identifyRoot(root, finalFiles.treeHash, signal)
+      if (finalFiles.treeHash !== treeHash || finalIdentity.repoId !== identity.repoId ||
+        finalIdentity.worktreeId !== identity.worktreeId || finalIdentity.root !== identity.root ||
+        finalIdentity.branch !== identity.branch || finalIdentity.head !== identity.head ||
+        finalIdentity.contentHash !== identity.contentHash)
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+    }
+    if (verified.treeHash !== treeHash || reidentified.repoId !== identity.repoId ||
+      reidentified.worktreeId !== identity.worktreeId || reidentified.root !== identity.root ||
+      reidentified.branch !== identity.branch || reidentified.head !== identity.head ||
+      reidentified.contentHash !== identity.contentHash)
+      throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+    await publishSymbolRefresh(database, identity.worktreeId, identity.snapshotId, generation,
+      prepared.result, prepared.profile, signal, validateSource)
+    return loadSymbolAnalysis(database, identity, identity.worktreeId)
+  }
+  const hasCurrentSymbolAnalysis = async (worktreeId: string, snapshotId: string, signal: AbortSignal): Promise<boolean> => {
+    const libraries = await loadTypeScriptLibraryBundle({ signal, selector: 'es2023' })
+    const result = await database.query<{ analysis_profile_id: string; extractor_version: string;
+      typescript_version: string; compiler_options_hash: string; library_profile_id: string | null;
+      limits_json: typeof DEFAULT_SYMBOL_LIMITS }>(
+      `SELECT a.analysis_profile_id,a.extractor_version,a.typescript_version,a.compiler_options_hash,a.library_profile_id,a.limits_json
+       FROM zorya_code_analysis_state s JOIN zorya_code_analysis a
+        ON a.snapshot_id=s.snapshot_id AND a.analysis_profile_id=s.current_profile_id
+        WHERE s.worktree_id=$1 AND s.snapshot_id=$2 AND a.active=true`,
+      [worktreeId, snapshotId],
+    )
+    const row = result.rows[0]
+    if (!row || row.extractor_version !== CODE_SYMBOL_EXTRACTOR_VERSION || row.typescript_version !== ts.version)
+      return false
+    const limits = { maxFiles: Number(row.limits_json.maxFiles), maxSymbols: Number(row.limits_json.maxSymbols),
+      maxReferences: Number(row.limits_json.maxReferences), tsconfigPath: row.limits_json.tsconfigPath ?? null }
+    return JSON.stringify(limits) === JSON.stringify(DEFAULT_SYMBOL_LIMITS) &&
+      row.library_profile_id === libraries.profileId &&
+      row.analysis_profile_id === analysisProfileId(row.extractor_version, row.typescript_version,
+        row.compiler_options_hash, row.library_profile_id, limits)
+  }
+  const getSymbolFence = async (worktreeId: string, snapshotId: string) => {
+    const result = await database.query<{ generation: string | number; current_profile_id: string | null }>(
+      'SELECT generation,current_profile_id FROM zorya_code_analysis_state WHERE worktree_id=$1 AND snapshot_id=$2',
+      [worktreeId, snapshotId],
+    )
+    return result.rows[0]
+      ? { generation: Number(result.rows[0].generation), profile: result.rows[0].current_profile_id }
+      : { generation: null, profile: null }
+  }
   function own<T>(
     callerSignal: AbortSignal | undefined,
     operation: (signal: AbortSignal) => Promise<T>,
@@ -265,6 +330,8 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         matchesCurrent(confirmedRow) &&
         confirmedRow.current_snapshot === previousRow.current_snapshot
       ) {
+        if (!(await hasCurrentSymbolAnalysis(worktreeId, identity.snapshotId, signal!)))
+          await prepareAndPublishCurrentSymbols(root, identity, files, treeHash, signal!)
         return statusFrom(
           identity,
           new Date(confirmedRow.indexed_at).toISOString(),
@@ -461,6 +528,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       identity.snapshotId
     )
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+    const preparedSymbols = await prepareSymbolAnalysis(root, identity.snapshotId, files, signal!)
     const latest = await database.query<{ generation: string | number }>(
       'SELECT generation FROM zorya_code_worktrees WHERE worktree_id=$1',
       [worktreeId],
@@ -514,6 +582,8 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           'INSERT INTO zorya_code_imports(snapshot_id,from_path,to_path,specifier) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',
           [identity.snapshotId, item.from, item.to, item.specifier],
         )
+      await publishIndexedSymbolAnalysis(tx, worktreeId, identity.snapshotId,
+        preparedSymbols.result, preparedSymbols.profile, signal)
       const current = await tx.query<{ generation: string | number }>(
         'SELECT generation FROM zorya_code_worktrees WHERE worktree_id=$1 FOR UPDATE',
         [worktreeId],
@@ -660,6 +730,36 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   }
   const indexStatus: CodeIndex['indexStatus'] = (root, signal) =>
     own(signal, (ownedSignal) => indexStatusInner(root, ownedSignal))
+
+  const indexCodeSymbols: NonNullable<CodeIndex['indexCodeSymbols']> = (input) => {
+    const captured = { root: input.root, signal: input.signal }
+    return own(captured.signal, async (signal) => {
+      const stored = await current(captured.root, signal)
+      const { files, treeHash } = await enumerateCode(stored.identity.root, limits, signal, pathPolicy.excludes)
+      if (treeHash !== stored.identity.contentHash)
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+      return prepareAndPublishCurrentSymbols(stored.identity.root, stored.identity, files, treeHash, signal)
+    })
+  }
+
+  const symbolQueries = createSymbolQueries(database, async (root, signal) => {
+    const value = await current(root, signal)
+    const metadata = await getSymbolFence(value.identity.worktreeId, value.snapshot)
+    return { identity: value.identity, snapshot: value.snapshot,
+      metadataGeneration: metadata.generation, metadataProfile: metadata.profile }
+  })
+  const findCodeSymbols: NonNullable<CodeIndex['findCodeSymbols']> = (input) => {
+    const captured = { ...input }
+    return own(captured.signal, (signal) => symbolQueries.findCodeSymbols({ ...captured, signal }))
+  }
+  const findCodeReferences: NonNullable<CodeIndex['findCodeReferences']> = (input) => {
+    const captured = { ...input }
+    return own(captured.signal, (signal) => symbolQueries.findCodeReferences({ ...captured, signal }))
+  }
+  const traceCodeCalls: NonNullable<CodeIndex['traceCodeCalls']> = (input) => {
+    const captured = { ...input }
+    return own(captured.signal, (signal) => symbolQueries.traceCodeCalls({ ...captured, signal }))
+  }
 
   type ReadScope = {
     root: string
@@ -1300,6 +1400,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   ) =>
     own(callerSignal, async (signal) => {
       const snapshot = await current(inputRoot, signal)
+      const symbolFence = await getSymbolFence(snapshot.identity.worktreeId, snapshot.snapshot)
       const controller = new AbortController()
       const scopeSignal = AbortSignal.any([signal, controller.signal])
       const scope: ReadScope = {
@@ -1362,6 +1463,21 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
             dependencyGraphInner({ ...captured, root: canonicalRoot, signal: ownedSignal }, scope), captured.root)
         },
+        findCodeSymbols: (input: Parameters<NonNullable<CodeIndex['findCodeSymbols']>>[0]) => {
+          const captured = { ...input }
+          return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
+            symbolQueries.findCodeSymbols({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+        },
+        findCodeReferences: (input: Parameters<NonNullable<CodeIndex['findCodeReferences']>>[0]) => {
+          const captured = { ...input }
+          return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
+            symbolQueries.findCodeReferences({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+        },
+        traceCodeCalls: (input: Parameters<NonNullable<CodeIndex['traceCodeCalls']>>[0]) => {
+          const captured = { ...input }
+          return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
+            symbolQueries.traceCodeCalls({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+        },
       })
       try {
         const result = await work(scoped)
@@ -1372,9 +1488,12 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         if (canonicalRoot !== scope.root)
           throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
         const after = await current(scope.root, scopeSignal)
+        const afterSymbolFence = await getSymbolFence(after.identity.worktreeId, after.snapshot)
         if (
           after.identity.root !== snapshot.identity.root ||
-          after.snapshot !== snapshot.snapshot
+          after.snapshot !== snapshot.snapshot ||
+          afterSymbolFence.generation !== symbolFence.generation ||
+          afterSymbolFence.profile !== symbolFence.profile
         )
           throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
         return result
@@ -1455,6 +1574,10 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     readSource,
     relatedCode,
     dependencyGraph,
+    indexCodeSymbols,
+    findCodeSymbols,
+    findCodeReferences,
+    traceCodeCalls,
     withReadSnapshot,
     watchRepository,
     close() {
