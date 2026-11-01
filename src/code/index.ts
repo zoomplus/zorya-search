@@ -632,7 +632,77 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const indexStatus: CodeIndex['indexStatus'] = (root, signal) =>
     own(signal, (ownedSignal) => indexStatusInner(root, ownedSignal))
 
-  const searchCodeInner: CodeIndex['searchCode'] = async (input) => {
+  type ReadScope = {
+    root: string
+    snapshot: Awaited<ReturnType<typeof current>>
+    signal: AbortSignal
+    rows?: Stored[]
+    rowsHaveVectors: boolean
+    rowsLoading?: Promise<Stored[]>
+    vectorRowsLoading?: Promise<Stored[]>
+    active: Set<Promise<unknown>>
+    controller: AbortController
+    closing: boolean
+    closed: boolean
+  }
+  const assertReadScope = (scope: ReadScope, root: string, signal: AbortSignal) => {
+    checkAbort(signal)
+    if (scope.closed || resolve(root) !== scope.root)
+      throw new CodeIndexError('CODE_INDEX_STALE')
+  }
+  const canonicalScopeRoot = async (scope: ReadScope, root: string, signal: AbortSignal) => {
+    checkAbort(signal)
+    if (scope.closed) throw new CodeIndexError('CODE_INDEX_STALE')
+    const canonical = await realpath(resolve(root))
+    checkAbort(signal)
+    if (canonical !== scope.root) throw new CodeIndexError('CODE_INDEX_STALE')
+    return canonical
+  }
+  const readRows = async (
+    scope: ReadScope,
+    withVectors: boolean,
+    signal: AbortSignal,
+  ): Promise<Stored[]> => {
+    assertReadScope(scope, scope.root, signal)
+    if (!scope.rowsLoading && !scope.rows) {
+      scope.rowsLoading = database.query<Stored>(
+        `SELECT c.id,c.path,c.line_start AS "lineStart",c.line_end AS "lineEnd",c.symbol,c.language,c.body AS text,c.content_hash AS "contentHash",c.parser_version AS "parserVersion"${withVectors ? ',c.vector_json' : ''} FROM zorya_code_chunks c WHERE c.snapshot_id=$1 ORDER BY c.path,c.line_start LIMIT $2`,
+        [scope.snapshot.snapshot, limits.maxScanChunks + 1],
+      ).then((result) => {
+        const rows = result.rows
+        if (rows.length > limits.maxScanChunks)
+          throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
+        scope.rows = rows
+        scope.rowsHaveVectors = withVectors
+        return rows
+      })
+    }
+    if (!scope.rows) await scope.rowsLoading
+    if (!scope.rows)
+      throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
+    if (withVectors && !scope.rowsHaveVectors) {
+      if (!scope.vectorRowsLoading) {
+        scope.vectorRowsLoading = database.query<Stored>(
+          `SELECT c.id,c.path,c.line_start AS "lineStart",c.line_end AS "lineEnd",c.symbol,c.language,c.body AS text,c.content_hash AS "contentHash",c.parser_version AS "parserVersion",c.vector_json FROM zorya_code_chunks c WHERE c.snapshot_id=$1 ORDER BY c.path,c.line_start LIMIT $2`,
+          [scope.snapshot.snapshot, limits.maxScanChunks + 1],
+        ).then((result) => {
+          if (result.rows.length > limits.maxScanChunks)
+            throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
+          scope.rows = result.rows
+          scope.rowsHaveVectors = true
+          return result.rows
+        })
+      }
+      await scope.vectorRowsLoading
+    }
+    assertReadScope(scope, scope.root, signal)
+    return scope.rows
+  }
+
+  const searchCodeInner: (
+    input: Parameters<CodeIndex['searchCode']>[0],
+    scope?: ReadScope,
+  ) => ReturnType<CodeIndex['searchCode']> = async (input, scope) => {
     checkAbort(input.signal)
     if (!input.query.trim() || input.query.length > limits.maxQueryChars)
       throw new CodeIndexError('CODE_INDEX_QUERY_INVALID')
@@ -650,18 +720,24 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ))
     )
       throw new CodeIndexError('CODE_INDEX_PATH_FILTER_INVALID')
-    const snapshot = await current(input.root, input.signal)
+    if (scope) assertReadScope(scope, input.root, input.signal!)
+    const snapshot = scope?.snapshot ?? (await current(input.root, input.signal))
     const cap = input.limit ?? 10
     if (!Number.isInteger(cap) || cap < 1 || cap > limits.maxResults)
       throw new CodeIndexError('CODE_INDEX_RESULT_LIMIT')
     const mode = input.mode ?? (models ? 'hybrid' : 'lexical')
-    const rows = await database.query<Stored>(
-      `SELECT c.id,c.path,c.line_start AS "lineStart",c.line_end AS "lineEnd",c.symbol,c.language,c.body AS text,c.content_hash AS "contentHash",c.parser_version AS "parserVersion",c.vector_json FROM zorya_code_chunks c WHERE c.snapshot_id=$1 ORDER BY c.path,c.line_start LIMIT $2`,
-      [snapshot.snapshot, limits.maxScanChunks + 1],
-    )
-    if (rows.rows.length > limits.maxScanChunks)
+    const needsVectors = mode === 'hybrid' && Boolean(models && profile && snapshot.profileId === profileId)
+    const corpus = scope
+      ? await readRows(scope, needsVectors, input.signal ?? scope.signal)
+      : (
+          await database.query<Stored>(
+            `SELECT c.id,c.path,c.line_start AS "lineStart",c.line_end AS "lineEnd",c.symbol,c.language,c.body AS text,c.content_hash AS "contentHash",c.parser_version AS "parserVersion"${needsVectors ? ',c.vector_json' : ''} FROM zorya_code_chunks c WHERE c.snapshot_id=$1 ORDER BY c.path,c.line_start LIMIT $2`,
+            [snapshot.snapshot, limits.maxScanChunks + 1],
+          )
+        ).rows
+    if (!scope && corpus.length > limits.maxScanChunks)
       throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
-    const filtered = rows.rows.filter(
+    const filtered = corpus.filter(
       (row) =>
         (!input.language || row.language === input.language) &&
         (!input.paths?.length ||
@@ -786,12 +862,15 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ...(degradedReason ? { degradedReason } : {}),
       },
     }))
-    const after = await current(input.root, input.signal)
-    if (after.snapshot !== snapshot.snapshot)
-      throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+    if (scope) assertReadScope(scope, input.root, input.signal!)
+    else {
+      const after = await current(input.root, input.signal)
+      if (after.snapshot !== snapshot.snapshot)
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+    }
     return {
       hits,
-      identity: snapshot.identity,
+      identity: structuredClone(snapshot.identity),
       degraded: Boolean(degradedReason),
       degradedReason: degradedReason ?? null,
     }
@@ -799,9 +878,13 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const searchCode: CodeIndex['searchCode'] = (input) =>
     own(input.signal, (signal) => searchCodeInner({ ...input, signal }))
 
-  const readSourceInner: CodeIndex['readSource'] = async (input) => {
+  const readSourceInner: (
+    input: Parameters<CodeIndex['readSource']>[0],
+    scope?: ReadScope,
+  ) => ReturnType<CodeIndex['readSource']> = async (input, scope) => {
     checkAbort(input.signal)
-    const before = await current(input.root, input.signal)
+    if (scope) assertReadScope(scope, input.root, input.signal!)
+    const before = scope?.snapshot ?? (await current(input.root, input.signal))
     if (input.snapshotId && input.snapshotId !== before.snapshot)
       throw new CodeIndexError('CODE_INDEX_SNAPSHOT_MISMATCH')
     const currentFile = await readScopedFile(
@@ -831,9 +914,12 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     )
       throw new CodeIndexError('CODE_INDEX_LINE_RANGE_INVALID')
     const text = lines.slice(start - 1, end).join('\n')
-    const after = await current(input.root, input.signal)
-    if (after.snapshot !== before.snapshot)
-      throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_READ')
+    if (scope) assertReadScope(scope, input.root, input.signal!)
+    else {
+      const after = await current(input.root, input.signal)
+      if (after.snapshot !== before.snapshot)
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_READ')
+    }
     return {
       path: input.path.replaceAll('\\', '/'),
       lineStart: start,
@@ -847,8 +933,12 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const readSource: CodeIndex['readSource'] = (input) =>
     own(input.signal, (signal) => readSourceInner({ ...input, signal }))
 
-  const relatedCodeInner: CodeIndex['relatedCode'] = async (input) => {
-    const snapshot = await current(input.root, input.signal)
+  const relatedCodeInner: (
+    input: Parameters<CodeIndex['relatedCode']>[0],
+    scope?: ReadScope,
+  ) => ReturnType<CodeIndex['relatedCode']> = async (input, scope) => {
+    if (scope) assertReadScope(scope, input.root, input.signal ?? scope.signal)
+    const snapshot = scope?.snapshot ?? (await current(input.root, input.signal))
     if (
       !input.path ||
       input.path.length > 1024 ||
@@ -878,22 +968,25 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         .split('/')
         .at(-1)!
         .replace(/\.[^.]+$/u, '')
-    const found = await searchCode({
+    const found = await searchCodeInner({
       root: input.root,
       query,
       limit: input.limit ?? 8,
       mode: 'lexical',
       ...(input.signal ? { signal: input.signal } : {}),
       paths: [],
-    })
+    }, scope)
     if (found.identity.snapshotId !== snapshot.snapshot)
       throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
-    const after = await current(input.root, input.signal)
-    if (after.snapshot !== snapshot.snapshot)
-      throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+    if (scope) assertReadScope(scope, input.root, input.signal ?? scope.signal)
+    else {
+      const after = await current(input.root, input.signal)
+      if (after.snapshot !== snapshot.snapshot)
+        throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+    }
     const similar = found.hits.filter((hit) => hit.path !== canonicalPath)
     return {
-      identity: snapshot.identity,
+      identity: structuredClone(snapshot.identity),
       imports: imports.rows.map((row) => row.to_path),
       importedBy: importedBy.rows.map((row) => row.from_path),
       similar,
@@ -902,6 +995,101 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   }
   const relatedCode: CodeIndex['relatedCode'] = (input) =>
     own(input.signal, (signal) => relatedCodeInner({ ...input, signal }))
+
+  const withReadSnapshot: NonNullable<CodeIndex['withReadSnapshot']> = (
+    inputRoot,
+    callerSignal,
+    work,
+  ) =>
+    own(callerSignal, async (signal) => {
+      const snapshot = await current(inputRoot, signal)
+      const controller = new AbortController()
+      const scopeSignal = AbortSignal.any([signal, controller.signal])
+      const scope: ReadScope = {
+        root: snapshot.identity.root,
+        snapshot,
+        signal: scopeSignal,
+        rowsHaveVectors: false,
+        active: new Set(),
+        controller,
+        closing: false,
+        closed: false,
+      }
+      const invoke = <T>(
+        callerOperationSignal: AbortSignal | undefined,
+        operation: (ownedSignal: AbortSignal, canonicalRoot: string) => Promise<T>,
+        root: string,
+      ): Promise<T> => {
+        if (scope.closed || scope.closing) return Promise.reject(new CodeIndexError('CODE_INDEX_STALE'))
+        const parentSignal = callerOperationSignal
+          ? AbortSignal.any([scopeSignal, callerOperationSignal])
+          : scopeSignal
+        let pending: Promise<T>
+        try {
+          pending = own(parentSignal, async (ownedSignal) => {
+            const canonicalRoot = await canonicalScopeRoot(scope, root, ownedSignal)
+            return operation(ownedSignal, canonicalRoot)
+          })
+        } catch (error) {
+          return Promise.reject(error)
+        }
+        scope.active.add(pending)
+        void pending.finally(() => scope.active.delete(pending)).catch(() => {})
+        return pending
+      }
+      const scoped = Object.freeze({
+        indexStatus: (root: string, operationSignal?: AbortSignal) =>
+          invoke(operationSignal, async () =>
+            structuredClone(
+              statusFrom(
+                scope.snapshot.identity,
+                scope.snapshot.indexedAt,
+                scope.snapshot.fileCount,
+                scope.snapshot.chunkCount,
+                scope.snapshot.profileId,
+                denseReason(scope.snapshot.profileId, true, profileId),
+                profileId,
+              ),
+            ), root),
+        searchCode: (input: Parameters<CodeIndex['searchCode']>[0]) =>
+          invoke(input.signal, (ownedSignal, canonicalRoot) =>
+            searchCodeInner({ ...input, root: canonicalRoot, signal: ownedSignal }, scope), input.root),
+        readSource: (input: Parameters<CodeIndex['readSource']>[0]) =>
+          invoke(input.signal, (ownedSignal, canonicalRoot) =>
+            readSourceInner({ ...input, root: canonicalRoot, signal: ownedSignal }, scope), input.root),
+        relatedCode: (input: Parameters<CodeIndex['relatedCode']>[0]) =>
+          invoke(input.signal, (ownedSignal, canonicalRoot) =>
+            relatedCodeInner({ ...input, root: canonicalRoot, signal: ownedSignal }, scope), input.root),
+      })
+      try {
+        const result = await work(scoped)
+        scope.closing = true
+        await Promise.allSettled([...scope.active])
+        checkAbort(scopeSignal)
+        const canonicalRoot = await realpath(resolve(inputRoot))
+        if (canonicalRoot !== scope.root)
+          throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+        const after = await current(scope.root, scopeSignal)
+        if (
+          after.identity.root !== snapshot.identity.root ||
+          after.snapshot !== snapshot.snapshot
+        )
+          throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+        return result
+      } catch (error) {
+        scope.closing = true
+        controller.abort(error)
+        await Promise.allSettled([...scope.active])
+        throw error
+      } finally {
+        scope.closing = true
+        await Promise.allSettled([...scope.active])
+        scope.closed = true
+        delete scope.rows
+        delete scope.rowsLoading
+        delete scope.vectorRowsLoading
+      }
+    })
 
   const watchRepositoryInner: CodeIndex['watchRepository'] = async (root, watchOptions = {}) => {
     ensureOpen()
@@ -960,6 +1148,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     indexStatus,
     readSource,
     relatedCode,
+    withReadSnapshot,
     watchRepository,
     close() {
       if (closing) return closing

@@ -41,6 +41,9 @@ export function createLifecycle(maxConcurrency: number) {
       const operation = Promise.resolve().then(() => {
         signal.throwIfAborted()
         return work(signal)
+      }).catch((error: unknown) => {
+        if (signal.aborted) throw signal.reason
+        throw error
       })
       operations.set(controller, operation)
       operation

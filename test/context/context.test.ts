@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createCodeContext, CodeContextError } from '../../src/context/index.js'
-import { OperationLimitError } from '../../src/context/lifecycle.js'
+import { OperationLimitError, OperationTimeoutError } from '../../src/context/lifecycle.js'
 import type { CodeIndex, CodeHit, CodeSourceIdentity } from '../../src/code/types.js'
 import { createWebSearch } from '../../src/context/web.js'
 import { createClassificationTool } from '../../src/context/classify.js'
@@ -606,8 +606,17 @@ test('real CodeIndex accepts path-only mandatory context and fuses same-snapshot
   )
   execFileSync('git', ['-C', root, 'add', '-A'])
   execFileSync('git', ['-C', root, 'commit', '-qm', 'context fixture'])
-  const index = createCodeIndex({ database: db })
+  const corpusReads: string[] = []
+  const countingDatabase = {
+    query: (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM zorya_code_chunks c WHERE c.snapshot_id=$1')) corpusReads.push(sql)
+      return db.query(sql, params)
+    },
+    transaction: db.transaction.bind(db),
+  }
+  const index = createCodeIndex({ database: countingDatabase as typeof db })
   const indexed = await index.indexRepository({ root })
+  corpusReads.length = 0
   const context = createCodeContext({ index, limits: { maxRangeLines: 1 } })
   const result = await context.getCodeContext({
     root,
@@ -615,6 +624,8 @@ test('real CodeIndex accepts path-only mandatory context and fuses same-snapshot
     featureQueries: ['betaFeatureNeedle'],
     mustInclude: [{ path: 'alpha.ts' }],
   })
+  assert.equal(corpusReads.length, 1, 'the context snapshot reads its chunk corpus once')
+  assert.equal(corpusReads[0]?.includes('vector_json'), false, 'lexical context omits unused vectors')
   assert.equal(result.identity.snapshotId, indexed.identity?.snapshotId)
   assert.ok(result.sections.some((section) => section.path === 'alpha.ts'))
   assert.ok(result.sections.some((section) => section.path === 'beta.ts'))
@@ -623,6 +634,15 @@ test('real CodeIndex accepts path-only mandatory context and fuses same-snapshot
   assert.equal(result.profileId, indexed.profileId)
   assert.equal(result.sections.filter((section) => section.path === 'alpha.ts').length, 1)
   assert.deepEqual((await context.relatedCode({ root, path: 'alpha.ts' })).importedBy, ['beta.ts'])
+  let retainedScope: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> | undefined
+  await index.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    retainedScope = scoped
+    void scoped.searchCode({ root, query: 'alphaFeatureNeedle', mode: 'lexical' })
+  })
+  await assert.rejects(
+    retainedScope!.searchCode({ root, query: 'alphaFeatureNeedle', mode: 'lexical' }),
+    (error: unknown) => error instanceof Error && error.message === 'CODE_INDEX_STALE',
+  )
   await context.close()
   await index.close()
 })
@@ -655,6 +675,53 @@ test('code context caps concurrent work, rejects pre-aborted calls before borrow
   await assert.rejects(running)
   await closing
   assert.equal(activeSignal?.aborted, true)
+})
+
+test('context deadline retains timeout provenance after provider cancellation settles', async () => {
+  const index = fakeIndex()
+  let physicallySettled = false
+  index.searchCode = async (input) =>
+    new Promise((_, reject) => {
+      input.signal?.addEventListener(
+        'abort',
+        () => setTimeout(() => {
+          physicallySettled = true
+          reject(new Error('provider_cancel'))
+        }, 5),
+        { once: true },
+      )
+    })
+  const context = createCodeContext({ index, limits: { timeoutMs: 1 } })
+  await assert.rejects(
+    context.getCodeContext({ root: '/repo', query: 'deadline' }),
+    (error: unknown) => error instanceof OperationTimeoutError,
+  )
+  assert.equal(physicallySettled, true)
+  await context.close()
+})
+
+test('caller cancellation keeps precedence over a later context deadline while physical work settles', async () => {
+  const index = fakeIndex()
+  let physicallySettled = false
+  index.searchCode = async (input) =>
+    new Promise((_, reject) => {
+      input.signal?.addEventListener(
+        'abort',
+        () => setTimeout(() => {
+          physicallySettled = true
+          reject(new Error('late provider cancellation'))
+        }, 35),
+        { once: true },
+      )
+    })
+  const context = createCodeContext({ index, limits: { timeoutMs: 15 } })
+  const caller = new AbortController()
+  const callerReason = new Error('caller cancelled first')
+  const pending = context.getCodeContext({ root: '/repo', query: 'caller-first', signal: caller.signal })
+  setTimeout(() => caller.abort(callerReason), 2)
+  await assert.rejects(pending, (error: unknown) => error === callerReason)
+  assert.equal(physicallySettled, true)
+  await context.close()
 })
 
 test('web lifecycle snapshots its borrowed adapter and joins all in-flight fetches on close', async () => {
