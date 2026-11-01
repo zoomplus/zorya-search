@@ -128,6 +128,7 @@ export async function persistSymbolAnalysis(
       values,
     )
   }
+  await tx.exec('ANALYZE zorya_code_symbols')
   for (let offset = 0; offset < result.references.length; offset += 64) {
     signal?.throwIfAborted()
     const batch = result.references.slice(offset, offset + 64)
@@ -206,6 +207,8 @@ export async function publishSymbolRefresh(
     await validateSource?.()
     signal?.throwIfAborted()
     await persistSymbolAnalysis(tx, snapshotId, result, profile, signal)
+    await validateSource?.()
+    signal?.throwIfAborted()
     await tx.query(
       `UPDATE zorya_code_analysis_state SET current_profile_id=$3,updated_at=now()
        WHERE worktree_id=$1 AND snapshot_id=$2 AND generation=$4`,
