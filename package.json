@@ -70,7 +70,7 @@
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --test-concurrency=2 --import tsx --test test/**/*.test.ts",
     "test:node24": "node scripts/test-node24.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },

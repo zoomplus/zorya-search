@@ -23,7 +23,7 @@ if (nodeMajor !== 24) {
   let runnerFailed = false;
   const stream = run({
     globPatterns: ["test/**/*.test.ts"],
-    concurrency: true,
+    concurrency: 2,
     isolation: "process",
     execArgv: [
       "--wasm-wrapper-tiering-budget=1000000000",

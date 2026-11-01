@@ -1356,6 +1356,25 @@ test('Brave PDF reading is lazy, bounded, cancellable, and extracts actual text'
   assert.equal(doc.publishedAt, null);
   assert.equal(doc.sourceUpdatedAt, null);
 
+  const timeoutWeb = createBraveWebSource({
+    limits: { timeoutMs: 20, attempts: 1 },
+    loader: async (url) => {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+        body: Buffer.from('%PDF-1.7\n'),
+        url,
+      };
+    },
+  });
+  await assert.rejects(
+    timeoutWeb.fetchDocument('https://example.org/slow.pdf', new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'timeout',
+  );
+
   const malformed = createBraveWebSource({
     loader: async (url) => ({
       status: 200,

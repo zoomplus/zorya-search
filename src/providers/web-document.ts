@@ -426,15 +426,19 @@ export async function parsePdfDocument(
   fallbackTitle: string,
   signal: AbortSignal,
 ): Promise<ParsedWebDocument> {
-  if (signal.aborted) throw new ProviderError('cancel')
+  const abortReason = (): ProviderError => signal.reason instanceof ProviderError
+    ? signal.reason
+    : new ProviderError('cancel')
+  if (signal.aborted) throw abortReason()
 
   let pdfjs: typeof import('pdfjs-dist/legacy/build/pdf.mjs')
   try {
     pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   } catch {
+    if (signal.aborted) throw abortReason()
     throw new ProviderError('unavailable')
   }
-  if (signal.aborted) throw new ProviderError('cancel')
+  if (signal.aborted) throw abortReason()
 
   const loadingTask = pdfjs.getDocument({
     data: Uint8Array.from(bytes),
@@ -456,18 +460,22 @@ export async function parsePdfDocument(
   signal.addEventListener('abort', cancel, { once: true })
   if (signal.aborted) cancel()
 
+  let completed = false
   try {
-    if (signal.aborted) throw new ProviderError('cancel')
+    if (signal.aborted) throw abortReason()
     const document = await loadingTask.promise
+    if (signal.aborted) throw abortReason()
     if (document.numPages > 100) throw new ProviderError('budget')
 
     const pageTexts: string[] = []
     let totalCharacters = 0
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      if (signal.aborted) throw new ProviderError('cancel')
+      if (signal.aborted) throw abortReason()
       const page = await document.getPage(pageNumber)
       try {
+        if (signal.aborted) throw abortReason()
         const content = await page.getTextContent()
+        if (signal.aborted) throw abortReason()
         const text = content.items.map((item) => {
           if (!('str' in item)) return ''
           return item.str + (item.hasEOL ? '\n' : ' ')
@@ -479,12 +487,14 @@ export async function parsePdfDocument(
         page.cleanup()
       }
     }
-    if (signal.aborted) throw new ProviderError('cancel')
+    if (signal.aborted) throw abortReason()
     const metadata = await document.getMetadata().catch(() => null)
+    if (signal.aborted) throw abortReason()
     const info = metadata?.info as Record<string, unknown> | undefined
     const documentTitle = typeof info?.Title === 'string' ? info.Title.trim() : ''
     const text = pageTexts.join('\n\n')
     if (!text.trim()) throw new ProviderError('malformed')
+    completed = true
     return {
       title: boundedTitle(documentTitle || fallbackTitle),
       text,
@@ -493,9 +503,10 @@ export async function parsePdfDocument(
     }
   } catch (error) {
     if (error instanceof ProviderError) throw error
-    throw new ProviderError(signal.aborted ? 'cancel' : 'malformed')
+    throw signal.aborted ? abortReason() : new ProviderError('malformed')
   } finally {
     signal.removeEventListener('abort', cancel)
     await destroyTask().catch(() => undefined)
+    if (completed && signal.aborted) throw abortReason()
   }
 }
