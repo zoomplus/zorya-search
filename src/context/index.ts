@@ -1,5 +1,6 @@
 import type { CodeHit, CodeIndex, CodeSourceIdentity, CodeDependencyGraph } from '../code/types.js'
 import { createLifecycle } from './lifecycle.js'
+import { codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from '../code/filters.js'
 
 export interface CodeContextLimits {
   maxQueryChars: number
@@ -35,6 +36,8 @@ export interface CodeContextRequest {
   featureQueries?: string[]
   mustInclude?: RequiredCodeRange[]
   includeRelated?: boolean
+  language?: string
+  sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
   relatedDepth?: number
   relatedMaxPaths?: number
   maxChars?: number
@@ -116,8 +119,18 @@ export function createCodeContext(options: {
 
   return {
     getCodeContext(input: CodeContextRequest): Promise<CodeContextResult> {
-      const request = freezeRequest(input)
-      validateRequest(request, limits)
+      const frozenRequest = freezeRequest(input)
+      validateRequest(frozenRequest, limits)
+      const request = Object.freeze({
+        ...frozenRequest,
+        ...(frozenRequest.language === undefined ? {} : { language: normalizeCodeLanguage(frozenRequest.language) }),
+        ...(frozenRequest.sourceKind === undefined ? {} : { sourceKind: normalizeSourceKind(frozenRequest.sourceKind) }),
+      })
+      const languageFilter = request.language
+      const sourceKindFilter = request.sourceKind
+      const matchesRequestedHit = (hit: CodeHit) =>
+        codeLanguageMatches(hit.language, languageFilter) &&
+        codeSourceKindMatches(hit.path, sourceKindFilter)
       return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
         const run = async (
           operationIndex: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
@@ -139,6 +152,8 @@ export function createCodeContext(options: {
                 query,
                 limit: request.limit ?? Math.min(12, limits.maxLimit),
                 mode: 'hybrid',
+                ...(request.language === undefined ? {} : { language: request.language }),
+                ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
                 signal,
               }),
             )
@@ -167,6 +182,7 @@ export function createCodeContext(options: {
           >()
           lists.forEach((list, queryIndex) =>
             list.hits.forEach((hit, rank) => {
+              if (!matchesRequestedHit(hit)) return
               const key = `${hit.path}:${hit.lineStart}:${hit.lineEnd}`
               const prior = ranked.get(key) ?? { hit, origins: [], score: 0 }
               prior.origins.push({
@@ -500,11 +516,14 @@ export function createCodeContext(options: {
                     paths: pathSet,
                     limit: Math.min(request.limit ?? 8, 8),
                     mode: 'hybrid',
+                    ...(request.language === undefined ? {} : { language: request.language }),
+                    ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
                     signal,
                   }))
                   assertIdentity(identity, [related.identity])
                   if (related.degradedReason) relatedDegradedReasons.push(related.degradedReason)
                   related.hits.forEach((hit, rank) => {
+                    if (!matchesRequestedHit(hit)) return
                     const graphNode = graph.nodes.find((node) => node.path === hit.path)
                     const origin: CodeContextRankOrigin = {
                       source: 'related', relatedKind: 'dependency',
@@ -553,6 +572,7 @@ export function createCodeContext(options: {
               if (related.stale) throw new CodeContextError('STALE_SNAPSHOT')
               assertIdentity(identity, [related.identity])
               related.similar.forEach((hit, rank) => {
+                if (!matchesRequestedHit(hit)) return
                 const origin: CodeContextRankOrigin = {
                   source: 'related', relatedKind: 'similar', relatedSeed: candidate,
                   queryIndex: null, rank: rank + 1, mode: hit.ranking.mode,
@@ -660,6 +680,12 @@ function validateRequest(input: CodeContextRequest, limits: CodeContextLimits): 
     throw new CodeContextError('LIMIT')
   if (input.includeRelated !== undefined && typeof input.includeRelated !== 'boolean')
     throw new CodeContextError('LIMIT')
+  try {
+    normalizeCodeLanguage(input.language)
+    normalizeSourceKind(input.sourceKind)
+  } catch {
+    throw new CodeContextError('LIMIT')
+  }
   if ((input.relatedDepth !== undefined || input.relatedMaxPaths !== undefined) && input.includeRelated !== true)
     throw new CodeContextError('LIMIT')
   if (input.relatedDepth !== undefined && (!Number.isInteger(input.relatedDepth) || input.relatedDepth < 1 || input.relatedDepth > 4))

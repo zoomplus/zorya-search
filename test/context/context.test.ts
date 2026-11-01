@@ -35,6 +35,7 @@ function fakeIndex(
     profileId?: string
     metrics?: { reads: number; related: number }
     similar?: CodeHit[]
+    searchHits?: CodeHit[]
   } = {},
 ) {
   let statusCalls = 0
@@ -69,7 +70,7 @@ function fakeIndex(
       denseDisabledReason: null,
     }),
     searchCode: async ({ query }: { query: string }) => ({
-      hits: query.includes('feature') ? [hit('b.ts', 3)] : [hit('a.ts', 2), hit('b.ts', 3)],
+      hits: opts.searchHits ?? (query.includes('feature') ? [hit('b.ts', 3)] : [hit('a.ts', 2), hit('b.ts', 3)]),
       identity,
       degraded: false,
       degradedReason: null,
@@ -136,6 +137,42 @@ test('code context fuses feature queries, merges overlapping ranges and keeps ha
   assert.equal(result.sections.find((x) => x.path === 'a.ts')?.candidateChunkHash, 'chunk-a.ts')
   assert.ok(result.sections.some((x) => x.path === 'b.ts'))
   assert.ok(result.budget.usedChars <= result.budget.maxChars)
+  await context.close()
+})
+
+test('code context enforces source-kind filters on legacy adapters that ignore search fields', async () => {
+  const context = createCodeContext({ index: fakeIndex() })
+  const filtered = await context.getCodeContext({ root: '/repo', query: 'base', sourceKind: 'documentation' })
+  assert.deepEqual(filtered.sections, [])
+  const explicit = await context.getCodeContext({
+    root: '/repo', query: 'base', sourceKind: 'documentation',
+    mustInclude: [{ path: 'docs/README.md', lineStart: 1, lineEnd: 1 }],
+  })
+  assert.deepEqual(explicit.sections.map((section) => [section.path, section.reason]), [['docs/README.md', 'mandatory']])
+  await context.close()
+})
+
+test('legacy context filtering excludes documentation and preserves original primary and similar ranks', async () => {
+  const makeHit = (path: string): CodeHit => ({
+    id: path, path, lineStart: 1, lineEnd: 1, symbol: null, language: 'ts',
+    contentHash: `chunk-${path}`, repoId: identity.repoId, worktreeId: identity.worktreeId,
+    branch: identity.branch, head: identity.head, snapshotId: identity.snapshotId,
+    profileId: null, score: 1,
+    ranking: { mode: 'lexical', lexicalRank: 1, denseRank: null, rerankRank: null },
+  })
+  const context = createCodeContext({ index: fakeIndex({
+    searchHits: [makeHit('docs/README.md'), makeHit('src/main.ts')],
+    similar: [makeHit('docs/related.md'), makeHit('src/related.ts')],
+  }) })
+  const result = await context.getCodeContext({
+    root: '/repo', query: 'base', sourceKind: 'implementation', includeRelated: true,
+  })
+  assert.ok(result.sections.every((section) => !section.path.startsWith('docs/')))
+  const primary = result.sections.find((section) => section.path === 'src/main.ts')
+  assert.equal(primary?.rankOrigins.find((origin) => origin.source === 'query')?.rank, 2)
+  const similar = result.sections.find((section) => section.path === 'src/related.ts')
+  assert.equal(similar?.rankOrigins.find((origin) => origin.relatedKind === 'similar')?.rank, 2)
+  assert.equal(similar?.rankOrigins.find((origin) => origin.relatedKind === 'similar')?.source, 'related')
   await context.close()
 })
 
@@ -262,6 +299,7 @@ test('related graph bounds require explicit opt-in and honor the maximum depth',
 test('dependency graph context ranks reached paths with filtered search and exposes observed edges', async () => {
   const index = fakeIndex()
   const seed = (await index.searchCode({ root: '/repo', query: 'base', limit: 1 })).hits[0]!
+  const documentation = { ...seed, id: 'docs.md:1', path: 'docs/readme.md', language: 'md' }
   const target = { ...seed, id: 'impl.ts:9', path: 'impl.ts', lineStart: 9, lineEnd: 9, contentHash: 'impl-chunk' }
   const similar = { ...target, id: 'helper.ts:4', path: 'helper.ts', lineStart: 4, lineEnd: 4 }
   index.dependencyGraph = async ({ seeds }: { seeds: string[] }) => ({
@@ -270,23 +308,25 @@ test('dependency graph context ranks reached paths with filtered search and expo
     edges: [{ from: seeds[0]!, to: 'impl.ts', direction: 'imports' }], limits: { depth: false, nodes: false, edges: false },
   })
   index.searchCode = async (input: { paths?: string[] }) => ({
-    hits: input.paths?.includes('impl.ts') ? [target] : [seed], identity,
+    hits: input.paths?.includes('impl.ts') ? [documentation, target] : [documentation, seed], identity,
     degraded: Boolean(input.paths?.includes('impl.ts')),
     degradedReason: input.paths?.includes('impl.ts') ? 'filtered-profile-unavailable' : null,
   })
-  index.relatedCode = async () => ({ identity, imports: [], importedBy: [], similar: [similar], stale: false })
+  index.relatedCode = async () => ({ identity, imports: [], importedBy: [], similar: [documentation, similar], stale: false })
   const context = createCodeContext({ index })
-  const result = await context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true, sourceKind: 'implementation' })
   assert.equal(result.relatedGraph?.status, 'available')
   assert.deepEqual(result.relatedGraph?.graph?.edges, [{ from: 'a.ts', to: 'impl.ts', direction: 'imports' }])
+  assert.ok(result.sections.every((item) => !item.path.startsWith('docs/')))
   const section = result.sections.find((item) => item.path === 'impl.ts')
   assert.equal(section?.reason, 'related')
   assert.equal(section?.rankOrigins[0]?.source, 'related')
   assert.equal(section?.rankOrigins[0]?.relatedKind, 'dependency')
-  assert.equal(section?.rankOrigins[0]?.rank, 1)
+  assert.equal(section?.rankOrigins[0]?.rank, 2)
   const similarSection = result.sections.find((item) => item.path === 'helper.ts')
   assert.equal(similarSection?.rankOrigins[0]?.relatedKind, 'similar')
   assert.equal(similarSection?.rankOrigins[0]?.relatedSeed, 'a.ts')
+  assert.equal(similarSection?.rankOrigins[0]?.rank, 2)
   assert.deepEqual(result.degradedReasons, ['filtered-profile-unavailable'])
   await context.close()
 })

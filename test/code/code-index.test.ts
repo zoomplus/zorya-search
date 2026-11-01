@@ -149,6 +149,97 @@ test('exact symbol queries put AST declarations first while retaining usages and
   await code.close()
 })
 
+test('read-scope prepared corpus survives narrower path searches without retokenizing', async () => {
+  const root = await repository()
+  await mkdir(join(root, 'src'), { recursive: true })
+  await writeFile(join(root, 'src', 'first.ts'), 'export const cacheSharedNeedleFirst = 1\n')
+  await writeFile(join(root, 'src', 'second.ts'), 'export const cacheSharedNeedleSecond = 2\n')
+  await commit(root, 'scoped cache fixture')
+  const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-cache-'))
+  roots.push(dataDir)
+  const database = await openEmbeddedDatabase(dataDir)
+  databases.push(database)
+  let textReads = 0
+  const countedDatabase: QueryableDatabase = {
+    query: async <T>(sql: string, params?: readonly unknown[]) => {
+      const result = await database.query<T>(sql, params)
+      if (!sql.includes('FROM zorya_code_chunks c WHERE c.snapshot_id=$1')) return result
+      return {
+        ...result,
+        rows: result.rows.map((row) => {
+          const copy = { ...row }
+          const text = (row as { text?: unknown }).text
+          return Object.defineProperty(copy, 'text', {
+            enumerable: true,
+            get() { textReads++; return text },
+          }) as T
+        }),
+      }
+    },
+    exec: database.exec.bind(database),
+    transaction: database.transaction.bind(database),
+  }
+  const code = trackCodeIndex(createCodeIndex({ database: countedDatabase }))
+  await code.indexRepository({ root })
+  await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    const full = await scoped.searchCode({ root, query: 'cacheSharedNeedle', mode: 'lexical', limit: 10 })
+    assert.equal(full.hits.length, 2)
+    const initialTextReads = textReads
+    const narrow = await scoped.searchCode({ root, query: 'cacheSharedNeedle', mode: 'lexical', paths: ['src/first.ts'], limit: 10 })
+    assert.equal(narrow.hits.length, 1)
+    assert.equal(narrow.hits[0]?.path, 'src/first.ts')
+    assert.equal(textReads, initialTextReads)
+    const repeated = await scoped.searchCode({ root, query: 'cacheSharedNeedle', mode: 'lexical', paths: ['src/first.ts'], limit: 10 })
+    assert.deepEqual(repeated, narrow)
+    assert.equal(textReads, initialTextReads)
+    const fullAgain = await scoped.searchCode({ root, query: 'cacheSharedNeedle', mode: 'lexical', limit: 10 })
+    assert.deepEqual(fullAgain, full)
+    assert.equal(textReads, initialTextReads)
+  })
+})
+
+test('named language aliases and source kinds filter real indexed chunks with compatibility defaults', async () => {
+  const root = await repository()
+  await mkdir(join(root, 'src'), { recursive: true })
+  await mkdir(join(root, 'test'), { recursive: true })
+  await mkdir(join(root, 'docs'), { recursive: true })
+  await writeFile(join(root, 'src', 'implementation.ts'), 'export const sharedMarkerTs = 1\n')
+  await writeFile(join(root, 'src', 'implementation.tsx'), 'export const sharedMarkerTsx = 1\n')
+  await writeFile(join(root, 'src', 'config.json'), '{"sharedMarkerConfig":true}\n')
+  await writeFile(join(root, 'test', 'feature.test.ts'), 'export const sharedMarkerTest = 1\n')
+  await writeFile(join(root, 'docs', 'README.md'), '# sharedMarkerDocs\n')
+  await commit(root, 'source filter fixture')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+
+  const all = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', limit: 20 })
+  assert.deepEqual(new Set(all.hits.map((hit) => hit.path)), new Set([
+    'src/implementation.ts', 'src/implementation.tsx', 'src/config.json', 'test/feature.test.ts', 'docs/README.md',
+  ]))
+  const implementation = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', sourceKind: 'implementation', limit: 20 })
+  assert.deepEqual(new Set(implementation.hits.map((hit) => hit.path)), new Set(['src/implementation.ts', 'src/implementation.tsx', 'src/config.json']))
+  const tests = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', sourceKind: 'tests', limit: 20 })
+  assert.deepEqual(tests.hits.map((hit) => hit.path), ['test/feature.test.ts'])
+  const documentation = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', sourceKind: 'documentation', limit: 20 })
+  assert.deepEqual(documentation.hits.map((hit) => hit.path), ['docs/README.md'])
+  const named = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: ' TypeScript ', limit: 20 })
+  assert.deepEqual(new Set(named.hits.map((hit) => hit.path)), new Set(['src/implementation.ts', 'src/implementation.tsx', 'test/feature.test.ts']))
+  assert.ok(named.hits.every((hit) => ['ts', 'tsx'].includes(hit.language)))
+  assert.ok(named.hits.length > 0)
+  const exactExtension = await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: 'ts', limit: 20 })
+  assert.ok(exactExtension.hits.length > 0)
+  assert.ok(exactExtension.hits.every((hit) => hit.language === 'ts'))
+  assert.ok(exactExtension.hits.some((hit) => hit.path === 'src/implementation.ts'))
+  assert.ok(!exactExtension.hits.some((hit) => hit.path.endsWith('.tsx')))
+  assert.equal((await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: 'json' })).hits[0]?.path, 'src/config.json')
+  assert.deepEqual((await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: ' JSON ' })).hits, [])
+  assert.deepEqual((await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: 'rust' })).hits, [])
+  assert.deepEqual((await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: 'constructor' })).hits, [])
+  assert.deepEqual((await code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: '__proto__' })).hits, [])
+  await assert.rejects(code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', language: '  ' }), { code: 'CODE_INDEX_LANGUAGE_FILTER_INVALID' })
+  await assert.rejects(code.searchCode({ root, query: 'sharedMarker', mode: 'lexical', sourceKind: 'unknown' as never }), { code: 'CODE_INDEX_SOURCE_KIND_INVALID' })
+})
+
 test('exact declarations survive hybrid candidate caps and adversarial reranking', async () => {
   const root = await repository()
   await writeFile(join(root, 'usage.ts'), `export function chatter() { return ${'hybridTarget + '.repeat(24)}0 }\n`)
@@ -377,6 +468,9 @@ test('read snapshots preserve dense results, rerank inputs, cancellation ownersh
     { root, query: 'sharedNeedle', mode: 'lexical' as const, paths: ['first.ts'], limit: 8 },
     { root, query: 'sharedNeedle', mode: 'lexical' as const, language: 'typescript', limit: 8 },
     { root, query: 'sharedNeedle', mode: 'lexical' as const, paths: ['missing.ts'], limit: 8 },
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, sourceKind: 'implementation' as const, language: 'typescript', limit: 8 },
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, sourceKind: 'tests' as const, limit: 8 },
+    { root, query: 'sharedNeedle', mode: 'lexical' as const, sourceKind: 'documentation' as const, limit: 8 },
   ]
   const scopedFiltered = await code.withReadSnapshot!(
     root,

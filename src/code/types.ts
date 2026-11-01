@@ -80,6 +80,7 @@ export interface CodeSearchInput {
   query: string
   paths?: string[]
   language?: string
+  sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
   limit?: number
   mode?: 'lexical' | 'hybrid'
   signal?: AbortSignal

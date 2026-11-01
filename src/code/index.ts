@@ -33,6 +33,7 @@ import {
 } from './ranking.js'
 import { watchCodeRoot } from './watch.js'
 import { walkDependencyGraph } from './dependency-graph.js'
+import { codeFilterCacheKey, codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from './filters.js'
 
 const DEFAULT_LIMITS: CodeIndexLimits = {
   maxFiles: 5000,
@@ -666,6 +667,8 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     rowsLoading?: Promise<Stored[]>
     vectorRowsLoading?: Promise<Stored[]>
     lexicalCorpus?: PreparedLexicalCorpus<Stored>
+    lexicalCorpusKey?: string
+    lexicalCorpusBaseKey?: string
     active: Set<Promise<unknown>>
     controller: AbortController
     closing: boolean
@@ -763,8 +766,11 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         ).rows
     if (!scope && corpus.length > limits.maxScanChunks)
       throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
+    const languageFilter = normalizeCodeLanguage(input.language)
+    const sourceKind = normalizeSourceKind(input.sourceKind)
     const matchesFilter = (row: Stored) =>
-      (!input.language || row.language === input.language) &&
+      codeLanguageMatches(row.language, languageFilter) &&
+      codeSourceKindMatches(row.path, sourceKind) &&
       (!input.paths?.length ||
         input.paths.some(
           (path) =>
@@ -773,11 +779,21 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const filtered = corpus.filter(matchesFilter)
     let lexical: ReturnType<typeof rankLexical<Stored>>
     if (scope) {
-      const hasLexicalFilter = Boolean(input.language) || Boolean(input.paths?.length)
-      if (scope.lexicalCorpus || !hasLexicalFilter) {
-        scope.lexicalCorpus ??= prepareLexical(corpus)
-        lexical = rankPreparedLexical(scope.lexicalCorpus, input.query, matchesFilter)
-      } else lexical = rankLexical(filtered, input.query)
+      const filterKey = codeFilterCacheKey(input)
+      const baseFilterKey = codeFilterCacheKey({ ...input, paths: [] })
+      const exactPreparedFilter = scope.lexicalCorpusKey === filterKey
+      const preparedBaseCoversQuery = scope.lexicalCorpusBaseKey === baseFilterKey
+      if (!exactPreparedFilter && !preparedBaseCoversQuery) {
+        scope.lexicalCorpus = prepareLexical(filtered)
+        scope.lexicalCorpusKey = filterKey
+        if (input.paths?.length) delete scope.lexicalCorpusBaseKey
+        else scope.lexicalCorpusBaseKey = baseFilterKey
+      }
+      lexical = rankPreparedLexical(
+        scope.lexicalCorpus!,
+        input.query,
+        exactPreparedFilter ? undefined : matchesFilter,
+      )
     } else lexical = rankLexical(filtered, input.query)
     const lexicalRanks = new Map(lexical.map((item, index) => [item.row.id, index + 1]))
     let denseRanks = new Map<string, number>()
@@ -1253,6 +1269,8 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         delete scope.rowsLoading
         delete scope.vectorRowsLoading
         delete scope.lexicalCorpus
+        delete scope.lexicalCorpusKey
+        delete scope.lexicalCorpusBaseKey
       }
     })
 

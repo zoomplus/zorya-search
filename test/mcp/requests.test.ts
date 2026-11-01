@@ -20,6 +20,12 @@ test('shared MCP/runtime schemas keep owner paths and credentials out of tool in
     searchRequest.safeParse({ rootId: 'repo', query: 'needle', mode: 'lexical' }).success,
     true,
   )
+  assert.equal(searchRequest.safeParse({ rootId: 'repo', query: 'needle', language: 'typescript', sourceKind: 'implementation' }).success, true)
+  assert.equal(searchRequest.safeParse({ rootId: 'repo', query: 'needle', sourceKind: 'unknown' }).success, false)
+  assert.equal(searchRequest.safeParse({ rootId: 'repo', query: 'needle', language: '   ' }).success, false)
+  assert.equal(searchRequest.safeParse({ rootId: 'repo', query: 'needle', language: ' RUST ' }).data?.language, ' RUST ')
+  assert.equal(contextRequest.safeParse({ rootId: 'repo', query: 'needle', language: 'javascript', sourceKind: 'documentation' }).success, true)
+  assert.equal(contextRequest.safeParse({ rootId: 'repo', query: 'needle', sourceKind: 'unknown' }).success, false)
   assert.equal(
     searchRequest.safeParse({ rootId: 'repo', query: 'needle', root: '/etc' }).success,
     false,

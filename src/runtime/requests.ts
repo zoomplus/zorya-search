@@ -12,7 +12,8 @@ export const searchRequest = z
     rootId: idField,
     query: z.string().min(1).max(10_000),
     paths: z.array(z.string().min(1).max(1024)).max(256).optional(),
-    language: z.string().min(1).max(64).optional(),
+    language: z.string().min(1).max(64).refine((value) => Boolean(value.trim())).optional(),
+    sourceKind: z.enum(['implementation', 'tests', 'documentation', 'all']).optional(),
     limit: z.number().int().min(1).max(500).optional(),
     mode: z.enum(['lexical', 'hybrid']).optional(),
   })
@@ -39,6 +40,8 @@ export const contextRequest = z
     rootId: idField,
     query: z.string().min(1).max(2000),
     featureQueries: z.array(z.string().min(1).max(2000)).max(8).optional(),
+    language: z.string().min(1).max(64).refine((value) => Boolean(value.trim())).optional(),
+    sourceKind: z.enum(['implementation', 'tests', 'documentation', 'all']).optional(),
     mustInclude: z
       .array(
         z

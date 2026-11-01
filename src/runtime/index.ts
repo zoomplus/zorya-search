@@ -1031,6 +1031,7 @@ async function createOwnedRuntime(
           query: request.query,
           ...(request.paths === undefined ? {} : { paths: request.paths }),
           ...(request.language === undefined ? {} : { language: request.language }),
+          ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
           ...(request.limit === undefined ? (config.mechanism?.code ? { limit: MECHANISM_RETRIEVAL_PRESETS.code.defaultLimit } : {}) : { limit: request.limit }),
           ...(request.mode === undefined ? {} : { mode: request.mode }),
           signal: operationSignal,
@@ -1068,6 +1069,8 @@ async function createOwnedRuntime(
       rootId: string
       query: string
       featureQueries?: string[]
+      language?: string
+      sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
       mustInclude?: Array<{ path: string; lineStart?: number; lineEnd?: number }>
       includeRelated?: boolean
       relatedDepth?: number
@@ -1085,6 +1088,8 @@ async function createOwnedRuntime(
           ...(request.featureQueries === undefined
             ? {}
             : { featureQueries: request.featureQueries }),
+          ...(request.language === undefined ? {} : { language: request.language }),
+          ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
           ...(request.mustInclude === undefined
             ? {}
             : {
