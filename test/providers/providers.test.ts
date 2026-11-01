@@ -1893,21 +1893,39 @@ test("Brave reader performs a pinned loopback request and settles an aborted in-
   let requestCount = 0;
   let acceptHeader = "";
   let clientClosed = false;
+  let notifySlowStarted!: () => void;
+  const slowStarted = new Promise<void>((resolve) => {
+    notifySlowStarted = resolve;
+  });
   let notifyClientClosed!: () => void;
   const closeObserved = new Promise<void>((resolve) => {
     notifyClientClosed = resolve;
   });
+  const waitForServerSignal = async (signal: Promise<void>, timeoutMs: number, message: string) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        signal,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   const server = createServer((request, response) => {
     requestCount++;
     acceptHeader = String(request.headers.accept ?? "");
     if (request.url === "/slow") {
-      response.writeHead(200, { "content-type": "text/plain" });
-      response.write("partial");
-      response.flushHeaders();
       response.on("close", () => {
         clientClosed = true;
         notifyClientClosed();
       });
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.write("partial");
+      response.flushHeaders();
+      notifySlowStarted();
       return;
     }
     if (request.url === "/redirect") {
@@ -1949,16 +1967,13 @@ test("Brave reader performs a pinned loopback request and settles an aborted in-
     assert.deepEqual(resolvedHosts, ["fixture.invalid", "fixture.invalid"]);
     const controller = new AbortController();
     const pending = web.fetchDocument(`${origin}/slow`, controller.signal);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForServerSignal(slowStarted, 1000, "Timed out waiting for loopback slow request");
     controller.abort();
     await assert.rejects(
       pending,
       (e: unknown) => e instanceof ProviderError && e.code === "cancel",
     );
-    await Promise.race([
-      closeObserved,
-      new Promise((resolve) => setTimeout(resolve, 500)),
-    ]);
+    await waitForServerSignal(closeObserved, 500, "Timed out waiting for loopback client connection close");
     assert.equal(clientClosed, true);
     const timed = createBraveWebSource({
       allowPrivateForTests: true,
