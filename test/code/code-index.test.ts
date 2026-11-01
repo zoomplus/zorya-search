@@ -202,9 +202,89 @@ test('exact symbol promotion keeps first class chunks and overload declarations 
   const classChunks = await code.searchCode({ root, query: 'SplitTarget', mode: 'lexical', limit: 8 })
   const matchedChunks = classChunks.hits.filter((hit) => hit.symbol?.startsWith('SplitTarget'))
   assert.equal(matchedChunks[0]?.symbol, 'SplitTarget')
-  assert.ok(matchedChunks.some((hit) => hit.symbol === 'SplitTarget#2'))
   const boundedClassChunks = await code.searchCode({ root, query: 'SplitTarget', mode: 'lexical', limit: 2 })
   assert.deepEqual(boundedClassChunks.hits.map((hit) => hit.symbol), ['SplitTarget', 'SplitTarget'])
+  assert.deepEqual(
+    boundedClassChunks.hits.map((hit) => hit.path),
+    ['other-class.ts', 'symbols.ts'],
+  )
+  await code.close()
+})
+
+test('exact declaration resolves past a leading comment chunk using current full-file AST source', async () => {
+  const root = await repository()
+  const source = `/*${'leading comment '.repeat(900)}*/\nexport function ExactDeclAfterComment() { return 1 }\n`
+  await writeFile(join(root, 'commented.ts'), source)
+  await commit(root, 'long leading comment fixture')
+  const originalChunks = chunkCode(
+    {
+      path: 'commented.ts',
+      absolutePath: join(root, 'commented.ts'),
+      text: source,
+      hash: '',
+      bytes: Buffer.byteLength(source),
+    },
+    8000,
+  ).chunks
+  const { code } = await index(root, undefined, undefined, { maxChunkChars: 8000 })
+  const indexed = await code.indexRepository({ root })
+
+  const result = await code.searchCode({
+    root,
+    query: 'ExactDeclAfterComment',
+    mode: 'lexical',
+    limit: 1,
+  })
+  assert.equal(result.identity.snapshotId, indexed.identity?.snapshotId)
+  assert.equal(result.hits.length, 1)
+  assert.equal(result.hits[0]?.symbol, 'ExactDeclAfterComment#2')
+  assert.equal(
+    result.hits[0]?.id,
+    originalChunks.find((chunk) => chunk.symbol === 'ExactDeclAfterComment#2')?.id,
+  )
+  assert.ok(result.hits[0]!.lineStart <= 2 && result.hits[0]!.lineEnd >= 2)
+  const declarationLine = await code.readSource({
+    root,
+    path: result.hits[0]!.path,
+    lineStart: 2,
+    lineEnd: 2,
+    snapshotId: result.hits[0]!.snapshotId,
+  })
+  assert.equal(declarationLine.text, 'export function ExactDeclAfterComment() { return 1 }')
+  await code.close()
+})
+
+test('exact declaration resolution refuses a candidate file changed after corpus read', async () => {
+  const root = await repository()
+  const path = join(root, 'changing.ts')
+  await writeFile(path, 'export function ChangingDeclaration() { return 1 }\n')
+  await commit(root, 'source mutation fixture')
+  const dataDir = await mkdtemp(join(tmpdir(), 'zorya-code-db-'))
+  roots.push(dataDir)
+  const rawDatabase = await openEmbeddedDatabase(dataDir)
+  databases.push(rawDatabase)
+  let mutateAfterCorpusRead = false
+  const database: QueryableDatabase = {
+    query: async (sql, values) => {
+      const result = await rawDatabase.query(sql, values)
+      if (mutateAfterCorpusRead && /FROM zorya_code_chunks c WHERE c\.snapshot_id=\$1/iu.test(sql)) {
+        mutateAfterCorpusRead = false
+        await writeFile(path, 'export function ChangingDeclaration() { return 2 }\n')
+      }
+      return result
+    },
+    exec: (sql) => rawDatabase.exec(sql),
+    transaction: (operation, signal) => rawDatabase.transaction(operation, signal),
+  }
+  const code = trackCodeIndex(createCodeIndex({ database }))
+  await code.indexRepository({ root })
+  mutateAfterCorpusRead = true
+
+  await assert.rejects(
+    code.searchCode({ root, query: 'ChangingDeclaration', mode: 'lexical', limit: 1 }),
+    (error: unknown) =>
+      error instanceof CodeIndexError && error.code === 'CODE_INDEX_SOURCE_CHANGED',
+  )
   await code.close()
 })
 

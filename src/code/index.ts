@@ -19,6 +19,7 @@ import {
   CODE_CHUNKER_VERSION,
   CODE_PARSER_VERSION,
   createLocalImportResolver,
+  findTopLevelDeclarationChunks,
 } from './chunker.js'
 import { initializeCodeIndex } from './schema.js'
 import { rankLexical, reciprocalRankFusion } from './ranking.js'
@@ -819,25 +820,62 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const ranked = reciprocalRankFusion(filtered, lexicalRanks, denseRanks)
     const exactQuery = exactDeclarationQuery(input.query)
     const rankedById = exactQuery ? new Map(ranked.map((item) => [item.row.id, item])) : undefined
-    const exactDeclarations = exactQuery
-      ? filtered
-          .filter((row) => isExactDeclarationSymbol(row.symbol, exactQuery))
-          .map((row) => rankedById?.get(row.id) ?? {
-            row,
-            lexicalRank: null,
-            denseRank: null,
-            score: 0,
-          })
-          .sort(
-            (left, right) =>
-              Number(/#\d+$/u.test(left.row.symbol ?? '')) -
-                Number(/#\d+$/u.test(right.row.symbol ?? '')) ||
-              left.row.path.localeCompare(right.row.path) ||
-              left.row.lineStart - right.row.lineStart ||
-              (left.row.symbol ?? '').localeCompare(right.row.symbol ?? '') ||
-              left.row.id.localeCompare(right.row.id),
-          )
+    const exactRows = exactQuery
+      ? filtered.filter((row) => isExactDeclarationSymbol(row.symbol, exactQuery))
       : []
+    const exactRowsByPath = new Map<string, Stored[]>()
+    for (const row of exactRows) {
+      const pathRows = exactRowsByPath.get(row.path) ?? []
+      pathRows.push(row)
+      exactRowsByPath.set(row.path, pathRows)
+    }
+    const exactDeclarations: typeof ranked = []
+    if (exactQuery) {
+      const candidatePaths = [...exactRowsByPath.keys()].sort((left, right) =>
+        left.localeCompare(right),
+      )
+      for (const path of candidatePaths) {
+        checkAbort(input.signal)
+        const currentFile = await readScopedFile(
+          snapshot.identity.root,
+          path,
+          limits.maxFileBytes,
+          input.signal,
+          pathPolicy.excludes,
+        )
+        const storedFile = await database.query<{ content_hash: string }>(
+          'SELECT content_hash FROM zorya_code_files WHERE snapshot_id=$1 AND path=$2',
+          [snapshot.snapshot, path],
+        )
+        checkAbort(input.signal)
+        if (!storedFile.rows[0] || storedFile.rows[0].content_hash !== currentFile.hash)
+          throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED')
+        const declarations = findTopLevelDeclarationChunks(
+          path,
+          currentFile.text,
+          exactQuery,
+          limits.maxChunkChars,
+        )
+        checkAbort(input.signal)
+        for (const declaration of declarations) {
+          checkAbort(input.signal)
+          const row = exactRowsByPath
+            .get(path)
+            ?.find((candidate) => candidate.id === declaration.chunkId)
+          if (!row || !isExactDeclarationSymbol(row.symbol, exactQuery)) continue
+          exactDeclarations.push(
+            rankedById?.get(row.id) ?? {
+              row,
+              lexicalRank: null,
+              denseRank: null,
+              score: 0,
+            },
+          )
+          if (exactDeclarations.length >= cap) break
+        }
+        if (exactDeclarations.length >= cap) break
+      }
+    }
     let result = ranked.slice(0, mode === 'hybrid' && models?.rerank ? (rerankCandidateLimit || cap) : cap)
     let rerankRanks = new Map<string, number>()
     if (mode === 'hybrid' && models?.rerank && profile && !degradedReason && result.length) {

@@ -15,7 +15,7 @@ function language(path: string): string {
   const ext = extname(path).toLowerCase().slice(1)
   return ext || 'text'
 }
-function tokenName(node: ts.Node): string | null {
+function declarationNameNode(node: ts.Node): ts.Identifier | null {
   if (
     (ts.isFunctionDeclaration(node) ||
       ts.isClassDeclaration(node) ||
@@ -24,23 +24,29 @@ function tokenName(node: ts.Node): string | null {
       ts.isEnumDeclaration(node)) &&
     node.name
   )
-    return node.name.text
+    return node.name
   if (ts.isVariableStatement(node)) {
     const declaration = node.declarationList.declarations[0]
-    if (declaration && ts.isIdentifier(declaration.name)) return declaration.name.text
+    if (declaration && ts.isIdentifier(declaration.name)) return declaration.name
   }
+  return null
+}
+function tokenName(node: ts.Node): string | null {
+  const declarationName = declarationNameNode(node)
+  if (declarationName) return declarationName.text
   if (ts.isMethodDeclaration(node) || ts.isMethodSignature(node) || ts.isPropertyDeclaration(node))
     return ts.isIdentifier(node.name) ? node.name.text : null
   return null
 }
 
 function makeChunk(
-  file: EnumeratedFile,
+  file: Pick<EnumeratedFile, 'path' | 'text'>,
   source: ts.SourceFile | null,
   range: { start: number; end: number },
   symbol: string | null,
   ordinal: number,
   maxChars: number,
+  spans?: { id: string; start: number; end: number }[],
 ): CodeChunk[] {
   const result: CodeChunk[] = []
   const sourceFile = source
@@ -63,6 +69,7 @@ function makeChunk(
     const symbolPart = part ? `${symbol ?? 'file'}#${part + 1}` : symbol
     const idKey = symbolPart ?? `anonymous:${ordinal}:${part}`
     const id = digest(`${file.path}\0${idKey}\0${contentHash}`)
+    spans?.push({ id, start: cursor, end })
     result.push({
       id,
       path: file.path,
@@ -78,6 +85,58 @@ function makeChunk(
     part++
   }
   return result
+}
+
+export function findTopLevelDeclarationChunks(
+  path: string,
+  text: string,
+  query: string,
+  maxChars: number,
+): { symbol: string; chunkId: string }[] {
+  if (!tsExtensions.has(extname(path).toLowerCase())) return []
+  const scriptKind =
+    path.endsWith('.tsx') || path.endsWith('.jsx')
+      ? ts.ScriptKind.TSX
+      : path.endsWith('.js') ||
+          path.endsWith('.mjs') ||
+          path.endsWith('.cjs') ||
+          path.endsWith('.jsx')
+        ? ts.ScriptKind.JS
+        : ts.ScriptKind.TS
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, scriptKind)
+  const file = { path, text }
+  const symbolCounts = new Map<string, number>()
+  const found: { symbol: string; chunkId: string }[] = []
+  let ordinal = 0
+  for (const statement of source.statements) {
+    const nameNode = declarationNameNode(statement)
+    const name = nameNode?.text ?? null
+    const occurrence = name ? (symbolCounts.get(name) ?? 0) + 1 : ordinal + 1
+    if (name) symbolCounts.set(name, occurrence)
+    const symbol = name && occurrence > 1 ? `${name}@${occurrence}` : name
+    if (nameNode && name === query) {
+      const nameOffset = nameNode.getStart(source)
+      const spans: { id: string; start: number; end: number }[] = []
+      makeChunk(
+        file,
+        source,
+        { start: statement.getFullStart(), end: statement.end },
+        symbol,
+        ordinal,
+        maxChars,
+        spans,
+      )
+      const containing = spans.find((span) => nameOffset >= span.start && nameOffset < span.end)
+      if (containing) {
+        found.push({
+          symbol: symbol!,
+          chunkId: containing.id,
+        })
+      }
+    }
+    ordinal++
+  }
+  return found
 }
 
 export function chunkCode(
