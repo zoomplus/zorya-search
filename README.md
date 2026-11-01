@@ -4,10 +4,10 @@
 
 ## Релиз и установка
 
-Требуется Node.js `>=20.19.0`. Установите закреплённый архив из GitHub `v0.1.5` как точную зависимость проекта, чтобы он сохранялся в `package.json` и lockfile, затем создайте конфигурацию для текущего корня:
+Требуется Node.js `>=20.19.0`. Установите закреплённый архив из GitHub `v0.1.6` как точную зависимость проекта, чтобы он сохранялся в `package.json` и lockfile, затем создайте конфигурацию для текущего корня:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.5/zorya-search-0.1.5.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
