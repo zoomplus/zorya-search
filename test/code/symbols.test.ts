@@ -122,7 +122,7 @@ test('compiler and resolver do not use TypeScript filesystem fallback routes', a
   try {
     for (const method of methods) system[method] = () => { throw new Error(`filesystem fallback used: ${method}`) }
     const result = await run([
-      file('src/a.ts', 'import { b } from "./b.js"; export const a = b()'),
+      file('src/a.ts', '/// <reference types="node" />\nimport { b } from "./b.js"; export const a = b()'),
       file('src/b.ts', 'export function b() { return 1 }'),
     ])
     assert.equal(result.complete, true)

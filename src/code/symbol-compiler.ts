@@ -2,6 +2,8 @@ import { basename, extname, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import ts from 'typescript'
 import { createVerifiedSourceResolver } from './symbol-resolver.js'
+import { validateTypeScriptLibraryBundle } from './symbol-libraries.js'
+import type { TypeScriptLibraryBundle } from './symbol-libraries.js'
 import type { VerifiedSymbolSource } from './symbol-types.js'
 
 export interface VerifiedSymbolProgram {
@@ -10,6 +12,9 @@ export interface VerifiedSymbolProgram {
   sourceByPath: Map<string, ts.SourceFile>
   fileByAbsolutePath: Map<string, VerifiedSymbolSource>
   configDiagnostics: string[]
+  typescriptVersion: string
+  libraryProfileId: string | null
+  libraryAssets: string[]
 }
 const kinds = new Map<string, ts.ScriptKind>([
   ['ts', ts.ScriptKind.TS],
@@ -32,6 +37,9 @@ function virtualFilename(root: string, path: string): string {
   const ext = extname(absolute)
   return ext ? `${absolute.slice(0, -ext.length)}${ext.toLowerCase()}` : absolute
 }
+function virtualLibraryFilename(root: string, name: string): string {
+  return resolve(root, '__verified_typescript_lib__', name)
+}
 function tsExtension(path: string): ts.Extension {
   const lower = path.toLowerCase()
   if (lower.endsWith('.d.ts')) return ts.Extension.Dts
@@ -51,11 +59,15 @@ export async function compileVerifiedSymbolSources(
   sources: readonly VerifiedSymbolSource[],
   tsconfigPath?: string,
   signal?: AbortSignal,
+  libraries?: TypeScriptLibraryBundle,
 ): Promise<VerifiedSymbolProgram> {
   const root = resolve(rootInput)
+  signal?.throwIfAborted()
+  if (libraries) validateTypeScriptLibraryBundle(libraries, signal)
   const resolver = createVerifiedSourceResolver(root, sources, tsconfigPath)
   const sourceByPath = new Map<string, ts.SourceFile>()
   const fileByAbsolutePath = new Map<string, VerifiedSymbolSource>()
+  const librarySourceByAbsolutePath = new Map<string, ts.SourceFile>()
   let parsedCount = 0
   for (const source of sources) {
     signal?.throwIfAborted()
@@ -67,27 +79,49 @@ export async function compileVerifiedSymbolSources(
     fileByAbsolutePath.set(absolute, source)
     if (++parsedCount % 32 === 0) await new Promise<void>((resolveTurn) => setImmediate(resolveTurn))
   }
+  if (libraries) {
+    for (const asset of libraries.assets) {
+      signal?.throwIfAborted()
+      const absolute = virtualLibraryFilename(root, asset.name)
+      const sourceFile = ts.createSourceFile(absolute, asset.content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const parseDiagnostics = (sourceFile as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics
+      if (parseDiagnostics.length > 0)
+        throw new TypeError(`Malformed TypeScript library declaration: ${asset.name}`)
+      librarySourceByAbsolutePath.set(absolute, sourceFile)
+      if (++parsedCount % 32 === 0) await new Promise<void>((resolveTurn) => setImmediate(resolveTurn))
+    }
+  }
   const options: ts.CompilerOptions = {
     ...resolver.compilerOptions, allowJs: true, checkJs: true, noResolve: false,
     noLib: true, noEmit: true, skipLibCheck: true, types: [],
   }
   const host = ts.createCompilerHost(options, true)
   const getVerifiedSourceFile: ts.CompilerHost['getSourceFile'] = (fileName, _languageVersion, onError) => {
-    const result = sourceByPath.get(fileByAbsolutePath.get(resolve(fileName))?.path ?? '')
+    const absolute = resolve(fileName)
+    const result = librarySourceByAbsolutePath.get(absolute) ??
+      sourceByPath.get(fileByAbsolutePath.get(absolute)?.path ?? '')
     if (!result) onError?.(`Source is outside verified map: ${fileName}`)
     return result
   }
   host.getSourceFile = getVerifiedSourceFile
   host.getSourceFileByPath = (fileName, _path, _languageVersion, onError) => getVerifiedSourceFile(fileName, _languageVersion, onError)
-  host.fileExists = (fileName) => fileByAbsolutePath.has(resolve(fileName))
-  host.readFile = (fileName) => fileByAbsolutePath.get(resolve(fileName))?.text
+  host.fileExists = (fileName) => {
+    const absolute = resolve(fileName)
+    return fileByAbsolutePath.has(absolute) || librarySourceByAbsolutePath.has(absolute)
+  }
+  host.readFile = (fileName) => {
+    const absolute = resolve(fileName)
+    return fileByAbsolutePath.get(absolute)?.text ?? librarySourceByAbsolutePath.get(absolute)?.text
+  }
   host.readDirectory = () => []
-  host.directoryExists = () => false
   host.getDirectories = () => []
   host.useCaseSensitiveFileNames = () => true
   host.realpath = (fileName) => resolve(fileName)
   host.getCurrentDirectory = () => root
   host.getDefaultLibFileName = () => resolve(root, '__verified_sources_only_no_default_lib__.d.ts')
+  const virtualLibraryDirectory = resolve(root, '__verified_typescript_lib__')
+  host.getDefaultLibLocation = () => libraries ? virtualLibraryDirectory : resolve(root, '__verified_no_library_directory__')
+  host.directoryExists = (directory) => Boolean(libraries) && resolve(directory) === virtualLibraryDirectory
   host.resolveModuleNames = (moduleNames, containingFile) => {
     const source = fileByAbsolutePath.get(resolve(containingFile))
     if (!source) return moduleNames.map(() => undefined)
@@ -104,9 +138,20 @@ export async function compileVerifiedSymbolSources(
         : undefined
     })
   }
-  const roots = [...fileByAbsolutePath.keys()].sort()
+  host.resolveTypeReferenceDirectives = (typeReferenceNames) =>
+    typeReferenceNames.map(() => undefined)
+  const roots = [...fileByAbsolutePath.keys(), ...librarySourceByAbsolutePath.keys()].sort()
   signal?.throwIfAborted()
   const program = ts.createProgram({ rootNames: roots, options, host })
   signal?.throwIfAborted()
-  return { program, checker: program.getTypeChecker(), sourceByPath, fileByAbsolutePath, configDiagnostics: resolver.diagnostics }
+  return {
+    program,
+    checker: program.getTypeChecker(),
+    sourceByPath,
+    fileByAbsolutePath,
+    configDiagnostics: resolver.diagnostics,
+    typescriptVersion: ts.version,
+    libraryProfileId: libraries?.profileId ?? null,
+    libraryAssets: libraries?.assets.map((asset) => asset.name) ?? [],
+  }
 }

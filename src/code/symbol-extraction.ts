@@ -84,7 +84,13 @@ export async function extractCodeSymbols(
   const orderedSources = [...sourceByPathInput.values()].sort((left, right) => left.path.localeCompare(right.path))
   const selected = orderedSources.slice(0, maxFiles)
   truncation.files = sources.length > selected.length
-  const programResult = await compileVerifiedSymbolSources(identity.root, selected, options.tsconfigPath, options.signal)
+  const programResult = await compileVerifiedSymbolSources(
+    identity.root,
+    selected,
+    options.tsconfigPath,
+    options.signal,
+    options.libraries,
+  )
   const symbolIdByDeclaration = new Map<ts.Declaration, string>()
   const symbolIdByCheckerSymbol = new Map<ts.Symbol, string[]>()
   const sourceRecordByPath = new Map(selected.map((source) => [source.path, source]))
@@ -230,7 +236,7 @@ export async function extractCodeSymbols(
       if (references.length >= maxReferences) { truncation.references = true; coverage.status = 'truncated'; return }
       const location = makeLocation(path, source, fileHash, node)
       references.push({
-        id: hash(`${CODE_SYMBOL_EXTRACTOR_VERSION}\0${identity.snapshotId}\0${path}\0${location.start}\0${location.end}\0${kind}`),
+        id: hash(`${CODE_SYMBOL_EXTRACTOR_VERSION}\0${identity.snapshotId}\0${programResult.libraryProfileId ?? 'no-lib'}\0${path}\0${location.start}\0${location.end}\0${kind}`),
         kind,
         from: location,
         ownerSymbolId: ownerId && publishedSymbolIds.has(ownerId) ? ownerId : null,
@@ -317,5 +323,18 @@ export async function extractCodeSymbols(
   }
   files.sort((a, b) => a.path.localeCompare(b.path))
   const complete = !failed && !truncation.files && !truncation.symbols && !truncation.references && files.every((file) => file.status === 'parsed') && programResult.configDiagnostics.length === 0
-  return { version: CODE_SYMBOL_EXTRACTOR_VERSION, identity: { root: resolve(identity.root), snapshotId: identity.snapshotId }, symbols, references, files, complete, truncation }
+  return {
+    version: CODE_SYMBOL_EXTRACTOR_VERSION,
+    identity: { root: resolve(identity.root), snapshotId: identity.snapshotId },
+    symbols,
+    references,
+    files,
+    complete,
+    truncation,
+    compiler: {
+      typescriptVersion: programResult.typescriptVersion,
+      libraryProfileId: programResult.libraryProfileId,
+      libraryAssets: programResult.libraryAssets,
+    },
+  }
 }

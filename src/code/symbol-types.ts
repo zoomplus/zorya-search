@@ -1,3 +1,5 @@
+import type { TypeScriptLibraryBundle } from './symbol-libraries.js'
+
 /** Внутренние версионируемые DTO детерминированного извлечения символов. */
 export const CODE_SYMBOL_EXTRACTOR_VERSION = 'ts-symbol-graph-v1'
 
@@ -66,6 +68,13 @@ export interface SymbolExtractionResult {
   files: SymbolFileCoverage[]
   complete: boolean
   truncation: SymbolTruncation
+  compiler: SymbolCompilerProvenance
+}
+
+export interface SymbolCompilerProvenance {
+  typescriptVersion: string
+  libraryProfileId: string | null
+  libraryAssets: string[]
 }
 
 export interface SymbolTruncation {
@@ -79,4 +88,5 @@ export interface SymbolExtractionOptions {
   maxSymbols?: number
   maxReferences?: number
   tsconfigPath?: string
+  libraries?: TypeScriptLibraryBundle
 }
