@@ -26,6 +26,7 @@ export interface ProjectTextOptions {
     }): Promise<{ index: number; score: number }[]>
   }
   rerankCandidateLimit?: number
+  embeddingBatchSize?: number
   exclude?: string[]
   limits?: Partial<{
     maxFiles: number
@@ -34,6 +35,12 @@ export interface ProjectTextOptions {
     maxChunks: number
     maxChunkChars: number
   }>
+}
+export interface ProjectTextProgress {
+  snapshotId: string
+  totalChunks: number
+  checkpointChunks: number
+  checkpointWrites: number
 }
 export interface ProjectTextChunk {
   id: string
@@ -115,7 +122,7 @@ export interface ProjectTextIndex {
   indexRepository(input: {
     root: string
     signal?: AbortSignal
-    onProgress?: (progress: { files: number; chunks: number }) => void
+    onProgress?: (progress: ProjectTextProgress & { files: number; chunks: number }) => void
   }): Promise<ProjectTextIndexResult>
   indexStatus(root: string, signal?: AbortSignal): Promise<ProjectTextIndexStatus>
   searchProjectText(input: ProjectTextSearchInput): Promise<{

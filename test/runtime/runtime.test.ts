@@ -235,11 +235,19 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
       webDiscovery: false,
       classification: false,
       visual: false,
+      projectText: false,
+      projectTextIndexing: false,
+      projectTextEmbedding: false,
+      projectTextReranking: false,
     })
     await assert.rejects(runtime.searchVisualReferences({ references: [{ id: 'provided', contentHash: 'a'.repeat(64), text: 'reference' }], queryText: 'anything' }), isCode('CAPABILITY_DISABLED'))
     await runtime.indexRepository({ rootId: 'a' })
     await runtime.indexRepository({ rootId: 'b' })
-    const result = await runtime.searchCode({ rootId: 'a', query: 'alphaFeature', mode: 'lexical' })
+    const result = await runtime.searchCode({
+      rootId: 'a',
+      query: 'alphaFeature',
+      mode: 'lexical',
+    })
     assert.equal(result.hits[0]?.path, 'alpha.ts')
     assert.equal(result.identity.root, await realpath(f.a))
     assert.ok(result.identity.snapshotId)

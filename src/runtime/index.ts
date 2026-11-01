@@ -4,6 +4,15 @@ import { isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import { createCodeIndex } from '../code/index.js'
 import { watchCodeRoot } from '../code/watch.js'
+import { createProjectTextIndex } from '../project-text/index.js'
+import type {
+  ProjectTextIndex,
+  ProjectTextIndexResult,
+  ProjectTextIndexStatus,
+  ProjectTextKind,
+  ProjectTextSearchInput,
+  ProjectTextReadInput,
+} from '../project-text/types.js'
 import type {
   CodeIndex,
   CodeIndexStatus,
@@ -32,7 +41,7 @@ import {
   createOpenRouterReranker,
   createOpenRouterMultimodalEmbedding,
 } from '../providers/openrouter.js'
-import { MECHANISM_RETRIEVAL_PRESETS } from '../providers/voyage.js'
+import { MECHANISM_RETRIEVAL_PRESETS, PROJECT_TEXT_RETRIEVAL_PRESET } from '../providers/voyage.js'
 import { createVisualSearch } from '../visual/index.js'
 import {
   ProviderError,
@@ -53,6 +62,8 @@ import {
   findCodeSymbolsRequest,
   findCodeReferencesRequest,
   traceCodeCallsRequest,
+  projectTextSearchRequest,
+  projectTextReadRequest,
   readRequest,
   relatedRequest,
   contextRequest,
@@ -105,11 +116,16 @@ export interface RuntimeCapabilities {
   webDiscovery: boolean
   classification: boolean
   visual: boolean
+  projectText: boolean
+  projectTextIndexing: boolean
+  projectTextEmbedding: boolean
+  projectTextReranking: boolean
 }
 export interface RuntimeIndexStatus extends CodeIndexStatus {
   watcherError: string | null
   watching: boolean
   indexingJob: RuntimeIndexJobStatus | null
+  projectTextStatus?: ProjectTextIndexStatus
 }
 export interface RuntimeIndexJobStatus {
   jobId: string
@@ -122,6 +138,7 @@ export interface RuntimeIndexJobStatus {
   attempt: number
   totalChunks: number | null
   checkpointChunks: number
+  indexingComponent?: 'code' | 'projectText'
 }
 export interface RuntimeWatchStatus {
   enabled: boolean
@@ -150,6 +167,7 @@ export interface RuntimeOptions {
 
 type RootEntry = { config: RuntimeConfig['roots'][number]; path: string; dev: number; ino: number }
 type Operation = { controller: AbortController; promise: Promise<unknown> }
+const hashFingerprint = (value: string) => createHash('sha256').update(value).digest('hex')
 export async function openSearchRuntime(options: RuntimeOptions) {
   const config = parseRuntimeConfig(options.config)
   assertStartupActive(options.signal)
@@ -313,6 +331,55 @@ function createProviders(
   const webEmbedding = config.web?.embedding
     ? configuredEmbedding(config.web.embedding)
     : undefined
+  const projectTextConfig = config.projectText?.embedding
+  const configuredProjectTextEmbedding = (
+    p: NonNullable<RuntimeConfig['projectText']>['embedding'],
+    inputType: 'document' | 'query',
+  ) => {
+    if (!p) return undefined
+    const shared = {
+      model: p.model,
+      dimensions: p.dimensions,
+      inputType,
+      ...(p.profileId ? { profileId: p.profileId } : {}),
+      apiKey: resolveSecret(p.secret),
+      ...(p.limits ? { limits: compact(p.limits) } : {}),
+      ...fetchOption,
+    }
+    const verifyReturnedModel = p.model === PROJECT_TEXT_RETRIEVAL_PRESET.embedding.model
+    return p.provider === 'openrouter'
+      ? createOpenRouterEmbedding({
+          ...shared,
+          baseUrl: p.baseUrl ?? 'https://openrouter.ai/api/v1',
+          ...(verifyReturnedModel ? { verifyReturnedModel: true } : {}),
+        })
+      : createOpenAICompatibleEmbedding({
+          ...shared,
+          baseUrl: p.baseUrl!,
+          profileId: p.profileId!,
+        })
+  }
+  const projectTextDocumentEmbedding = configuredProjectTextEmbedding(projectTextConfig, 'document')
+  const projectTextQueryEmbedding = configuredProjectTextEmbedding(projectTextConfig, 'query')
+  const projectTextRerankerConfig = config.projectText?.reranker
+  const projectTextReranker = projectTextRerankerConfig
+    ? createOpenRouterReranker({
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: projectTextRerankerConfig.model,
+        ...(projectTextRerankerConfig.profileId
+          ? { profileId: projectTextRerankerConfig.profileId }
+          : {}),
+        maxResults: PROJECT_TEXT_RETRIEVAL_PRESET.reranker.candidateLimit,
+        ...(projectTextRerankerConfig.model === PROJECT_TEXT_RETRIEVAL_PRESET.reranker.model
+          ? { verifyReturnedModel: true }
+          : {}),
+        apiKey: resolveSecret(projectTextRerankerConfig.secret),
+        ...(projectTextRerankerConfig.limits
+          ? { limits: compact(projectTextRerankerConfig.limits) }
+          : {}),
+        ...fetchOption,
+      })
+    : undefined
   const codeReranker = mechanismCode
     ? createOpenRouterReranker({
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -372,6 +439,9 @@ function createProviders(
     codeReranker,
     classifier,
     visualEmbedding,
+    projectTextDocumentEmbedding,
+    projectTextQueryEmbedding,
+    projectTextReranker,
     web: testWebSource ?? braveWeb,
   }
 }
@@ -388,6 +458,7 @@ async function createOwnedRuntime(
   beforeSourceFingerprint?: (signal: AbortSignal) => Promise<void>,
 ) {
   const indexes = new Map<string, CodeIndex>()
+  const projectTextIndexes = new Map<string, ProjectTextIndex>()
   const contexts = new Map<string, ReturnType<typeof createCodeContext>>()
   const watchers = new Map<string, { close(): Promise<void> }>()
   const watcherErrors = new Map<string, string>()
@@ -397,6 +468,7 @@ async function createOwnedRuntime(
   const watcherFailures = new Map<string, number>()
   const watcherStarts = new Map<string, Promise<void>>()
   const watcherControllers = new Map<string, AbortController>()
+  const completedIndexFingerprints = new Map<string, string>()
   const operations = new Set<Operation>()
   const controlOperations = new Set<Operation>()
   const rootIndexTails = new Map<string, Promise<void>>()
@@ -413,6 +485,8 @@ async function createOwnedRuntime(
     deadlineAt: number
     deadlineTimer: NodeJS.Timeout
     checkpointScope?: string
+    checkpointComponent?: 'code' | 'projectText'
+    componentCheckpointWrites: Map<'code' | 'projectText', number>
     checkpointWrites: number
   }
   const jobs = new Map<string, IndexJob>()
@@ -432,6 +506,7 @@ async function createOwnedRuntime(
     attempt: job.attempt,
     totalChunks: job.totalChunks,
     checkpointChunks: job.checkpointChunks,
+    ...(config.projectText ? { indexingComponent: job.checkpointComponent } : {}),
   })
   const settleJob = (job: IndexJob) => {
     if (!job.finishedAt) job.finishedAt = new Date().toISOString()
@@ -454,6 +529,7 @@ async function createOwnedRuntime(
             if (remaining <= 0) throw new SearchRuntimeError('TIMEOUT')
             job.attempt++
             job.checkpointWrites = 0
+            job.componentCheckpointWrites.clear()
             const attemptController = new AbortController()
             const attemptTimeout = Math.min(config.limits?.timeoutMs ?? 60_000, remaining)
             const attemptTimer = setTimeout(
@@ -465,12 +541,22 @@ async function createOwnedRuntime(
             try {
               await runIndexExclusive(job.rootId, attemptSignal, (progress) => {
                 job.totalChunks = progress.totalChunks
-                if (progress.snapshotId !== job.checkpointScope) {
+                if (
+                  progress.component !== job.checkpointComponent ||
+                  progress.snapshotId !== job.checkpointScope
+                ) {
+                  job.checkpointComponent = progress.component
                   job.checkpointScope = progress.snapshotId
                   job.checkpointChunks = 0
                 }
+                job.checkpointComponent = progress.component
                 job.checkpointChunks = progress.checkpointChunks
-                job.checkpointWrites = progress.checkpointWrites
+                const priorComponentWrites =
+                  job.componentCheckpointWrites.get(progress.component) ?? 0
+                if (progress.checkpointWrites > priorComponentWrites) {
+                  job.checkpointWrites += progress.checkpointWrites - priorComponentWrites
+                  job.componentCheckpointWrites.set(progress.component, progress.checkpointWrites)
+                }
               })
               job.state = 'completed'
               break
@@ -484,8 +570,9 @@ async function createOwnedRuntime(
                 : sanitize(error, undefined, job.controller.signal)
               const checkpointAdvanced = job.checkpointWrites > 0
               const changedWatchedSource =
-                safe.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_INDEX' &&
-                getRoot(job.rootId).config.watch === true
+                ['CODE_INDEX_SOURCE_CHANGED_DURING_INDEX', 'PROJECT_TEXT_SOURCE_CHANGED'].includes(
+                  safe.code,
+                ) && getRoot(job.rootId).config.watch === true
               if (!(safe.code === 'TIMEOUT' && checkpointAdvanced) && !changedWatchedSource) throw safe
               if (job.attempt >= maxAttempts || job.deadlineAt - Date.now() <= 0) throw safe
               await new Promise<void>((resolvePromise, reject) => {
@@ -555,6 +642,7 @@ async function createOwnedRuntime(
       totalChunks: null,
       checkpointChunks: 0,
       checkpointWrites: 0,
+      componentCheckpointWrites: new Map(),
     }
     job.deadlineTimer.unref?.()
     controller.signal.addEventListener('abort', () => {
@@ -587,19 +675,39 @@ async function createOwnedRuntime(
           watcherFailures.delete(rootId)
           watcherFailedFingerprints.delete(rootId)
           watcherErrors.delete(rootId)
-          if (job.checkpointScope) watcherIndexedFingerprints.set(rootId, job.checkpointScope)
+          if (config.projectText) {
+            const fingerprint = completedIndexFingerprints.get(rootId)
+            if (fingerprint) watcherIndexedFingerprints.set(rootId, fingerprint)
+            else watcherIndexedFingerprints.delete(rootId)
+          } else if (job.checkpointScope) {
+            watcherIndexedFingerprints.set(rootId, job.checkpointScope)
+          }
         } else if (job.state === 'failed') {
-          if (job.checkpointScope) watcherFailedFingerprints.set(rootId, job.checkpointScope)
+          if (config.projectText) {
+            try {
+              const fingerprint = await executeControl(undefined, (signal) =>
+                sourceFingerprintForRoot(rootId, signal),
+              )
+              if (!isCurrentJob()) return
+              watcherFailedFingerprints.set(rootId, fingerprint)
+            } catch {
+              if (!isCurrentJob()) return
+              watcherFailedFingerprints.delete(rootId)
+            }
+          } else if (job.checkpointScope) {
+            watcherFailedFingerprints.set(rootId, job.checkpointScope)
+          }
           watcherPaused.add(rootId)
         } else if (job.state === 'cancelled') {
           watcherPaused.add(rootId)
-          if (job.checkpointScope) {
+          if (job.checkpointScope && !config.projectText) {
             watcherFailedFingerprints.set(rootId, job.checkpointScope)
           } else {
             try {
               const fingerprint = await executeControl(undefined, async (signal) => {
-                const checkedRoot = await assertRoot(rootId)
-                return getIndex(rootId).sourceFingerprint(checkedRoot.path, signal)
+                return config.projectText
+                  ? sourceFingerprintForRoot(rootId, signal)
+                  : getIndex(rootId).sourceFingerprint((await assertRoot(rootId)).path, signal)
               })
               if (!isCurrentJob()) return
               watcherFailedFingerprints.set(rootId, fingerprint)
@@ -706,14 +814,64 @@ async function createOwnedRuntime(
     rootId: string,
     signal: AbortSignal,
     onProgress?: (progress: {
+      component: 'code' | 'projectText'
       snapshotId: string
       totalChunks: number
       checkpointChunks: number
       checkpointWrites: number
     }) => void,
-  ): Promise<CodeIndexStatus> => runOnRootIndexLane(rootId, signal, (root) =>
-    getIndex(rootId).indexRepository({ root: root.path, signal, ...(onProgress ? { onProgress } : {}) }),
-  )
+  ): Promise<CodeIndexStatus> =>
+    runOnRootIndexLane(rootId, signal, async (root) => {
+      const codeStatus = await getIndex(rootId).indexRepository({
+        root: root.path,
+        signal,
+        ...(onProgress
+          ? { onProgress: (progress) => onProgress({ component: 'code', ...progress }) }
+          : {}),
+      })
+      if (!config.projectText) return codeStatus
+
+      const textResult = await getProjectTextIndex(rootId).indexRepository({
+        root: root.path,
+        signal,
+        ...(onProgress
+          ? {
+              onProgress: (progress) =>
+                onProgress({
+                  component: 'projectText',
+                  snapshotId: progress.snapshotId,
+                  totalChunks: progress.totalChunks,
+                  checkpointChunks: progress.checkpointChunks,
+                  checkpointWrites: progress.checkpointWrites,
+                }),
+            }
+          : {}),
+      })
+      const currentCodeStatus = await getIndex(rootId).indexStatus(root.path, signal)
+      const currentTextStatus = await getProjectTextIndex(rootId).indexStatus(root.path, signal)
+      if (
+        !codeStatus.identity ||
+        currentCodeStatus.identity?.snapshotId !== codeStatus.identity.snapshotId ||
+        currentTextStatus.stale ||
+        currentTextStatus.snapshotId !== textResult.snapshotId ||
+        currentTextStatus.identity?.contentHash !== textResult.treeHash ||
+        currentTextStatus.identity.branch !== textResult.identity.branch ||
+        currentTextStatus.identity.head !== textResult.identity.head
+      )
+        throw new SearchRuntimeError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+      const codeFingerprint = await getIndex(rootId).sourceFingerprint(root.path, signal)
+      const finalCodeStatus = await getIndex(rootId).indexStatus(root.path, signal)
+      if (
+        finalCodeStatus.identity?.snapshotId !== codeStatus.identity.snapshotId ||
+        codeFingerprint !== codeStatus.identity.snapshotId
+      )
+        throw new SearchRuntimeError('CODE_INDEX_SOURCE_CHANGED_DURING_INDEX')
+      completedIndexFingerprints.set(
+        rootId,
+        hashFingerprint(JSON.stringify([codeStatus.identity.snapshotId, textResult.treeHash])),
+      )
+      return codeStatus
+    })
   const execute = <T>(
     callerSignal: AbortSignal | undefined,
     work: (signal: AbortSignal) => Promise<T>,
@@ -789,6 +947,51 @@ async function createOwnedRuntime(
     if (!context) throw new SearchRuntimeError('OPERATION_FAILED')
     return context
   }
+  const getProjectTextIndex = (id: string): ProjectTextIndex => {
+    if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+    let index = projectTextIndexes.get(id)
+    if (index) return index
+    const root = getRoot(id)
+    const embedding = config.projectText.embedding
+    const maxItems = embedding?.limits?.maxItems ?? 32
+    index = createProjectTextIndex({
+      database,
+      ...(providers.projectTextDocumentEmbedding && providers.projectTextQueryEmbedding
+        ? {
+            documentEmbedding: providers.projectTextDocumentEmbedding,
+            queryEmbedding: providers.projectTextQueryEmbedding,
+          }
+        : {}),
+      ...(providers.projectTextReranker
+        ? {
+            reranker: providers.projectTextReranker,
+            rerankCandidateLimit: PROJECT_TEXT_RETRIEVAL_PRESET.reranker.candidateLimit,
+          }
+        : {}),
+      ...(embedding ? { embeddingBatchSize: Math.min(32, maxItems) } : {}),
+      ...(root.config.exclude ? { exclude: [...root.config.exclude] } : {}),
+      ...(root.config.limits
+        ? {
+            limits: compact({
+              maxFiles: root.config.limits.maxFiles,
+              maxFileBytes: root.config.limits.maxFileBytes,
+              maxTotalBytes: root.config.limits.maxTotalBytes,
+              maxChunks: root.config.limits.maxChunks,
+              maxChunkChars: root.config.limits.maxChunkChars,
+            }),
+          }
+        : {}),
+    })
+    projectTextIndexes.set(id, index)
+    return index
+  }
+  const sourceFingerprintForRoot = async (id: string, signal?: AbortSignal) => {
+    const root = await assertRoot(id)
+    const code = await getIndex(id).sourceFingerprint(root.path, signal)
+    if (!config.projectText) return code
+    const text = await getProjectTextIndex(id).sourceFingerprint(root.path, signal)
+    return hashFingerprint(JSON.stringify([code, text]))
+  }
 
   async function shutdown() {
     if (closing) return closing
@@ -827,6 +1030,7 @@ async function createOwnedRuntime(
       const lifecycle = await Promise.allSettled([
         ...[...contexts.values()].map((context) => context.close()),
         ...[...indexes.values()].map((index) => index.close()),
+        ...[...projectTextIndexes.values()].map((index) => index.close()),
       ])
       for (const result of lifecycle) if (result.status === 'rejected') failures.push(result.reason)
       try {
@@ -867,10 +1071,9 @@ async function createOwnedRuntime(
         reconcile: async (_cause: 'event' | 'interval') => {
           let attemptedFingerprint: string | undefined
           try {
-            const currentFingerprint = await executeControl(ownerController.signal, async (signal) => {
-              const checkedRoot = await assertRoot(id)
-              return getIndex(id).sourceFingerprint(checkedRoot.path, signal)
-            })
+            const currentFingerprint = await executeControl(ownerController.signal, (signal) =>
+              sourceFingerprintForRoot(id, signal),
+            )
             if (watcherPaused.has(id)) {
               if (currentFingerprint === watcherFailedFingerprints.get(id)) return
               watcherPaused.delete(id)
@@ -889,7 +1092,11 @@ async function createOwnedRuntime(
             if (!job) throw new SearchRuntimeError('JOB_NOT_FOUND')
             await job.promise
             if (job.state !== 'completed') throw new SearchRuntimeError(job.errorCode ?? 'OPERATION_FAILED')
-            watcherIndexedFingerprints.set(id, currentFingerprint)
+            const completedFingerprint = config.projectText
+              ? completedIndexFingerprints.get(id)
+              : currentFingerprint
+            if (!completedFingerprint) throw new SearchRuntimeError('OPERATION_FAILED')
+            watcherIndexedFingerprints.set(id, completedFingerprint)
             watcherFailedFingerprints.delete(id)
             watcherErrors.delete(id)
             watcherFailures.delete(id)
@@ -958,6 +1165,12 @@ async function createOwnedRuntime(
         webDiscovery: Boolean(config.web?.discovery && providers.web),
         classification: Boolean(providers.classifier),
         visual: Boolean(providers.visualEmbedding),
+        projectText: Boolean(config.projectText),
+        projectTextIndexing: Boolean(config.projectText),
+        projectTextEmbedding: Boolean(
+          providers.projectTextDocumentEmbedding && providers.projectTextQueryEmbedding,
+        ),
+        projectTextReranking: Boolean(providers.projectTextReranker),
       }
     },
     usage() {
@@ -973,6 +1186,9 @@ async function createOwnedRuntime(
             : null,
         codeReranking: providers.codeReranker?.usage() ?? null,
         visual: providers.visualEmbedding?.usage() ?? null,
+        projectTextEmbedding: providers.projectTextDocumentEmbedding?.usage() ?? null,
+        projectTextQueryEmbedding: providers.projectTextQueryEmbedding?.usage() ?? null,
+        projectTextReranking: providers.projectTextReranker?.usage() ?? null,
       }
     },
     profiles() {
@@ -986,6 +1202,15 @@ async function createOwnedRuntime(
           : null,
         classification: providers.classifier ? structuredClone(providers.classifier.profile) : null,
         visual: providers.visualEmbedding ? structuredClone(providers.visualEmbedding.profile) : null,
+        projectTextEmbedding: providers.projectTextDocumentEmbedding
+          ? structuredClone(providers.projectTextDocumentEmbedding.profile)
+          : null,
+        projectTextQueryEmbedding: providers.projectTextQueryEmbedding
+          ? structuredClone(providers.projectTextQueryEmbedding.profile)
+          : null,
+        projectTextReranking: providers.projectTextReranker
+          ? structuredClone(providers.projectTextReranker.profile)
+          : null,
       }
     },
     async indexStatus(input: {
@@ -1006,7 +1231,83 @@ async function createOwnedRuntime(
           watcherError: watcherErrors.get(request.rootId) ?? null,
           watching: watchers.has(request.rootId),
           indexingJob: job ? publishJob(job) : null,
+          ...(config.projectText
+            ? {
+                projectTextStatus: await getProjectTextIndex(request.rootId).indexStatus(
+                  root.path,
+                  controlSignal,
+                ),
+              }
+            : {}),
         }
+      })
+    },
+    async projectTextStatus(input: { rootId: string; signal?: AbortSignal }) {
+      const { request, signal } = captureRequest(statusRequest, input)
+      return executeControl(signal, async (controlSignal) => {
+        if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        const root = await assertRoot(request.rootId)
+        return getProjectTextIndex(request.rootId).indexStatus(root.path, controlSignal)
+      })
+    },
+    async indexProjectText(input: { rootId: string; signal?: AbortSignal }) {
+      const { request, signal } = captureRequest(statusRequest, input)
+      return execute(signal, async (operationSignal) => {
+        if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return runOnRootIndexLane(request.rootId, operationSignal, (root) =>
+          getProjectTextIndex(request.rootId).indexRepository({
+            root: root.path,
+            signal: operationSignal,
+          }),
+        )
+      })
+    },
+    async searchProjectText(input: {
+      rootId: string
+      query: string
+      kinds?: ProjectTextKind[] | undefined
+      paths?: string[] | undefined
+      limit?: number | undefined
+      mode?: 'lexical' | 'hybrid' | undefined
+      maxChars?: number | undefined
+      signal?: AbortSignal | undefined
+    }) {
+      const { request, signal } = captureRequest(projectTextSearchRequest, input)
+      return execute(signal, async (operationSignal) => {
+        if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        const root = await assertRoot(request.rootId)
+        return getProjectTextIndex(request.rootId).searchProjectText({
+          root: root.path,
+          query: request.query,
+          ...(request.kinds === undefined ? {} : { kinds: request.kinds as ProjectTextKind[] }),
+          ...(request.paths === undefined ? {} : { paths: [...request.paths] }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          ...(request.mode === undefined ? {} : { mode: request.mode }),
+          ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),
+          signal: operationSignal,
+        })
+      })
+    },
+    async readProjectText(input: {
+      rootId: string
+      path: string
+      lineStart?: number | undefined
+      lineEnd?: number | undefined
+      snapshotId?: string | undefined
+      signal?: AbortSignal | undefined
+    }) {
+      const { request, signal } = captureRequest(projectTextReadRequest, input)
+      return execute(signal, async (operationSignal) => {
+        if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        const root = await assertRoot(request.rootId)
+        return getProjectTextIndex(request.rootId).readProjectText({
+          root: root.path,
+          path: request.path,
+          ...(request.lineStart === undefined ? {} : { lineStart: request.lineStart }),
+          ...(request.lineEnd === undefined ? {} : { lineEnd: request.lineEnd }),
+          ...(request.snapshotId === undefined ? {} : { snapshotId: request.snapshotId }),
+          signal: operationSignal,
+        })
       })
     },
     startIndexing(input: { rootId: string; signal?: AbortSignal }) {
@@ -1400,7 +1701,13 @@ async function createOwnedRuntime(
           admitIndexJob(root.config.id)
         } else await execute(startupSignal, async (signal) => {
           const indexed = await runIndexExclusive(root.config.id, signal)
-          if (indexed.identity) watcherIndexedFingerprints.set(root.config.id, indexed.identity.snapshotId)
+          if (indexed.identity) {
+            const acceptedFingerprint = config.projectText
+              ? completedIndexFingerprints.get(root.config.id)
+              : indexed.identity.snapshotId
+            if (!acceptedFingerprint) throw new SearchRuntimeError('OPERATION_FAILED')
+            watcherIndexedFingerprints.set(root.config.id, acceptedFingerprint)
+          }
           await startWatcherInternal(root.config.id, signal)
         })
       }
@@ -1443,6 +1750,8 @@ async function loadSecrets(
     config.embedding?.secret,
     config.web?.embedding?.secret,
     config.reranker?.secret,
+    config.projectText?.embedding?.secret,
+    config.projectText?.reranker?.secret,
     config.classifier?.secret,
     config.web?.discovery?.secret,
     config.mechanism?.code?.secret,
@@ -1543,6 +1852,33 @@ const knownCodes = new Set([
   'OPERATION_CLOSED',
   'OPERATION_TIMEOUT',
   'ROOT_CHANGED',
+  'PROJECT_TEXT_CHUNK_LIMIT',
+  'PROJECT_TEXT_DATABASE_INVALID',
+  'PROJECT_TEXT_EMBEDDING_PROFILE_INVALID',
+  'PROJECT_TEXT_EMBEDDING_PROFILE_MISMATCH',
+  'PROJECT_TEXT_EMBEDDING_PAIR_REQUIRED',
+  'PROJECT_TEXT_EXCLUSION_POLICY_INVALID',
+  'PROJECT_TEXT_GENERATION_INVALID',
+  'PROJECT_TEXT_GENERATION_SUPERSEDED',
+  'PROJECT_TEXT_INDEXED_AT_INVALID',
+  'PROJECT_TEXT_INDEX_CLOSED',
+  'PROJECT_TEXT_LIMIT_INVALID',
+  'PROJECT_TEXT_LINE_LIMIT',
+  'PROJECT_TEXT_MODELS_INVALID',
+  'PROJECT_TEXT_NOT_INDEXED',
+  'PROJECT_TEXT_PATH_NOT_INDEXED',
+  'PROJECT_TEXT_PROFILE_MUTATED',
+  'PROJECT_TEXT_RANGE_INVALID',
+  'PROJECT_TEXT_RANGE_OUT_OF_BOUNDS',
+  'PROJECT_TEXT_RERANKER_INVALID',
+  'PROJECT_TEXT_RERANK_INVALID',
+  'PROJECT_TEXT_ROOT_INVALID',
+  'PROJECT_TEXT_SCOPE_MISMATCH',
+  'PROJECT_TEXT_SEARCH_INPUT_INVALID',
+  'PROJECT_TEXT_SNAPSHOT_MISMATCH',
+  'PROJECT_TEXT_SNAPSHOT_SUPERSEDED',
+  'PROJECT_TEXT_SOURCE_CHANGED',
+  'PROJECT_TEXT_VECTOR_INVALID',
 ])
 const providerRuntimeErrorCode = {
   auth: 'PROVIDER_AUTH',

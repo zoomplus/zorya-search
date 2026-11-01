@@ -467,7 +467,12 @@ test('partial and empty rerank results expose their returned ranking cardinality
   })
   cleanup.push(() => index.close())
   await index.indexRepository({ root })
-  const partial = await index.searchProjectText({ root, query: 'answer', mode: 'hybrid', limit: 2 })
+  const partial = await index.searchProjectText({
+    root,
+    query: 'answer',
+    mode: 'hybrid',
+    limit: 2,
+  })
   assert.deepEqual(partial.rerank, { status: 'incomplete', requested: 2, returned: 1 })
   assert.equal(partial.hits.length, 1)
   assert.equal(partial.truncated, true)
@@ -684,10 +689,39 @@ test('settled embedding batches survive a failed generation and resume without d
     queryEmbedding: provider('query'),
   })
   cleanup.push(() => index.close())
-  await assert.rejects(index.indexRepository({ root }), /temporary provider failure/u)
+  const firstProgress: Array<{ checkpointChunks: number; checkpointWrites: number }> = []
+  await assert.rejects(
+    index.indexRepository({
+      root,
+      onProgress: ({ checkpointChunks, checkpointWrites }) =>
+        firstProgress.push({ checkpointChunks, checkpointWrites }),
+    }),
+    /temporary provider failure/u,
+  )
+  assert.ok(
+    firstProgress.some(
+      (progress) => progress.checkpointChunks === 32 && progress.checkpointWrites === 32,
+    ),
+  )
   assert.equal((await index.indexStatus(root)).snapshotId, null)
-  await index.indexRepository({ root })
+  const resumedProgress: Array<{ checkpointChunks: number; checkpointWrites: number }> = []
+  await index.indexRepository({
+    root,
+    onProgress: ({ checkpointChunks, checkpointWrites }) =>
+      resumedProgress.push({ checkpointChunks, checkpointWrites }),
+  })
   assert.equal(calls, 3)
+  assert.ok(
+    resumedProgress.some(
+      (progress) => progress.checkpointChunks === 32 && progress.checkpointWrites === 0,
+    ),
+  )
+  assert.ok(
+    resumedProgress.some(
+      (progress) => progress.checkpointChunks === 35 && progress.checkpointWrites === 3,
+    ),
+    JSON.stringify(resumedProgress),
+  )
 })
 
 test('snapshot retention keeps only each worktree current while preserving other roots', async () => {

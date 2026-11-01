@@ -68,6 +68,10 @@ test(
       'export function searchableMarker(){ return "winter-orchid" }\n',
     );
     await writeFile(
+      join(repo, "README.md"),
+      "# CLI text fixture\n\nProject text finds silver-orchid.\n",
+    );
+    await writeFile(
       join(second, "secondary.ts"),
       'export function secondaryMarker(){ return "moonstone" }\n',
     );
@@ -96,6 +100,21 @@ test(
       ]);
       assert.equal(r.code, 0, r.err);
       assert.equal(JSON.parse(r.out).providerCalls, 0);
+      const disabledTextConfig = join(dir, "legacy", "config.json");
+      await mkdir(join(dir, "legacy"), { recursive: true });
+      await writeFile(
+        disabledTextConfig,
+        JSON.stringify({
+          version: 1,
+          dataDir: join(dir, "disabled-text-state"),
+          roots: [{ id: "project", path: repo }],
+        }),
+      );
+      r = await run(["text-status", "--config", disabledTextConfig]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /CAPABILITY_DISABLED/);
+      r = await run(["service", "--stop", "--config", disabledTextConfig]);
+      assert.equal(r.code, 0, r.err);
       const symlinkRoot = join(dir, "repo-link");
       await symlink(repo, symlinkRoot, "dir");
       r = await run([
@@ -459,6 +478,31 @@ test(
       assert.match(r.out, /search-fixture\.ts/);
       r = await run(["context", "--query", "searchableMarker", ...common]);
       assert.equal(r.code, 0, r.err);
+      r = await run(["text-status", ...common]);
+      assert.equal(r.code, 0, r.err);
+      assert.equal(JSON.parse(r.out).structuredContent.snapshotId !== null, true);
+      r = await run([
+        "text-search",
+        "--query",
+        "silver-orchid",
+        "--kind",
+        "documentation",
+        ...common,
+      ]);
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /README\.md/);
+      r = await run([
+        "text-read",
+        "--path",
+        "README.md",
+        "--line-start",
+        "1",
+        "--line-end",
+        "3",
+        ...common,
+      ]);
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /silver-orchid/);
       r = await run(["index", "--root-id", "secondary", ...common]);
       assert.equal(r.code, 0, r.err);
       r = await run([

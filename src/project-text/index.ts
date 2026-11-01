@@ -33,6 +33,7 @@ const defaults = {
   maxChunks: 20_000,
   maxChunkChars: 8000,
 }
+const defaultEmbeddingBatchSize = 32
 const validKinds = new Set<ProjectTextKind>(['rules', 'skills', 'documentation'])
 const validateVector = (value: unknown, dimensions: number): number[] => {
   if (
@@ -82,6 +83,13 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
     'maxChunkChars',
   ])
   if (options.limits && Object.keys(options.limits).some((key) => !allowedLimitKeys.has(key)))
+    throw new CodeIndexError('PROJECT_TEXT_LIMIT_INVALID')
+  const embeddingBatchSize = options.embeddingBatchSize ?? defaultEmbeddingBatchSize
+  if (
+    !Number.isSafeInteger(embeddingBatchSize) ||
+    embeddingBatchSize < 1 ||
+    embeddingBatchSize > 200
+  )
     throw new CodeIndexError('PROJECT_TEXT_LIMIT_INVALID')
   const limits = { ...defaults, ...options.limits }
   for (const [k, v] of Object.entries(limits))
@@ -251,6 +259,22 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
             scopeId,
           ]),
         )
+        let checkpointWrites = 0
+        const reportProgress = (checkpointChunks: number) => {
+          try {
+            input.onProgress?.({
+              snapshotId,
+              files: e.files.length,
+              chunks: chunks.length,
+              totalChunks: chunks.length,
+              checkpointChunks,
+              checkpointWrites,
+            })
+          } catch {
+            /* Progress observers do not own index publication. */
+          }
+        }
+        reportProgress(0)
         const published = await db.query<{
           snapshot_id: string
           tree_hash: string
@@ -307,7 +331,7 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
             ])
           }, controller.signal)
           try {
-            input.onProgress?.({ files: e.files.length, chunks: chunks.length })
+            reportProgress(chunks.length)
           } catch {
             /* Progress observers do not own index publication. */
           }
@@ -362,10 +386,12 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
                 vectors[offset + index] = validateVector(value, docProvider.profile.dimensions)
             }
           }
+          reportProgress(vectors.filter((vector) => vector !== null).length)
           const missing = chunks.map((_, i) => i).filter((i) => vectors[i] === null)
-          for (let offset = 0; offset < missing.length; offset += 32) {
+          let durableChunks = vectors.filter((vector) => vector !== null).length
+          for (let offset = 0; offset < missing.length; offset += embeddingBatchSize) {
             controller.signal.throwIfAborted()
-            const batchIndices = missing.slice(offset, offset + 32)
+            const batchIndices = missing.slice(offset, offset + embeddingBatchSize)
             assertProfileStable()
             const batch = await docProvider.embed({
               texts: batchIndices.map((i) => chunks[i]!.text),
@@ -402,6 +428,9 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
                 )
               }
             })
+            checkpointWrites += batchIndices.length
+            durableChunks += batchIndices.length
+            reportProgress(durableChunks)
             controller.signal.throwIfAborted()
           }
         }
@@ -494,7 +523,7 @@ export function createProjectTextIndex(options: ProjectTextOptions): ProjectText
           ])
         }, controller.signal)
         try {
-          input.onProgress?.({ files: e.files.length, chunks: chunks.length })
+          reportProgress(chunks.length)
         } catch {
           /* Progress observers do not own index publication. */
         }

@@ -15,7 +15,7 @@ import {
   readConfig,
   writePrivateFile,
 } from "./files.js";
-import { createSetupConfig, setupMode } from "./setup-config.js";
+import { createSetupConfig, setupMode, type SetupConfigInput } from "./setup-config.js";
 import { parseRuntimeConfig } from "../runtime/config.js";
 import { canonicalFuturePath } from "../runtime/path.js";
 import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
@@ -30,11 +30,15 @@ const help = `Zorya Search — локальный поиск по коду и и
 Использование: zorya-search <команда> [параметры]
 
 Команды:
-  setup          создать локальную конфигурацию (можно задать --code-env NAME)
+  setup          создать локальную конфигурацию (можно задать --code-env NAME, --text-env NAME)
   doctor         проверить конфигурацию и локальный владелец
   index          построить индекс настроенного корня (--background вернёт job id)
   search         искать в коде (--query ТЕКСТ)
   context        собрать контекст (--query ТЕКСТ)
+  text-status    показать статус отдельного индекса документов, правил и навыков
+  text-index     явно обновить отдельный индекс документов, правил и навыков
+  text-search    искать в документах, правилах и навыках (--query ТЕКСТ)
+  text-read      прочитать диапазон документа (--path ПУТЬ)
   serve          запустить владельца службы в foreground
   serve-remote   запустить OAuth-защищённый HTTP MCP endpoint в foreground
   mcp            подключить stdio MCP к общей локальной службе
@@ -51,8 +55,11 @@ const help = `Zorya Search — локальный поиск по коду и и
 --web-embedding-dimensions и --web-embedding-env. По умолчанию используется OpenRouter.
 Для собственного HTTPS endpoint задайте вместе --web-embedding-profile и --web-embedding-endpoint.
 
+Для отдельного Voyage индекса документов, правил и навыков задайте --text-env ИМЯ_ENV.
+Без него конфигурация включает локальный lexical поиск этих источников.
+
 По умолчанию поиск lexical локален. Включение облачных embeddings отправляет выбранные
-фрагменты кода при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
+фрагменты кода или текстовые документы при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
 не меняет prompt или модель клиента и не устанавливает MCP в клиент автоматически.
 `;
 function parse(args: string[]) {
@@ -126,6 +133,9 @@ async function setup(opts: Record<string, string | boolean>) {
     typeof opts["watch-interval-ms"] === "string"
       ? Number(opts["watch-interval-ms"])
       : undefined;
+  let textEnv =
+    typeof opts["text-env"] === "string" ? opts["text-env"] : undefined;
+  if (opts["text-env"] === true) throw new Error("ENV_NAME_INVALID");
   if (opts.watch !== undefined && opts.watch !== true)
     throw new Error("WATCH_FLAG_INVALID");
   if (watchIntervalMs !== undefined && opts.watch !== true)
@@ -179,7 +189,7 @@ async function setup(opts: Record<string, string | boolean>) {
   const hasWebEmbeddingEndpoint = opts["web-embedding-endpoint"] !== undefined;
   if (hasWebEmbeddingProfile !== hasWebEmbeddingEndpoint)
     throw new Error("WEB_EMBEDDING_CUSTOM_OPTIONS_PAIRED");
-  let webEmbedding = hasWebEmbedding
+  let webEmbedding: SetupConfigInput["webEmbedding"] = hasWebEmbedding
     ? {
         model: get(opts, "web-embedding-model"),
         dimensions: Number(get(opts, "web-embedding-dimensions")),
@@ -266,6 +276,17 @@ async function setup(opts: Record<string, string | boolean>) {
             };
         }
       }
+      if (!textEnv) {
+        const enableTextEmbedding = (
+          await rl.question(
+            'Настроить отдельный Voyage профиль для документов, правил и навыков? [y/N] ',
+          )
+        )
+          .trim()
+          .toLowerCase()
+        if (['y', 'yes', 'да'].includes(enableTextEmbedding))
+          textEnv = await rl.question('Имя env-переменной ключа text embeddings и reranking: ')
+      }
       const watchAnswer = (
         await rl.question(
           "Автоматически переиндексировать изменения файлов? [y/N] ",
@@ -278,6 +299,8 @@ async function setup(opts: Record<string, string | boolean>) {
       rl.close();
     }
   }
+  if (textEnv !== undefined && !textEnv.trim())
+    throw new Error("ENV_NAME_INVALID");
   if (codeEnv !== undefined && !codeEnv.trim())
     throw new Error("ENV_NAME_INVALID");
   if (visualEnv !== undefined && !visualEnv.trim())
@@ -295,6 +318,7 @@ async function setup(opts: Record<string, string | boolean>) {
     ...(codeEnv ? { codeEnv } : {}),
     ...(visualEnv ? { visualEnv } : {}),
     ...(webEnv ? { webEnv } : {}),
+    ...(textEnv ? { textEnv } : {}),
     ...(webEmbedding ? { webEmbedding } : {}),
     ...(webReranker ? { webReranker } : {}),
     ...(classifier ? { classifier } : {}),
@@ -419,6 +443,7 @@ async function main() {
       "web-embedding-env",
       "web-reranker-model",
       "web-reranker-env",
+      "text-env",
       "classifier-model",
       "classifier-env",
       "custom-embedding-profile",
@@ -430,6 +455,10 @@ async function main() {
       "non-interactive",
     ],
     serve: ["config", "token-file", "control-file"],
+    'text-status': ['config', 'root-id'],
+    'text-index': ['config', 'root-id'],
+    'text-search': ['config', 'root-id', 'query', 'mode', 'kind', 'limit', 'max-chars'],
+    'text-read': ['config', 'root-id', 'path', 'line-start', 'line-end', 'snapshot'],
     "serve-remote": ["config", "policy"],
     "client-config": ["config"],
     doctor: ["config"],
@@ -627,11 +656,23 @@ async function main() {
     );
     return;
   }
-  if (["index", "search", "context"].includes(command)) {
+  if (["index", "search", "context", "text-status", "text-index", "text-search", "text-read"].includes(command)) {
     const result = await withClient(
       configPath,
       async (client, defaultRootId, jobTimeoutMs) => {
         const rootId = String(opts["root-id"] ?? defaultRootId);
+        if (command.startsWith("text-")) {
+          const capabilities = await client.callTool({
+            name: "capabilities",
+            arguments: {},
+          });
+          if (capabilities.isError) return capabilities;
+          const advertised = capabilities.structuredContent as
+            | { projectText?: unknown }
+            | undefined;
+          if (advertised?.projectText !== true)
+            throw new Error("CAPABILITY_DISABLED");
+        }
         if (command === "index") {
           const admission = await client.callTool({ name: "start_indexing", arguments: { rootId } });
           if (admission.isError || opts.background === true) return admission;
@@ -677,6 +718,39 @@ async function main() {
             process.removeListener("SIGTERM", onSignal);
           }
         }
+        if (command === "text-status")
+          return client.callTool({ name: "project_text_status", arguments: { rootId } });
+        if (command === "text-index")
+          return client.callTool({ name: "index_project_text", arguments: { rootId } });
+        if (command === "text-search")
+          return client.callTool({
+            name: "search_project_text",
+            arguments: {
+              rootId,
+              query: get(opts, "query"),
+              ...(typeof opts.kind === "string" ? { kinds: [opts.kind] } : {}),
+              ...(typeof opts.limit === "string" ? { limit: Number(opts.limit) } : {}),
+              ...(typeof opts["max-chars"] === "string"
+                ? { maxChars: Number(opts["max-chars"]) }
+                : {}),
+              ...(typeof opts.mode === "string" ? { mode: opts.mode } : {}),
+            },
+          });
+        if (command === "text-read")
+          return client.callTool({
+            name: "read_project_text",
+            arguments: {
+              rootId,
+              path: get(opts, "path"),
+              ...(typeof opts["line-start"] === "string"
+                ? { lineStart: Number(opts["line-start"]) }
+                : {}),
+              ...(typeof opts["line-end"] === "string"
+                ? { lineEnd: Number(opts["line-end"]) }
+                : {}),
+              ...(typeof opts.snapshot === "string" ? { snapshotId: opts.snapshot } : {}),
+            },
+          });
         if (command === "search")
           return client.callTool({
             name: "search_code",
