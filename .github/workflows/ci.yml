@@ -101,22 +101,5 @@ jobs:
         with:
           version: 9.15.9
       - run: pnpm install --frozen-lockfile
-      - name: Pack, install, and exercise the published entry points
-        run: |
-          node -e '
-          const { execFileSync, execSync } = require("node:child_process");
-          const { existsSync, mkdtempSync } = require("node:fs");
-          const { tmpdir } = require("node:os");
-          const { join, resolve } = require("node:path");
-          const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-          if (existsSync("dist")) throw new Error("packed-consumer must pack from clean source without dist");
-          const packed = JSON.parse(execFileSync(npm, ["pack", "--json"], { encoding: "utf8", shell: process.platform === "win32" }));
-          if (packed.length !== 1 || !packed[0].filename) throw new Error("npm pack did not return exactly one archive");
-          const consumer = mkdtempSync(join(tmpdir(), "zorya-search-consumer-"));
-          const archive = resolve(packed[0].filename);
-          execSync(`npm install --prefix "${consumer}" "${archive}" --no-audit --no-fund`, { stdio: "inherit", shell: true });
-          const imports = ["@zorya/search", "@zorya/search/code", "@zorya/search/providers", "@zorya/search/context", "@zorya/search/context/web", "@zorya/search/context/classify", "@zorya/search/visual", "@zorya/search/runtime", "@zorya/search/mcp", "@zorya/search/daemon"];
-          const importCode = `for (const name of ${JSON.stringify(imports)}) await import(name);`;
-          execFileSync(process.execPath, ["--input-type=module", "-e", importCode], { cwd: consumer, stdio: "inherit" });
-          execSync(`npm exec --prefix "${consumer}" -- zorya-search --help`, { stdio: "inherit", shell: true });
-          '
+      - name: Pack, install, and exercise package entry points
+        run: node scripts/installed-package-storage-smoke.mjs
