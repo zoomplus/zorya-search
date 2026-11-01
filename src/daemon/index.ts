@@ -302,21 +302,15 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         const principal = access.principalId
         const grants = grantKey(access)
         const adapted = normalizeIncomingMessage(req)
-        const declaredLength = req.headers['content-length']
-        if (
-          typeof declaredLength === 'string' &&
-          /^\d+$/.test(declaredLength) &&
-          Number(declaredLength) > 1_048_576
-        ) {
-          res.setHeader('Connection', 'close')
-          req.resume()
-          res.writeHead(413).end()
-          return
-        }
         const { webRequest, parsedBody } = await readWebRequest(
           adapted,
           requestController.signal,
           1_048_576,
+          () => {
+            if (res.destroyed || res.headersSent) return
+            res.writeHead(413, { connection: 'close', 'content-length': '0' })
+            res.flushHeaders()
+          },
         )
         if (protectedResource && parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
           const body = parsedBody as { method?: unknown; params?: unknown }
@@ -367,15 +361,23 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         requestControllers.delete(requestController)
       }
     })().catch((error: unknown) => {
-      if (res.headersSent) return
-      const status =
-        error &&
-        typeof error === 'object' &&
-        'name' in error &&
-        error.name === 'RequestBodyTooLargeError'
-          ? 413
-          : 500
-      res.writeHead(status).end()
+      const oversizedError = error && typeof error === 'object' && 'name' in error && error.name === 'RequestBodyTooLargeError'
+        ? error as Error & { drained?: boolean }
+        : undefined
+      if (res.headersSent) {
+        if (oversizedError && !res.writableEnded && !res.destroyed) {
+          if (oversizedError.drained === false) res.end(() => req.destroy())
+          else res.end()
+        }
+        return
+      }
+      const status = oversizedError ? 413 : 500
+      if (status === 413) {
+        res.writeHead(413, { connection: 'close' })
+        res.end(() => {
+          if (oversizedError?.drained === false && !req.destroyed) req.destroy()
+        })
+      } else res.writeHead(status).end()
     })
     activeHttpRequests.add(requestTask)
     void requestTask.finally(() => activeHttpRequests.delete(requestTask)).catch(() => undefined)

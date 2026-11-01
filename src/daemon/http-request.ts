@@ -2,6 +2,16 @@ import type { IncomingMessage } from 'node:http'
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from 'node:timers'
 import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
 
+const MAX_OVERSIZE_DRAIN_BYTES = 64 * 1024
+const OVERSIZE_DRAIN_TIMEOUT_MS = 3_000
+
+function tooLarge(drained: boolean) {
+  return Object.assign(new Error('REQUEST_BODY_TOO_LARGE'), {
+    name: 'RequestBodyTooLargeError',
+    drained,
+  })
+}
+
 export function normalizeIncomingMessage(
   request: IncomingMessage,
 ): NodeIncomingMessageLike & IncomingMessage {
@@ -21,10 +31,20 @@ export async function readWebRequest(
   request: IncomingMessage,
   signal: AbortSignal,
   maxBytes: number,
+  onOversized?: () => void,
 ) {
   const method = (request.method ?? 'GET').toUpperCase()
   let bodyText = ''
   let received = 0
+  const contentLength = request.headers['content-length']
+  const declaredLength = typeof contentLength === 'string' && /^\d+$/.test(contentLength)
+    ? Number(contentLength)
+    : undefined
+  let oversized = declaredLength !== undefined && declaredLength > maxBytes
+  let oversizedAnnounced = false
+  let oversizedDrainExpired = false
+  const methodMayCarryBody = method !== 'GET' && method !== 'HEAD'
+  const requestHasBodyFraming = (declaredLength !== undefined && declaredLength > 0) || request.headers['transfer-encoding'] !== undefined
   const decoder = new TextDecoder()
   const bodyController = new AbortController()
   const bodyDeadline = setNodeTimeout(
@@ -34,19 +54,52 @@ export async function readWebRequest(
   const bodySignal = AbortSignal.any([signal, bodyController.signal])
   const abortInput = () => request.destroy()
   bodySignal.addEventListener('abort', abortInput, { once: true })
+  let oversizedDrainDeadline: NodeJS.Timeout | undefined
+  const startOversizedDrainDeadline = () => {
+    if (!oversizedDrainDeadline)
+      oversizedDrainDeadline = setNodeTimeout(() => {
+        oversizedDrainExpired = true
+        bodyController.abort(new Error('HTTP_OVERSIZE_DRAIN_DEADLINE'))
+      }, OVERSIZE_DRAIN_TIMEOUT_MS)
+  }
+  const announceOversized = () => {
+    oversized = true
+    if (oversizedAnnounced) return
+    oversizedAnnounced = true
+    onOversized?.()
+  }
   try {
-    if (method !== 'GET' && method !== 'HEAD') {
-      for await (const chunk of request) {
-        if (bodySignal.aborted) throw bodySignal.reason
-        const bytes = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength
-        received += bytes
-        if (received > maxBytes) {
-          throw Object.assign(new Error('REQUEST_BODY_TOO_LARGE'), {
-            name: 'RequestBodyTooLargeError',
-          })
-        }
-        bodyText += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
+    if (oversized) {
+      announceOversized()
+      startOversizedDrainDeadline()
+    }
+    if (methodMayCarryBody || requestHasBodyFraming || oversized) {
+      if (oversized) {
+        if (declaredLength! > maxBytes + MAX_OVERSIZE_DRAIN_BYTES)
+          throw tooLarge(false)
       }
+      try {
+        for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+          if (bodySignal.aborted) throw bodySignal.reason
+          const bytes = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength
+          received += bytes
+          if (received > maxBytes) {
+            announceOversized()
+            startOversizedDrainDeadline()
+            if (received > maxBytes + MAX_OVERSIZE_DRAIN_BYTES) {
+              request.destroy()
+              throw tooLarge(false)
+            }
+            continue
+          }
+          if (oversized || !methodMayCarryBody) continue
+          bodyText += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
+        }
+      } catch (error) {
+        if (oversizedDrainExpired) throw tooLarge(false)
+        throw error
+      }
+      if (oversized) throw tooLarge(true)
       bodyText += decoder.decode()
     }
     if (bodySignal.aborted) throw bodySignal.reason
@@ -85,6 +138,7 @@ export async function readWebRequest(
     return { webRequest, parsedBody }
   } finally {
     clearNodeTimeout(bodyDeadline)
+    if (oversizedDrainDeadline) clearNodeTimeout(oversizedDrainDeadline)
     bodySignal.removeEventListener('abort', abortInput)
   }
 }

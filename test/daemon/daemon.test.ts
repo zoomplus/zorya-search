@@ -103,17 +103,34 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal((await fetch(base, { headers: { Origin: 'https://evil.example' } })).status, 403)
     stage = 'missing bearer rejection'
     assert.equal((await fetch(base)).status, 401)
-    stage = 'oversized request rejection'
-    assert.equal(
-      (
-        await fetch(base, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${alphaToken}`, 'Content-Type': 'application/json' },
-          body: 'x'.repeat(1_048_577),
-        })
-      ).status,
-      413,
-    )
+    const sendOversized = (method: 'POST' | 'GET', chunked: boolean) => new Promise<number>((resolve, reject) => {
+      const body = 'x'.repeat(1_048_577)
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${alphaToken}`,
+        'Content-Type': 'application/json',
+        ...(chunked ? { 'Transfer-Encoding': 'chunked' } : { 'Content-Length': String(Buffer.byteLength(body)) }),
+      }
+      const req = httpRequest({ hostname: '127.0.0.1', port: daemon!.port, path: daemon!.path, method, headers }, (res) => {
+        res.resume()
+        res.on('end', () => resolve(res.statusCode ?? 0))
+      })
+      req.on('error', reject)
+      if (chunked) {
+        req.flushHeaders()
+        req.write(body.slice(0, 524_288))
+        req.write(body.slice(524_288))
+        req.end()
+      } else req.end(body)
+    })
+    stage = 'repeated oversized request rejection'
+    assert.equal(await sendOversized('POST', false), 413)
+    assert.equal(await sendOversized('POST', false), 413)
+    stage = 'chunked oversized request rejection'
+    assert.equal(await sendOversized('POST', true), 413)
+    stage = 'oversized declared GET rejection'
+    assert.equal(await sendOversized('GET', false), 413)
+    stage = 'oversized chunked GET rejection'
+    assert.equal(await sendOversized('GET', true), 413)
 
     const makeClient = async (mode: 'auto' | 'legacy', token: string) => {
       stage = `${mode} MCP client negotiation`
@@ -1058,6 +1075,95 @@ test('stdio proxy filters foreign tools and binds exposed schemas and hints to l
     await new Promise<void>((resolve, reject) =>
       httpServer.close((error) => (error ? reject(error) : resolve())),
     )
+  }
+})
+
+test('daemon flushes 413 for a stalled declared oversized upload and shutdown joins it promptly', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'zorya-mcp-oversize-close-'))
+  const root = join(dir, 'root')
+  await Promise.all([mkdir(root), mkdir(join(dir, 'state'))])
+  const daemon = await startSearchDaemon({
+    config: { version: 1, dataDir: join(dir, 'state'), roots: [{ id: 'root', path: root }] },
+    bearerToken: 'oversize-close-token'.padEnd(40, 'o'),
+  })
+  let request: ReturnType<typeof httpRequest> | undefined
+  try {
+    const response = new Promise<{ status: number; length: string | undefined }>((resolve, reject) => {
+      request = httpRequest({
+        hostname: '127.0.0.1', port: daemon.port, path: daemon.path, method: 'POST',
+        headers: {
+          Authorization: `Bearer ${'oversize-close-token'.padEnd(40, 'o')}`,
+          'Content-Type': 'application/json',
+          'Content-Length': '1048577',
+        },
+      }, (res) => {
+        res.resume()
+        resolve({ status: res.statusCode ?? 0, length: res.headers['content-length'] })
+      })
+      request.on('error', () => undefined)
+      request.once('socket', (socket) => {
+        socket.once('connect', () => request?.write('x'))
+      })
+      request.flushHeaders()
+    })
+    let responseTimer: NodeJS.Timeout | undefined
+    const responseResult = await Promise.race([
+      response,
+      new Promise<never>((_, reject) => { responseTimer = setTimeout(() => reject(new Error('OVERSIZE_413_NOT_FLUSHED')), 1_500) }),
+    ]).finally(() => { if (responseTimer) clearTimeout(responseTimer) })
+    assert.deepEqual(responseResult, { status: 413, length: '0' })
+
+    let closeTimer: NodeJS.Timeout | undefined
+    await Promise.race([
+      daemon.close(),
+      new Promise<never>((_, reject) => { closeTimer = setTimeout(() => reject(new Error('DAEMON_CLOSE_BLOCKED_BY_STALLED_UPLOAD')), 1_500) }),
+    ]).finally(() => { if (closeTimer) clearTimeout(closeTimer) })
+  } finally {
+    request?.destroy()
+    await daemon.close().catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('daemon flushes 413 at the chunked size limit while the sender withholds the final chunk', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'zorya-mcp-chunked-stall-'))
+  const root = join(dir, 'root')
+  await Promise.all([mkdir(root), mkdir(join(dir, 'state'))])
+  const token = 'chunked-stall-token'.padEnd(40, 'c')
+  const daemon = await startSearchDaemon({
+    config: { version: 1, dataDir: join(dir, 'state'), roots: [{ id: 'root', path: root }] },
+    bearerToken: token,
+  })
+  let request: ReturnType<typeof httpRequest> | undefined
+  try {
+    const response = new Promise<number>((resolve, reject) => {
+      request = httpRequest({
+        hostname: '127.0.0.1', port: daemon.port, path: daemon.path, method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' },
+      }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      })
+      request.on('error', () => undefined)
+      request.flushHeaders()
+    })
+    request.write('x'.repeat(524_288))
+    request.write('x'.repeat(524_289))
+    let responseTimer: NodeJS.Timeout | undefined
+    const status = await Promise.race([
+      response,
+      new Promise<never>((_, reject) => { responseTimer = setTimeout(() => reject(new Error('CHUNKED_413_NOT_FLUSHED')), 1_500) }),
+    ]).finally(() => { if (responseTimer) clearTimeout(responseTimer) })
+    assert.equal(status, 413)
+    let closeTimer: NodeJS.Timeout | undefined
+    await Promise.race([
+      daemon.close(),
+      new Promise<never>((_, reject) => { closeTimer = setTimeout(() => reject(new Error('CHUNKED_STALL_BLOCKED_DAEMON_CLOSE')), 1_500) }),
+    ]).finally(() => { if (closeTimer) clearTimeout(closeTimer) })
+  } finally {
+    request?.destroy()
+    await daemon.close().catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
