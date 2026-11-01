@@ -53,10 +53,18 @@ const textExtensions = new Set([
   '.vue',
   '.svelte',
 ])
-function isIndexablePath(path: string): boolean {
-  return (
-    !forbidden.test(path) && textExtensions.has(path.slice(path.lastIndexOf('.')).toLowerCase())
-  )
+export interface EnumerationSelection {
+  extensions: readonly string[]
+  filenames?: readonly string[]
+}
+
+const codeSelection: EnumerationSelection = { extensions: [...textExtensions] }
+
+function isIndexablePath(path: string, selection: EnumerationSelection = codeSelection): boolean {
+  if (forbidden.test(path)) return false
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  return (selection.filenames ?? []).includes(name) ||
+    selection.extensions.includes(path.slice(path.lastIndexOf('.')).toLowerCase())
 }
 
 export function createCodePathPolicy(input: string[] | undefined): {
@@ -172,6 +180,7 @@ async function walkNonGit(
   maxFiles: number,
   signal?: AbortSignal,
   excludes: (path: string) => boolean = () => false,
+  selection: EnumerationSelection = codeSelection,
 ): Promise<string[]> {
   const files: string[] = []
   const maxEntries = Math.min(maxFiles * 20, 250_000)
@@ -225,7 +234,7 @@ async function walkNonGit(
       if (ignored) continue
       if (entry.isSymbolicLink()) continue
       if (entry.isDirectory()) await visit(absolute, inherited)
-      else if (entry.isFile() && isIndexablePath(relativePath)) {
+      else if (entry.isFile() && isIndexablePath(relativePath, selection)) {
         files.push(relativePath)
         if (files.length > maxFiles) throw new CodeIndexError('CODE_INDEX_FILE_LIMIT')
       }
@@ -248,6 +257,7 @@ export async function enumerateCode(
   limits: CodeIndexLimits,
   signal?: AbortSignal,
   excludes: (path: string) => boolean = () => false,
+  selection: EnumerationSelection = codeSelection,
 ): Promise<{ files: EnumeratedFile[]; treeHash: string; ignoredMode: 'git' | 'non-git' }> {
   signal?.throwIfAborted()
   const rootReal = await realpath(root)
@@ -256,13 +266,13 @@ export async function enumerateCode(
     Math.min(limits.maxFiles * 4096, 64 * 1024 * 1024),
     signal,
   )
-  const listed = gitListed ?? (await walkNonGit(rootReal, limits.maxFiles, signal, excludes))
+  const listed = gitListed ?? (await walkNonGit(rootReal, limits.maxFiles, signal, excludes, selection))
   const files: EnumeratedFile[] = []
   let totalBytes = 0
   for (const path of listed.sort()) {
     signal?.throwIfAborted()
     const normalizedPath = path.replaceAll('\\', '/')
-    if (!isIndexablePath(normalizedPath) || excludes(normalizedPath)) continue
+    if (!isIndexablePath(normalizedPath, selection) || excludes(normalizedPath)) continue
     const absolutePath = resolve(rootReal, path)
     if (!inside(rootReal, absolutePath)) continue
     const info = await lstat(absolutePath).catch(() => null)
