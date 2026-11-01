@@ -45,6 +45,9 @@ test('shared MCP/runtime schemas keep owner paths and credentials out of tool in
     }).success,
     false,
   )
+  assert.equal(contextRequest.safeParse({ rootId: 'repo', query: 'needle', includeRelated: true, relatedDepth: 4, relatedMaxPaths: 64 }).success, true)
+  assert.equal(contextRequest.safeParse({ rootId: 'repo', query: 'needle', relatedDepth: 2 }).success, false)
+  assert.equal(contextRequest.safeParse({ rootId: 'repo', query: 'needle', includeRelated: true, relatedDepth: 5 }).success, false)
   assert.equal(
     classifyRequest.safeParse({
       text: 'untrusted input',

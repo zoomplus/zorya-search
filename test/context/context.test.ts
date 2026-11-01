@@ -243,9 +243,127 @@ test('includeRelated opt-in marks only graph candidates as related with graph pr
   assert.ok(metrics.related > 0)
   assert.ok(
     result.sections.some((section) =>
-      section.rankOrigins.some((origin) => origin.source === 'related'),
+      section.rankOrigins.some((origin) => origin.source === 'related' && origin.relatedKind === 'similar'),
     ),
   )
+  assert.deepEqual(result.relatedGraph, { status: 'unsupported' })
+  await context.close()
+})
+
+test('related graph bounds require explicit opt-in and honor the maximum depth', async () => {
+  const context = createCodeContext({ index: fakeIndex() })
+  assert.throws(() => context.getCodeContext({ root: '/repo', query: 'base', relatedDepth: 2 }),
+    (error) => error instanceof CodeContextError && error.code === 'LIMIT')
+  assert.throws(() => context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true, relatedDepth: 5 }),
+    (error) => error instanceof CodeContextError && error.code === 'LIMIT')
+  await context.close()
+})
+
+test('dependency graph context ranks reached paths with filtered search and exposes observed edges', async () => {
+  const index = fakeIndex()
+  const seed = (await index.searchCode({ root: '/repo', query: 'base', limit: 1 })).hits[0]!
+  const target = { ...seed, id: 'impl.ts:9', path: 'impl.ts', lineStart: 9, lineEnd: 9, contentHash: 'impl-chunk' }
+  const similar = { ...target, id: 'helper.ts:4', path: 'helper.ts', lineStart: 4, lineEnd: 4 }
+  index.dependencyGraph = async ({ seeds }: { seeds: string[] }) => ({
+    identity, seeds, requestedDepth: 2, reachedDepth: 1,
+    nodes: [{ path: seeds[0]!, depth: 0, seed: seeds[0]!, parent: null, relation: 'seed' }, { path: 'impl.ts', depth: 1, seed: seeds[0]!, parent: seeds[0]!, relation: 'imports' }],
+    edges: [{ from: seeds[0]!, to: 'impl.ts', direction: 'imports' }], limits: { depth: false, nodes: false, edges: false },
+  })
+  index.searchCode = async (input: { paths?: string[] }) => ({
+    hits: input.paths?.includes('impl.ts') ? [target] : [seed], identity,
+    degraded: Boolean(input.paths?.includes('impl.ts')),
+    degradedReason: input.paths?.includes('impl.ts') ? 'filtered-profile-unavailable' : null,
+  })
+  index.relatedCode = async () => ({ identity, imports: [], importedBy: [], similar: [similar], stale: false })
+  const context = createCodeContext({ index })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true })
+  assert.equal(result.relatedGraph?.status, 'available')
+  assert.deepEqual(result.relatedGraph?.graph?.edges, [{ from: 'a.ts', to: 'impl.ts', direction: 'imports' }])
+  const section = result.sections.find((item) => item.path === 'impl.ts')
+  assert.equal(section?.reason, 'related')
+  assert.equal(section?.rankOrigins[0]?.source, 'related')
+  assert.equal(section?.rankOrigins[0]?.relatedKind, 'dependency')
+  assert.equal(section?.rankOrigins[0]?.rank, 1)
+  const similarSection = result.sections.find((item) => item.path === 'helper.ts')
+  assert.equal(similarSection?.rankOrigins[0]?.relatedKind, 'similar')
+  assert.equal(similarSection?.rankOrigins[0]?.relatedSeed, 'a.ts')
+  assert.deepEqual(result.degradedReasons, ['filtered-profile-unavailable'])
+  await context.close()
+})
+
+test('overlapping dependency and primary reads keep search reason and both provenance kinds', async () => {
+  const index = fakeIndex()
+  const makeHit = (path: string, lineStart: number): CodeHit => ({
+    id: `${path}:${lineStart}`, path, lineStart, lineEnd: lineStart,
+    symbol: null, language: 'typescript', contentHash: `chunk-${path}`,
+    repoId: identity.repoId, worktreeId: identity.worktreeId, branch: identity.branch,
+    head: identity.head, snapshotId: identity.snapshotId, profileId: null, score: 1,
+    ranking: { mode: 'lexical', lexicalRank: 1, denseRank: null, rerankRank: null },
+  })
+  const baseHits = [makeHit('a.ts', 1), makeHit('b.ts', 1), makeHit('c.ts', 1), makeHit('d.ts', 4)]
+  const dependencyHit = makeHit('d.ts', 3)
+  index.searchCode = async (input: { paths?: string[] }) => ({
+    hits: input.paths?.includes('d.ts') ? [dependencyHit] : baseHits,
+    identity, degraded: false, degradedReason: null,
+  })
+  index.dependencyGraph = async ({ seeds }: { seeds: string[] }) => ({
+    identity, seeds, requestedDepth: 1, reachedDepth: 1,
+    nodes: [
+      ...seeds.map((path) => ({ path, depth: 0, seed: path, parent: null, relation: 'seed' as const })),
+      { path: 'd.ts', depth: 1, seed: seeds[0]!, parent: seeds[0]!, relation: 'imports' as const },
+    ],
+    edges: [{ from: seeds[0]!, to: 'd.ts', direction: 'imports' }],
+    limits: { depth: true, nodes: false, edges: false },
+  })
+  const context = createCodeContext({ index })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true })
+  const merged = result.sections.find((section) => section.path === 'd.ts')
+  assert.deepEqual([merged?.lineStart, merged?.lineEnd], [3, 4])
+  assert.equal(merged?.reason, 'search')
+  assert.equal(merged?.rankOrigins.some((origin) => origin.source === 'query'), true)
+  assert.equal(merged?.rankOrigins.some((origin) => origin.relatedKind === 'dependency'), true)
+  await context.close()
+})
+
+test('context rejects a dependency graph from a foreign snapshot and defaults off', async () => {
+  const index = fakeIndex()
+  let graphCalls = 0
+  index.dependencyGraph = async () => {
+    graphCalls++
+    return { identity: { ...identity, snapshotId: 'foreign' }, seeds: ['a.ts'], nodes: [], edges: [],
+      requestedDepth: 2, reachedDepth: 0, limits: { depth: false, nodes: false, edges: false } }
+  }
+  const context = createCodeContext({ index })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base' })
+  assert.equal(graphCalls, 0)
+  assert.equal('relatedGraph' in result, false)
+  await assert.rejects(context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true }),
+    (error) => error instanceof CodeContextError && error.code === 'STALE_SNAPSHOT')
+  assert.equal(graphCalls, 1)
+  await context.close()
+})
+
+test('mandatory and primary context retain budget before dependency candidates', async () => {
+  const index = fakeIndex()
+  const seed = (await index.searchCode({ root: '/repo', query: 'base', limit: 1 })).hits[0]!
+  const target = { ...seed, id: 'impl.ts:9', path: 'impl.ts', lineStart: 9, lineEnd: 9 }
+  index.dependencyGraph = async ({ seeds }: { seeds: string[] }) => ({
+    identity, seeds, requestedDepth: 2, reachedDepth: 1,
+    nodes: [{ path: seeds[0]!, depth: 0, seed: seeds[0]!, parent: null, relation: 'seed' },
+      { path: 'impl.ts', depth: 1, seed: seeds[0]!, parent: seeds[0]!, relation: 'imports' }],
+    edges: [{ from: seeds[0]!, to: 'impl.ts', direction: 'imports' }],
+    limits: { depth: false, nodes: false, edges: false },
+  })
+  index.searchCode = async (input: { paths?: string[] }) => ({
+    hits: input.paths?.includes('impl.ts') ? [target] : [seed], identity, degraded: false, degradedReason: null,
+  })
+  const context = createCodeContext({ index })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base', includeRelated: true,
+    mustInclude: [{ path: 'required.ts' }], maxChars: 400 })
+  assert.equal(result.sections.find((section) => section.path === 'required.ts')?.reason, 'mandatory')
+  assert.equal(result.sections.some((section) => section.path === 'a.ts'), true)
+  assert.equal(result.sections.some((section) => section.path === 'impl.ts'), false)
+  assert.ok(result.omitted.some((entry) => entry.path === 'impl.ts' && entry.reason === 'budget'))
   await context.close()
 })
 

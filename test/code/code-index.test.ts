@@ -1123,6 +1123,136 @@ test('indexes AST symbols and import edges, searches offline, and returns proven
   await code.close()
 })
 
+test('dependency graph follows bounded import edges in both directions with snapshot identity', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'a.ts'), "import './b.js'\n")
+  await writeFile(join(root, 'b.ts'), "import './c.js'\n")
+  await writeFile(join(root, 'c.ts'), "import './a.js'\nexport const value = 1\n")
+  await writeFile(join(root, 'x.ts'), "import './y.js'\n")
+  await writeFile(join(root, 'y.ts'), 'export const y = 1\n')
+  await writeFile(join(root, 'outside.txt'), 'ignored')
+  await writeFile(join(root, '.env'), 'secret')
+  await commit(root, 'dependency graph fixture')
+  const { code } = await index(root)
+  const status = await code.indexRepository({ root })
+  const mutableRequest = { root, seeds: ['a.ts'], maxDepth: 2 }
+  const capturedGraph = code.dependencyGraph!(mutableRequest)
+  mutableRequest.seeds[0] = 'missing.ts'
+  mutableRequest.maxDepth = 1
+  const captured = await capturedGraph
+  assert.deepEqual(captured.seeds, ['a.ts'])
+  assert.equal(captured.requestedDepth, 2)
+  const scopedSeeds = ['a.ts']
+  const scopedCaptured = await code.withReadSnapshot!(root, new AbortController().signal, (scoped) => {
+    const pending = scoped.dependencyGraph!({ root, seeds: scopedSeeds, maxDepth: 2 })
+    scopedSeeds[0] = 'missing.ts'
+    return pending
+  })
+  assert.deepEqual(scopedCaptured.seeds, ['a.ts'])
+  const graph = await code.withReadSnapshot!(root, new AbortController().signal, (scoped) =>
+    scoped.dependencyGraph!({ root, seeds: ['a.ts'], maxDepth: 2 }),
+  )
+  assert.equal(graph.identity.snapshotId, status.identity?.snapshotId)
+  assert.deepEqual(graph.nodes.map(({ path, depth, parent }) => [path, depth, parent]), [
+    ['a.ts', 0, null], ['b.ts', 1, 'a.ts'], ['c.ts', 1, 'a.ts'],
+  ])
+  assert.deepEqual(graph.nodes.map((node) => [node.path, node.relation]), [
+    ['a.ts', 'seed'], ['b.ts', 'imports'], ['c.ts', 'importedBy'],
+  ])
+  assert.deepEqual(new Set(graph.edges.map((edge) => `${edge.from}->${edge.to}:${edge.direction}`)), new Set([
+    'a.ts->b.ts:imports', 'c.ts->a.ts:importedBy', 'b.ts->c.ts:imports',
+  ]))
+  assert.equal(graph.reachedDepth, 1)
+  assert.equal(graph.limits.depth, false)
+  const twoNodeBoundary = await code.dependencyGraph!({ root, seeds: ['x.ts'], maxDepth: 4 })
+  assert.equal(twoNodeBoundary.nodes.length, 2)
+  assert.equal(twoNodeBoundary.reachedDepth, 1)
+  assert.equal(twoNodeBoundary.limits.depth, false)
+  const importerView = await code.dependencyGraph!({ root, seeds: ['b.ts'], maxDepth: 1 })
+  assert.equal(importerView.nodes.find((node) => node.path === 'a.ts')?.relation, 'importedBy')
+  assert.equal(importerView.nodes.find((node) => node.path === 'c.ts')?.relation, 'imports')
+  const capped = await code.dependencyGraph!({ root, seeds: ['a.ts'], maxDepth: 4, maxNodes: 2 })
+  assert.deepEqual(capped.nodes.map((node) => node.path), ['a.ts', 'b.ts'])
+  assert.equal(capped.limits.nodes, true)
+  await assert.rejects(code.dependencyGraph!({ root, seeds: ['.env'] }))
+  await assert.rejects(code.dependencyGraph!({ root, seeds: ['missing.ts'] }))
+  await assert.rejects(code.dependencyGraph!({ root, seeds: ['../outside.txt'] }))
+})
+
+test('dependency graph edge budget counts unique edges across BFS levels', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'a.ts'), "import './b.js'\n")
+  await writeFile(join(root, 'b.ts'), "import './c.js'\n")
+  await writeFile(join(root, 'c.ts'), 'export const c = 1\n')
+  await commit(root, 'edge cap fixture')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+  const graph = await code.dependencyGraph!({ root, seeds: ['a.ts'], maxDepth: 2, maxEdges: 2 })
+  assert.deepEqual(graph.edges.map(({ from, to }) => `${from}->${to}`), ['a.ts->b.ts', 'b.ts->c.ts'])
+  assert.equal(graph.limits.edges, false)
+  assert.equal(graph.reachedDepth, 2)
+})
+
+test('dependency graph scoped reads reject source changes and close joins canceled SQL', async () => {
+  const makeFixture = async (prefix: string) => {
+    const root = await repository()
+    await writeFile(join(root, 'a.ts'), "import './b.js'\n")
+    await writeFile(join(root, 'b.ts'), 'export const value = 1\n')
+    await commit(root, 'dependency graph lifecycle fixture')
+    const dataDir = await mkdtemp(join(tmpdir(), prefix))
+    roots.push(dataDir)
+    const rawDatabase = await openEmbeddedDatabase(dataDir)
+    databases.push(rawDatabase)
+    let waiting = false
+    let resolveStarted: (() => void) | undefined
+    let release: (() => void) | undefined
+    const started = new Promise<void>((resolvePromise) => { resolveStarted = resolvePromise })
+    const delayedDatabase: QueryableDatabase = {
+      query: async (sql, values) => {
+        if (waiting && /FROM zorya_code_imports/iu.test(sql)) {
+          waiting = false
+          resolveStarted?.()
+          await new Promise<void>((resolvePromise) => { release = resolvePromise })
+        }
+        return rawDatabase.query(sql, values)
+      },
+      exec: (sql) => rawDatabase.exec(sql),
+      transaction: (operation, signal) => rawDatabase.transaction(operation, signal),
+    }
+    const code = trackCodeIndex(createCodeIndex({ database: delayedDatabase }))
+    await code.indexRepository({ root })
+    return { root, code, started, block() { waiting = true }, release() { release?.() } }
+  }
+
+  const changed = await makeFixture('zorya-dependency-change-')
+  changed.block()
+  const scopedGraph = changed.code.withReadSnapshot!(changed.root, new AbortController().signal,
+    (scoped) => scoped.dependencyGraph!({ root: changed.root, seeds: ['a.ts'] }))
+  await changed.started
+  await writeFile(join(changed.root, 'b.ts'), 'export const value = 2\n')
+  changed.release()
+  await assert.rejects(scopedGraph, (error) => error instanceof CodeIndexError)
+  await changed.code.close()
+
+  const canceled = await makeFixture('zorya-dependency-cancel-')
+  canceled.block()
+  const controller = new AbortController()
+  let settled = false
+  const graph = canceled.code.dependencyGraph!({ root: canceled.root, seeds: ['a.ts'], signal: controller.signal })
+    .finally(() => { settled = true })
+  await canceled.started
+  controller.abort()
+  let closed = false
+  const close = canceled.code.close().then(() => { closed = true })
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+  assert.equal(settled, false)
+  assert.equal(closed, false)
+  canceled.release()
+  await assert.rejects(graph, (error: unknown) => error instanceof Error && error.name === 'AbortError')
+  await close
+  assert.equal(closed, true)
+})
+
 test('honors nested ignore negation, secret policy, binary exclusion, and symlink containment', async () => {
   const root = await repository()
   await mkdir(join(root, 'nested'))

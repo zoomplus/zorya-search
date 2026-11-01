@@ -10,6 +10,8 @@ import type {
   CodeIndexLimits,
   CodeChunk,
   CodeEmbeddingProfile,
+  CodeDependencyGraphInput,
+  CodeDependencyGraph,
 } from './types.js'
 import { CodeIndexError } from './errors.js'
 import { createCodePathPolicy, enumerateCode, readScopedFile } from './enumerate.js'
@@ -30,6 +32,7 @@ import {
   type PreparedLexicalCorpus,
 } from './ranking.js'
 import { watchCodeRoot } from './watch.js'
+import { walkDependencyGraph } from './dependency-graph.js'
 
 const DEFAULT_LIMITS: CodeIndexLimits = {
   maxFiles: 5000,
@@ -1087,6 +1090,68 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const relatedCode: CodeIndex['relatedCode'] = (input) =>
     own(input.signal, (signal) => relatedCodeInner({ ...input, signal }))
 
+  const dependencyGraphInner = async (
+    input: CodeDependencyGraphInput,
+    scope?: ReadScope,
+  ): Promise<CodeDependencyGraph> => {
+    if (typeof input.root !== 'string' || !input.root || input.root.length > 4096)
+      throw new CodeIndexError('CODE_INDEX_PATH_FILTER_INVALID')
+    checkAbort(input.signal)
+    if (scope) assertReadScope(scope, input.root, input.signal ?? scope.signal)
+    const snapshot = scope?.snapshot ?? (await current(input.root, input.signal))
+    const maxDepth = input.maxDepth ?? 2
+    const maxNodes = input.maxNodes ?? 24
+    const maxEdges = input.maxEdges ?? 128
+    if (!Array.isArray(input.seeds) || input.seeds.length < 1 || input.seeds.length > 16 ||
+        !Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 4 ||
+        !Number.isInteger(maxNodes) || maxNodes < input.seeds.length || maxNodes > 64 ||
+        !Number.isInteger(maxEdges) || maxEdges < 1 || maxEdges > 512)
+      throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID')
+    const seeds = [...new Set(input.seeds.map((path) => {
+      if (typeof path !== 'string' || !path || path.length > 1024 || path.startsWith('/') || path.split(/[\\/]/u).includes('..'))
+        throw new CodeIndexError('CODE_INDEX_PATH_FILTER_INVALID')
+      const normalized = posix.normalize(path.replaceAll('\\', '/'))
+      if (normalized === '.' || normalized.startsWith('../') || pathPolicy.excludes(normalized))
+        throw new CodeIndexError('CODE_INDEX_SOURCE_UNAVAILABLE')
+      return normalized
+    }))].sort()
+    if (seeds.length > maxNodes) throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID')
+    const seedRows = await database.query<{ path: string }>(
+      'SELECT path FROM zorya_code_files WHERE snapshot_id=$1 AND path=ANY($2::text[]) ORDER BY path',
+      [snapshot.snapshot, seeds],
+    )
+    if (seedRows.rows.length !== seeds.length) throw new CodeIndexError('CODE_INDEX_SOURCE_UNAVAILABLE')
+    const graph = await walkDependencyGraph({
+      identity: snapshot.identity,
+      seeds,
+      maxDepth,
+      maxNodes,
+      maxEdges,
+      signal: input.signal!,
+      excluded: pathPolicy.excludes,
+      readEdges: async (frontier, limit, signal) => {
+        checkAbort(signal)
+        const result = await database.query<{ from_path: string; to_path: string }>(
+        `SELECT from_path,to_path FROM zorya_code_imports
+         WHERE snapshot_id=$1 AND (from_path=ANY($2::text[]) OR to_path=ANY($2::text[]))
+         ORDER BY CASE WHEN from_path=ANY($2::text[]) THEN 0 ELSE 1 END,from_path,to_path LIMIT $3`,
+        [snapshot.snapshot, frontier, limit],
+        )
+        return result.rows.map((row) => ({ from: row.from_path, to: row.to_path }))
+      },
+    })
+    if (scope) assertReadScope(scope, input.root, input.signal ?? scope.signal)
+    else {
+      const after = await current(input.root, input.signal)
+      if (after.snapshot !== snapshot.snapshot) throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+    }
+    return graph
+  }
+  const dependencyGraph: NonNullable<CodeIndex['dependencyGraph']> = (input) => {
+    const captured = { ...input, seeds: Array.isArray(input.seeds) ? [...input.seeds] : input.seeds }
+    return own(captured.signal, (signal) => dependencyGraphInner({ ...captured, signal }))
+  }
+
   const withReadSnapshot: NonNullable<CodeIndex['withReadSnapshot']> = (
     inputRoot,
     callerSignal,
@@ -1151,6 +1216,11 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         relatedCode: (input: Parameters<CodeIndex['relatedCode']>[0]) =>
           invoke(input.signal, (ownedSignal, canonicalRoot) =>
             relatedCodeInner({ ...input, root: canonicalRoot, signal: ownedSignal }, scope), input.root),
+        dependencyGraph: (input: CodeDependencyGraphInput) => {
+          const captured = { ...input, seeds: Array.isArray(input.seeds) ? [...input.seeds] : input.seeds }
+          return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
+            dependencyGraphInner({ ...captured, root: canonicalRoot, signal: ownedSignal }, scope), captured.root)
+        },
       })
       try {
         const result = await work(scoped)
@@ -1240,6 +1310,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     indexStatus,
     readSource,
     relatedCode,
+    dependencyGraph,
     withReadSnapshot,
     watchRepository,
     close() {

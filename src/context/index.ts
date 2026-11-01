@@ -1,4 +1,4 @@
-import type { CodeHit, CodeIndex, CodeSourceIdentity } from '../code/types.js'
+import type { CodeHit, CodeIndex, CodeSourceIdentity, CodeDependencyGraph } from '../code/types.js'
 import { createLifecycle } from './lifecycle.js'
 
 export interface CodeContextLimits {
@@ -35,6 +35,8 @@ export interface CodeContextRequest {
   featureQueries?: string[]
   mustInclude?: RequiredCodeRange[]
   includeRelated?: boolean
+  relatedDepth?: number
+  relatedMaxPaths?: number
   maxChars?: number
   limit?: number
   signal?: AbortSignal
@@ -49,6 +51,8 @@ export interface RelatedCodeRequest {
 
 export interface CodeContextRankOrigin {
   source: 'query' | 'related'
+  relatedKind?: 'dependency' | 'similar'
+  relatedSeed?: string
   queryIndex: number | null
   rank: number
   mode: 'lexical' | 'hybrid'
@@ -81,6 +85,7 @@ export interface CodeContextResult {
   omitted: Array<{ path: string; reason: 'budget' | 'range-too-large' }>
   degraded: boolean
   degradedReasons: string[]
+  relatedGraph?: { status: 'available'; graph: CodeDependencyGraph } | { status: 'unsupported' }
 }
 
 export class CodeContextError extends Error {
@@ -104,6 +109,7 @@ export function createCodeContext(options: {
     searchCode: source.searchCode.bind(source),
     readSource: source.readSource.bind(source),
     relatedCode: source.relatedCode.bind(source),
+    ...(source.dependencyGraph ? { dependencyGraph: source.dependencyGraph.bind(source) } : {}),
     ...(source.withReadSnapshot ? { withReadSnapshot: source.withReadSnapshot.bind(source) } : {}),
   })
   const lifecycle = createLifecycle(limits.maxConcurrency)
@@ -114,7 +120,8 @@ export function createCodeContext(options: {
       validateRequest(request, limits)
       return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
         const run = async (
-          operationIndex: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'>,
+          operationIndex: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
+            Partial<Pick<CodeIndex, 'dependencyGraph'>>,
         ) => {
           signal.throwIfAborted()
           const status = structuredClone(await operationIndex.indexStatus(request.root, signal))
@@ -188,6 +195,7 @@ export function createCodeContext(options: {
           const sections: CodeContextSection[] = []
           const omitted: CodeContextResult['omitted'] = []
           let usedChars = 0
+          let relatedGraphResult: CodeContextResult['relatedGraph'] | undefined
           const read = async (
             path: string,
             lineStart: number | undefined,
@@ -221,6 +229,8 @@ export function createCodeContext(options: {
                     !covered.rankOrigins.some(
                       (prior) =>
                         prior.source === origin.source &&
+                        prior.relatedKind === origin.relatedKind &&
+                        prior.relatedSeed === origin.relatedSeed &&
                         prior.queryIndex === origin.queryIndex &&
                         prior.rank === origin.rank,
                     ),
@@ -375,7 +385,9 @@ export function createCodeContext(options: {
               if (!previous.candidateChunkHash) previous.candidateChunkHash = chunkHash
               if (reason === 'mandatory' || connected.some((s) => s.reason === 'mandatory'))
                 previous.reason = 'mandatory'
-              else if (reason === 'related') previous.reason = 'related'
+              else if (reason === 'search' || previous.reason === 'search' || connected.some((s) => s.reason === 'search'))
+                previous.reason = 'search'
+              else previous.reason = 'related'
               previous.rankOrigins.push(
                 ...connected
                   .flatMap((section) => section.rankOrigins)
@@ -384,7 +396,8 @@ export function createCodeContext(options: {
                     (o) =>
                       !previous.rankOrigins.some(
                         (p) =>
-                          p.source === o.source && p.queryIndex === o.queryIndex && p.rank === o.rank,
+                          p.source === o.source && p.relatedKind === o.relatedKind &&
+                          p.relatedSeed === o.relatedSeed && p.queryIndex === o.queryIndex && p.rank === o.rank,
                       ),
                   ),
               )
@@ -455,49 +468,104 @@ export function createCodeContext(options: {
               )
             }
           }
-          await addCandidates(firstPerPath, 'search', 1)
-          await addCandidates(additional, 'search', 2)
+          const graphOptIn = Boolean(request.includeRelated && operationIndex.dependencyGraph)
+          if (graphOptIn) await addCandidates(firstPerPath.slice(0, 1), 'search', 1)
+          else {
+            await addCandidates(firstPerPath, 'search', 1)
+            await addCandidates(additional, 'search', 2)
+          }
+          const relatedDegradedReasons: string[] = []
           if (request.includeRelated) {
-            const relatedCandidates: typeof hits = []
-            const relatedPaths = new Set<string>()
-            for (const candidate of firstPerPath.slice(0, 3)) {
-              signal.throwIfAborted()
-              if (relatedPaths.has(candidate.hit.path)) continue
-              relatedPaths.add(candidate.hit.path)
-              const related = structuredClone(
-                await operationIndex.relatedCode({
+            const dependencyCandidates: typeof hits = []
+            const seedPaths = [...new Set(firstPerPath.slice(0, Math.min(3, request.relatedMaxPaths ?? 24)).map((candidate) => candidate.hit.path))]
+            if (operationIndex.dependencyGraph) {
+              if (seedPaths.length) {
+                const graph = structuredClone(await operationIndex.dependencyGraph({
                   root: request.root,
-                  path: candidate.hit.path,
-                  ...(candidate.hit.symbol ? { symbol: candidate.hit.symbol } : {}),
-                  limit: 4,
+                  seeds: seedPaths,
+                  maxDepth: request.relatedDepth ?? 2,
+                  maxNodes: Math.max(seedPaths.length, request.relatedMaxPaths ?? 24),
                   signal,
-                }),
-              )
+                }))
+                signal.throwIfAborted()
+                assertIdentity(identity, [graph.identity])
+                relatedGraphResult = { status: 'available', graph }
+                const pathSet = graph.nodes.map((node) => node.path)
+                  .filter((path) => !seedPaths.includes(path))
+                  .slice(0, request.relatedMaxPaths ?? 24)
+                if (pathSet.length) {
+                  const related = structuredClone(await operationIndex.searchCode({
+                    root: request.root,
+                    query: request.query,
+                    paths: pathSet,
+                    limit: Math.min(request.limit ?? 8, 8),
+                    mode: 'hybrid',
+                    signal,
+                  }))
+                  assertIdentity(identity, [related.identity])
+                  if (related.degradedReason) relatedDegradedReasons.push(related.degradedReason)
+                  related.hits.forEach((hit, rank) => {
+                    const graphNode = graph.nodes.find((node) => node.path === hit.path)
+                    const origin: CodeContextRankOrigin = {
+                      source: 'related', relatedKind: 'dependency',
+                      ...(graphNode ? { relatedSeed: graphNode.seed } : {}),
+                      queryIndex: null, rank: rank + 1, mode: hit.ranking.mode,
+                      lexicalRank: hit.ranking.lexicalRank, denseRank: hit.ranking.denseRank,
+                      rerankRank: hit.ranking.rerankRank, score: hit.score, profileId: hit.profileId,
+                    }
+                    const prior = hits.find((base) => base.hit.id === hit.id)
+                    dependencyCandidates.push({
+                      hit: prior?.hit ?? hit, origins: [origin], score: 1 / (60 + rank + 1),
+                    })
+                  })
+                }
+              } else {
+                relatedGraphResult = { status: 'available', graph: {
+                  identity, seeds: [], nodes: [], edges: [],
+                  requestedDepth: request.relatedDepth ?? 2, reachedDepth: 0,
+                  limits: { depth: false, nodes: false, edges: false },
+                } }
+              }
+            } else {
+              relatedGraphResult = { status: 'unsupported' }
+            }
+            // Dependency candidates get first access to optional context budget.
+            await addCandidates(dependencyCandidates, 'related', 2)
+            if (graphOptIn) {
+              await addCandidates(firstPerPath.slice(1), 'search', 1)
+              await addCandidates(additional, 'search', 2)
+            }
+
+            // Preserve the pre-existing lexical similar-code phase for every adapter.
+            const similarCandidates: typeof hits = []
+            for (const candidate of seedPaths) {
+              signal.throwIfAborted()
+              const seedCandidate = firstPerPath.find((entry) => entry.hit.path === candidate)
+              if (!seedCandidate) continue
+              const related = structuredClone(await operationIndex.relatedCode({
+                root: request.root,
+                path: candidate,
+                ...(seedCandidate.hit.symbol ? { symbol: seedCandidate.hit.symbol } : {}),
+                limit: 4,
+                signal,
+              }))
               signal.throwIfAborted()
               if (related.stale) throw new CodeContextError('STALE_SNAPSHOT')
               assertIdentity(identity, [related.identity])
               related.similar.forEach((hit, rank) => {
-                if (hits.some((base) => base.hit.id === hit.id)) return
-                relatedCandidates.push({
-                  hit,
-                  origins: [
-                    {
-                      source: 'related',
-                      queryIndex: null,
-                      rank: rank + 1,
-                      mode: hit.ranking.mode,
-                      lexicalRank: hit.ranking.lexicalRank,
-                      denseRank: hit.ranking.denseRank,
-                      rerankRank: hit.ranking.rerankRank,
-                      score: hit.score,
-                      profileId: hit.profileId,
-                    },
-                  ],
-                  score: 1 / (60 + rank + 1),
+                const origin: CodeContextRankOrigin = {
+                  source: 'related', relatedKind: 'similar', relatedSeed: candidate,
+                  queryIndex: null, rank: rank + 1, mode: hit.ranking.mode,
+                  lexicalRank: hit.ranking.lexicalRank, denseRank: hit.ranking.denseRank,
+                  rerankRank: hit.ranking.rerankRank, score: hit.score, profileId: hit.profileId,
+                }
+                const prior = hits.find((base) => base.hit.id === hit.id)
+                similarCandidates.push({
+                  hit: prior?.hit ?? hit, origins: [origin], score: 1 / (60 + rank + 1),
                 })
               })
             }
-            await addCandidates(relatedCandidates, 'related', 2)
+            await addCandidates(similarCandidates, 'related', 2)
           }
           signal.throwIfAborted()
           const finalStatus = structuredClone(await operationIndex.indexStatus(request.root, signal))
@@ -505,7 +573,7 @@ export function createCodeContext(options: {
           assertIdentity(identity, [finalStatus.identity])
           const degradedReasons = lists.flatMap((list) =>
             list.degradedReason ? [list.degradedReason] : [],
-          )
+          ).concat(relatedDegradedReasons)
           return {
             identity,
             profileId,
@@ -514,6 +582,7 @@ export function createCodeContext(options: {
             omitted,
             degraded: degradedReasons.length > 0,
             degradedReasons: [...new Set(degradedReasons)],
+            ...(relatedGraphResult ? { relatedGraph: relatedGraphResult } : {}),
           }
         }
         return index.withReadSnapshot
@@ -590,6 +659,12 @@ function validateRequest(input: CodeContextRequest, limits: CodeContextLimits): 
   )
     throw new CodeContextError('LIMIT')
   if (input.includeRelated !== undefined && typeof input.includeRelated !== 'boolean')
+    throw new CodeContextError('LIMIT')
+  if ((input.relatedDepth !== undefined || input.relatedMaxPaths !== undefined) && input.includeRelated !== true)
+    throw new CodeContextError('LIMIT')
+  if (input.relatedDepth !== undefined && (!Number.isInteger(input.relatedDepth) || input.relatedDepth < 1 || input.relatedDepth > 4))
+    throw new CodeContextError('LIMIT')
+  if (input.relatedMaxPaths !== undefined && (!Number.isInteger(input.relatedMaxPaths) || input.relatedMaxPaths < 1 || input.relatedMaxPaths > 64))
     throw new CodeContextError('LIMIT')
   if (input.featureQueries?.some((query) => !query.trim() || query.length > limits.maxQueryChars))
     throw new CodeContextError('LIMIT')

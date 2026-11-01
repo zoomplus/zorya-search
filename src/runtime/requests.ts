@@ -52,10 +52,13 @@ export const contextRequest = z
       .max(16)
       .optional(),
     includeRelated: z.boolean().optional(),
+    relatedDepth: z.number().int().min(1).max(4).optional(),
+    relatedMaxPaths: z.number().int().min(1).max(64).optional(),
     maxChars: z.number().int().min(1).max(24_000).optional(),
     limit: z.number().int().min(1).max(40).optional(),
   })
   .strict()
+  .refine((value) => (value.relatedDepth === undefined && value.relatedMaxPaths === undefined) || value.includeRelated === true)
 export const webSearchRequest = z
   .object({
     query: z.string().min(1).max(2000),

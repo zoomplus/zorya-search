@@ -1070,6 +1070,8 @@ async function createOwnedRuntime(
       featureQueries?: string[]
       mustInclude?: Array<{ path: string; lineStart?: number; lineEnd?: number }>
       includeRelated?: boolean
+      relatedDepth?: number
+      relatedMaxPaths?: number
       maxChars?: number
       limit?: number
       signal?: AbortSignal
@@ -1095,6 +1097,8 @@ async function createOwnedRuntime(
           ...(request.includeRelated === undefined
             ? {}
             : { includeRelated: request.includeRelated }),
+          ...(request.relatedDepth === undefined ? {} : { relatedDepth: request.relatedDepth }),
+          ...(request.relatedMaxPaths === undefined ? {} : { relatedMaxPaths: request.relatedMaxPaths }),
           ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),
           ...(request.limit === undefined ? {} : { limit: request.limit }),
           signal: operationSignal,

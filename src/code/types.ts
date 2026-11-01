@@ -129,6 +129,39 @@ export interface CodeRelatedInput {
   signal?: AbortSignal
 }
 
+export interface CodeDependencyGraphInput {
+  root: string
+  seeds: string[]
+  maxDepth?: number
+  maxNodes?: number
+  maxEdges?: number
+  signal?: AbortSignal
+}
+
+export interface CodeDependencyGraphNode {
+  path: string
+  depth: number
+  seed: string
+  parent: string | null
+  relation: 'seed' | 'imports' | 'importedBy'
+}
+
+export interface CodeDependencyGraphEdge {
+  from: string
+  to: string
+  direction: 'imports' | 'importedBy'
+}
+
+export interface CodeDependencyGraph {
+  identity: CodeSourceIdentity
+  seeds: string[]
+  nodes: CodeDependencyGraphNode[]
+  edges: CodeDependencyGraphEdge[]
+  requestedDepth: number
+  reachedDepth: number
+  limits: { depth: boolean; nodes: boolean; edges: boolean }
+}
+
 export interface CodeWatchHandle {
   close(): Promise<void>
 }
@@ -151,11 +184,13 @@ export interface CodeIndex {
     similar: CodeHit[]
     stale: boolean
   }>
+  dependencyGraph?(input: CodeDependencyGraphInput): Promise<CodeDependencyGraph>
   withReadSnapshot?<T>(
     root: string,
     signal: AbortSignal,
     work: (
-      index: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'>,
+      index: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
+        Partial<Pick<CodeIndex, 'dependencyGraph'>>,
     ) => Promise<T>,
   ): Promise<T>
   watchRepository(
