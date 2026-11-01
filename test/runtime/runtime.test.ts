@@ -146,6 +146,30 @@ test('strict versioned owner configuration rejects unsafe extras and snapshots i
   )
 })
 
+test('runtime forwards source-kind and named-language filters to code and context searches', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    await mkdir(join(f.a, 'test'), { recursive: true })
+    await mkdir(join(f.a, 'docs'), { recursive: true })
+    await writeFile(join(f.a, 'typed.tsx'), 'export const runtimeSharedMarkerTsx = 1\n')
+    await writeFile(join(f.a, 'test', 'runtime.test.ts'), 'export const runtimeSharedMarkerTest = 1\n')
+    await writeFile(join(f.a, 'docs', 'README.md'), '# runtimeSharedMarkerDocs\n')
+    runtime = await openSearchRuntime({ config: f.config })
+    await runtime.indexRepository({ rootId: 'a' })
+    const named = await runtime.searchCode({ rootId: 'a', query: 'runtimeSharedMarker', language: 'typescript', mode: 'lexical', limit: 20 })
+    assert.ok(named.hits.some((hit) => hit.path === 'typed.tsx'))
+    assert.ok(named.hits.some((hit) => hit.path === 'test/runtime.test.ts'))
+    const tests = await runtime.searchCode({ rootId: 'a', query: 'runtimeSharedMarker', sourceKind: 'tests', mode: 'lexical', limit: 20 })
+    assert.deepEqual(tests.hits.map((hit) => hit.path), ['test/runtime.test.ts'])
+    const docs = await runtime.getCodeContext({ rootId: 'a', query: 'runtimeSharedMarker', sourceKind: 'documentation' })
+    assert.deepEqual(docs.sections.map((section) => section.path), ['docs/README.md'])
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
 test('offline PGlite runtime indexes isolated roots, preserves provenance, and reopens', async () => {
   const f = await fixture()
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
