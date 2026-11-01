@@ -1,0 +1,815 @@
+import type { CodeHit, CodeIndex, CodeSourceIdentity, CodeDependencyGraph } from '../code/types.js'
+import { createLifecycle } from './lifecycle.js'
+import { codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from '../code/filters.js'
+import { collectLogicalContext } from './logical.js'
+import type { LogicalContextResult } from './logical-types.js'
+import { CodeContextError } from './errors.js'
+export { CodeContextError } from './errors.js'
+export type * from './logical-types.js'
+
+export interface CodeContextLimits {
+  maxQueryChars: number
+  maxFeatureQueries: number
+  maxMandatory: number
+  maxLimit: number
+  maxChars: number
+  maxConcurrency: number
+  timeoutMs: number
+  maxRangeLines: number
+}
+
+const defaults: CodeContextLimits = {
+  maxQueryChars: 2000,
+  maxFeatureQueries: 8,
+  maxMandatory: 16,
+  maxLimit: 40,
+  maxChars: 24000,
+  maxConcurrency: 4,
+  timeoutMs: 15000,
+  maxRangeLines: 200,
+}
+
+export interface RequiredCodeRange {
+  path: string
+  lineStart?: number
+  lineEnd?: number
+}
+
+export interface CodeContextRequest {
+  root: string
+  query: string
+  featureQueries?: string[]
+  mustInclude?: RequiredCodeRange[]
+  includeRelated?: boolean
+  includeLogical?: boolean
+  language?: string
+  sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
+  relatedDepth?: number
+  relatedMaxPaths?: number
+  maxChars?: number
+  limit?: number
+  signal?: AbortSignal
+}
+export interface RelatedCodeRequest {
+  root: string
+  path: string
+  symbol?: string
+  limit?: number
+  signal?: AbortSignal
+}
+
+export interface CodeContextRankOrigin {
+  source: 'query' | 'related'
+  relatedKind?: 'dependency' | 'similar'
+  relatedSeed?: string
+  queryIndex: number | null
+  rank: number
+  mode: 'lexical' | 'hybrid'
+  lexicalRank: number | null
+  denseRank: number | null
+  rerankRank: number | null
+  score: number
+  profileId: string | null
+}
+
+export interface CodeContextSection {
+  path: string
+  lineStart: number
+  lineEnd: number
+  text: string
+  fileContentHash: string
+  candidateChunkHash: string | null
+  profileId: string | null
+  truncated: boolean
+  fusionScore: number
+  reason: 'mandatory' | 'search' | 'related' | 'logical'
+  rankOrigins: CodeContextRankOrigin[]
+}
+
+export interface CodeContextResult {
+  identity: CodeSourceIdentity
+  profileId: string | null
+  sections: CodeContextSection[]
+  budget: { usedChars: number; maxChars: number }
+  omitted: Array<{ path: string; reason: 'budget' | 'range-too-large' }>
+  degraded: boolean
+  degradedReasons: string[]
+  relatedGraph?: { status: 'available'; graph: CodeDependencyGraph } | { status: 'unsupported' }
+  logicalContext?: LogicalContextResult
+}
+
+export type CodeContextIndex = Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
+  Partial<Pick<CodeIndex, 'dependencyGraph' | 'findCodeSymbols' | 'findCodeReferences' | 'withReadSnapshot'>>
+
+export function createCodeContext(options: {
+  index: CodeContextIndex
+  limits?: Partial<CodeContextLimits>
+}) {
+  const limits = Object.freeze({ ...defaults, ...options.limits })
+  validateLimits(limits)
+  const source = options.index
+  const index = Object.freeze({
+    indexStatus: source.indexStatus.bind(source),
+    searchCode: source.searchCode.bind(source),
+    readSource: source.readSource.bind(source),
+    relatedCode: source.relatedCode.bind(source),
+    ...(source.dependencyGraph ? { dependencyGraph: source.dependencyGraph.bind(source) } : {}),
+    ...(source.findCodeSymbols ? { findCodeSymbols: source.findCodeSymbols.bind(source) } : {}),
+    ...(source.findCodeReferences ? { findCodeReferences: source.findCodeReferences.bind(source) } : {}),
+    ...(source.withReadSnapshot ? { withReadSnapshot: source.withReadSnapshot.bind(source) } : {}),
+  })
+  const lifecycle = createLifecycle(limits.maxConcurrency)
+
+  return {
+    getCodeContext(input: CodeContextRequest): Promise<CodeContextResult> {
+      const frozenRequest = freezeRequest(input)
+      validateRequest(frozenRequest, limits)
+      const request = Object.freeze({
+        ...frozenRequest,
+        ...(frozenRequest.language === undefined ? {} : { language: normalizeCodeLanguage(frozenRequest.language) }),
+        ...(frozenRequest.sourceKind === undefined ? {} : { sourceKind: normalizeSourceKind(frozenRequest.sourceKind) }),
+      })
+      const languageFilter = request.language
+      const sourceKindFilter = request.sourceKind
+      const matchesRequestedHit = (hit: CodeHit) =>
+        codeLanguageMatches(hit.language, languageFilter) &&
+        codeSourceKindMatches(hit.path, sourceKindFilter)
+      return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
+        const run = async (
+          operationIndex: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
+            Partial<Pick<CodeIndex, 'dependencyGraph' | 'findCodeSymbols' | 'findCodeReferences'>>,
+        ) => {
+          signal.throwIfAborted()
+          const status = structuredClone(await operationIndex.indexStatus(request.root, signal))
+          if (!status.identity) throw new CodeContextError('STALE_SNAPSHOT')
+          const identity = status.identity
+          const profileId = status.profileId
+          const snapshotId = identity.snapshotId
+          const queries = [request.query, ...(request.featureQueries ?? [])]
+          const lists: Awaited<ReturnType<typeof index.searchCode>>[] = []
+          for (const query of queries) {
+            signal.throwIfAborted()
+            const list = structuredClone(
+              await operationIndex.searchCode({
+                root: request.root,
+                query,
+                limit: request.limit ?? Math.min(12, limits.maxLimit),
+                mode: 'hybrid',
+                ...(request.language === undefined ? {} : { language: request.language }),
+                ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+                signal,
+              }),
+            )
+            assertIdentity(identity, [list.identity])
+            lists.push(list)
+          }
+          signal.throwIfAborted()
+
+          const ranked = new Map<
+            string,
+            {
+              hit: CodeHit
+              origins: Array<{
+                source: 'query' | 'related'
+                queryIndex: number | null
+                rank: number
+                mode: 'lexical' | 'hybrid'
+                lexicalRank: number | null
+                denseRank: number | null
+                rerankRank: number | null
+                score: number
+                profileId: string | null
+              }>
+              score: number
+            }
+          >()
+          lists.forEach((list, queryIndex) =>
+            list.hits.forEach((hit, rank) => {
+              if (!matchesRequestedHit(hit)) return
+              const key = `${hit.path}:${hit.lineStart}:${hit.lineEnd}`
+              const prior = ranked.get(key) ?? { hit, origins: [], score: 0 }
+              prior.origins.push({
+                source: 'query',
+                queryIndex,
+                rank: rank + 1,
+                mode: hit.ranking.mode,
+                lexicalRank: hit.ranking.lexicalRank,
+                denseRank: hit.ranking.denseRank,
+                rerankRank: hit.ranking.rerankRank,
+                score: hit.score,
+                profileId: hit.profileId,
+              })
+              prior.score += 1 / (60 + rank + 1)
+              ranked.set(key, prior)
+            }),
+          )
+          const hits = [...ranked.values()].sort(
+            (a, b) =>
+              b.score - a.score ||
+              a.hit.path.localeCompare(b.hit.path) ||
+              a.hit.lineStart - b.hit.lineStart,
+          )
+          const mandatory = request.mustInclude ?? []
+          const maxChars = request.maxChars ?? limits.maxChars
+          const sections: CodeContextSection[] = []
+          const omitted: CodeContextResult['omitted'] = []
+          let usedChars = 0
+          let relatedGraphResult: CodeContextResult['relatedGraph'] | undefined
+          const read = async (
+            path: string,
+            lineStart: number | undefined,
+            lineEnd: number | undefined,
+            reason: CodeContextSection['reason'],
+            origins: CodeContextSection['rankOrigins'],
+            chunkHash: string | null,
+            options: { preserveBoundaries?: boolean } = {},
+          ): Promise<boolean> => {
+            signal.throwIfAborted()
+            if (
+              reason === 'mandatory' &&
+              lineEnd !== undefined &&
+              lineEnd - (lineStart ?? 1) + 1 > limits.maxRangeLines
+            )
+              throw new CodeContextError('LIMIT')
+            const covered =
+              lineStart !== undefined && lineEnd !== undefined
+                ? sections.find(
+                    (section) =>
+                      section.path === path &&
+                      section.lineStart <= lineStart &&
+                      section.lineEnd >= lineEnd,
+                  )
+                : undefined
+            if (covered) {
+              if (reason === 'mandatory') covered.reason = 'mandatory'
+              if (!covered.candidateChunkHash) covered.candidateChunkHash = chunkHash
+              covered.rankOrigins.push(
+                ...origins.filter(
+                  (origin) =>
+                    !covered.rankOrigins.some(
+                      (prior) =>
+                        prior.source === origin.source &&
+                        prior.relatedKind === origin.relatedKind &&
+                        prior.relatedSeed === origin.relatedSeed &&
+                        prior.queryIndex === origin.queryIndex &&
+                        prior.rank === origin.rank,
+                    ),
+                ),
+              )
+              covered.fusionScore = covered.rankOrigins.reduce(
+                (sum, origin) => sum + 1 / (60 + origin.rank),
+                0,
+              )
+              return true
+            }
+            const boundedLineEnd =
+              lineStart !== undefined &&
+              lineEnd !== undefined &&
+              lineEnd - lineStart + 1 > limits.maxRangeLines
+                ? lineStart + limits.maxRangeLines - 1
+                : lineEnd
+            let truncated = boundedLineEnd !== lineEnd
+            let result = structuredClone(
+              await operationIndex.readSource({
+                root: request.root,
+                path,
+                ...(lineStart === undefined ? {} : { lineStart }),
+                ...(boundedLineEnd === undefined ? {} : { lineEnd: boundedLineEnd }),
+                snapshotId,
+                signal,
+              }),
+            )
+            signal.throwIfAborted()
+            if (result.stale || result.snapshotId !== snapshotId)
+              throw new CodeContextError('STALE_SNAPSHOT')
+            if (result.lineEnd - result.lineStart + 1 > limits.maxRangeLines) {
+              if (reason === 'mandatory' && lineEnd !== undefined) throw new CodeContextError('LIMIT')
+              const boundedEnd = result.lineStart + limits.maxRangeLines - 1
+              result = structuredClone(
+                await operationIndex.readSource({
+                  root: request.root,
+                  path,
+                  lineStart: result.lineStart,
+                  lineEnd: boundedEnd,
+                  snapshotId,
+                  signal,
+                }),
+              )
+              signal.throwIfAborted()
+              if (result.stale || result.snapshotId !== snapshotId)
+                throw new CodeContextError('STALE_SNAPSHOT')
+              truncated = true
+            }
+            const connected: CodeContextSection[] = []
+            let start = result.lineStart
+            let end = result.lineEnd
+            let expanded = true
+            while (expanded) {
+              expanded = false
+              for (const section of sections) {
+                if (
+                  section.path === result.path &&
+                  !connected.includes(section) &&
+                  (options.preserveBoundaries
+                    ? start <= section.lineEnd && end >= section.lineStart
+                    : start <= section.lineEnd + 1 && end >= section.lineStart - 1)
+                ) {
+                  connected.push(section)
+                  start = Math.min(start, section.lineStart)
+                  end = Math.max(end, section.lineEnd)
+                  expanded = true
+                }
+              }
+            }
+            if (connected.length) {
+              const previous = connected[0]!
+              if (end - start + 1 > limits.maxRangeLines) {
+                if (reason === 'mandatory') {
+                  const sourceLines = result.text.split('\n')
+                  const coveredLines = new Set<number>()
+                  for (const section of connected)
+                    for (let line = section.lineStart; line <= section.lineEnd; line++)
+                      coveredLines.add(line)
+                  const additions: CodeContextSection[] = []
+                  for (let line = result.lineStart; line <= result.lineEnd; ) {
+                    if (coveredLines.has(line)) {
+                      line++
+                      continue
+                    }
+                    const rangeStart = line
+                    while (line <= result.lineEnd && !coveredLines.has(line)) line++
+                    const rangeEnd = line - 1
+                    const text = sourceLines
+                      .slice(rangeStart - result.lineStart, rangeEnd - result.lineStart + 1)
+                      .join('\n')
+                    additions.push(
+                      makeSection({
+                        result: { ...result, lineStart: rangeStart, lineEnd: rangeEnd, text },
+                        reason,
+                        origins,
+                        chunkHash,
+                        profileId,
+                        truncated,
+                      }),
+                    )
+                  }
+                  const addedChars = additions.reduce((sum, section) => sum + section.text.length, 0)
+                  if (usedChars + addedChars > maxChars)
+                    throw new CodeContextError('MANDATORY_BUDGET')
+                  usedChars += addedChars
+                  sections.push(...additions)
+                  return true
+                }
+                omitted.push({ path, reason: 'range-too-large' })
+                return false
+              }
+              const lines: Array<string | undefined> = Array(end - start + 1)
+              const populate = (lineStart: number, lineEnd: number, text: string) => {
+                const parts = text.split('\n')
+                if (parts.length !== lineEnd - lineStart + 1)
+                  throw new CodeContextError('STALE_SNAPSHOT')
+                parts.forEach((part, index) => {
+                  lines[lineStart - start + index] = part
+                })
+              }
+              for (const section of connected) {
+                if (section.fileContentHash !== result.contentHash)
+                  throw new CodeContextError('STALE_SNAPSHOT')
+                populate(section.lineStart, section.lineEnd, section.text)
+              }
+              populate(result.lineStart, result.lineEnd, result.text)
+              if (lines.some((line) => line === undefined))
+                throw new CodeContextError('STALE_SNAPSHOT')
+              const merged = {
+                ...result,
+                lineStart: start,
+                lineEnd: end,
+                text: (lines as string[]).join('\n'),
+              }
+              const priorChars = connected.reduce((sum, section) => sum + section.text.length, 0)
+              const additionalChars = merged.text.length - priorChars
+              if (usedChars + additionalChars > maxChars) {
+                if (reason === 'mandatory') throw new CodeContextError('MANDATORY_BUDGET')
+                omitted.push({ path, reason: 'budget' })
+                return false
+              }
+              usedChars += additionalChars
+              for (const duplicate of connected.slice(1)) {
+                const position = sections.indexOf(duplicate)
+                if (position >= 0) sections.splice(position, 1)
+              }
+              previous.lineStart = merged.lineStart
+              previous.lineEnd = merged.lineEnd
+              previous.text = merged.text
+              previous.fileContentHash = merged.contentHash
+              previous.truncated ||= truncated
+              if (!previous.candidateChunkHash) previous.candidateChunkHash = chunkHash
+              if (reason === 'mandatory' || connected.some((s) => s.reason === 'mandatory'))
+                previous.reason = 'mandatory'
+              else if (reason === 'search' || previous.reason === 'search' || connected.some((s) => s.reason === 'search'))
+                previous.reason = 'search'
+              else if (reason === 'logical') previous.reason = 'logical'
+              else previous.reason = 'related'
+              previous.rankOrigins.push(
+                ...connected
+                  .flatMap((section) => section.rankOrigins)
+                  .concat(origins)
+                  .filter(
+                    (o) =>
+                      !previous.rankOrigins.some(
+                        (p) =>
+                          p.source === o.source && p.relatedKind === o.relatedKind &&
+                          p.relatedSeed === o.relatedSeed && p.queryIndex === o.queryIndex && p.rank === o.rank,
+                      ),
+                  ),
+              )
+              previous.fusionScore = previous.rankOrigins.reduce(
+                (sum, origin) => sum + 1 / (60 + origin.rank),
+                0,
+              )
+              return true
+            }
+            const cost = result.text.length
+            if (usedChars + cost > maxChars) {
+              if (reason === 'mandatory') throw new CodeContextError('MANDATORY_BUDGET')
+              omitted.push({ path, reason: 'budget' })
+              return false
+            }
+            usedChars += cost
+            sections.push({
+              path: result.path,
+              lineStart: result.lineStart,
+              lineEnd: result.lineEnd,
+              text: result.text,
+              fileContentHash: result.contentHash,
+              candidateChunkHash: chunkHash,
+              reason,
+              rankOrigins: [...origins],
+              profileId: origins.find((origin) => origin.profileId)?.profileId ?? profileId,
+              truncated,
+              fusionScore: origins.reduce((sum, origin) => sum + 1 / (60 + origin.rank), 0),
+            })
+            return true
+          }
+
+          // Required paths are read first and never silently truncated or omitted.
+          for (const item of mandatory) {
+            const start = item.lineStart
+            const end = item.lineEnd
+            if (end !== undefined && end - (start ?? 1) + 1 > limits.maxRangeLines)
+              throw new CodeContextError('LIMIT')
+            await read(item.path, start, end, 'mandatory', [], null)
+          }
+          let logicalContext: LogicalContextResult | undefined
+          if (request.includeLogical) {
+            const logicalSeeds: Array<{ hit: CodeHit; origins: CodeContextRankOrigin[] }> = []
+            const seenSeeds = new Set<string>()
+            for (const candidate of hits) {
+              const key = `${candidate.hit.path}:${candidate.hit.lineStart}:${candidate.hit.lineEnd}`
+              if (seenSeeds.has(key)) continue
+              seenSeeds.add(key)
+              logicalSeeds.push(candidate)
+            }
+            logicalContext = await collectLogicalContext({
+              root: request.root,
+              seeds: logicalSeeds,
+              ...(request.language === undefined ? {} : { language: request.language }),
+              ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+              identity,
+              signal,
+              maxRangeLines: limits.maxRangeLines,
+              ...(operationIndex.findCodeSymbols ? { symbols: operationIndex.findCodeSymbols.bind(operationIndex) } : {}),
+              ...(operationIndex.findCodeReferences ? { references: operationIndex.findCodeReferences.bind(operationIndex) } : {}),
+              readSource: (input) => operationIndex.readSource({ ...input, signal }),
+              getCoveredRanges: (path, lineStart, lineEnd) => {
+                const ranges: Array<{ path: string; lineStart: number; lineEnd: number }> = []
+                for (const section of sections.filter((entry) => entry.path === path)) {
+                  const start = Math.max(lineStart, section.lineStart)
+                  const end = Math.min(lineEnd, section.lineEnd)
+                  if (start <= end) ranges.push({ path, lineStart: start, lineEnd: end })
+                }
+                return ranges.sort((a, b) => a.lineStart - b.lineStart)
+              },
+              includeRange: (path, lineStart, lineEnd, origins) => read(
+                path, lineStart, lineEnd, 'logical', origins, null, { preserveBoundaries: true },
+              ),
+            })
+          }
+          const byPath = new Map<string, typeof hits>()
+          for (const candidate of hits) {
+            const group = byPath.get(candidate.hit.path) ?? []
+            group.push(candidate)
+            byPath.set(candidate.hit.path, group)
+          }
+          const firstPerPath = [...byPath.values()].map((group) => group[0]!)
+          const additional = [...byPath.values()].flatMap((group) => group.slice(1, 2))
+          const addCandidates = async (
+            candidates: typeof hits,
+            reason: CodeContextSection['reason'],
+            maxPerPath: number,
+          ) => {
+            for (const candidate of candidates) {
+              const existing = sections.filter((section) => section.path === candidate.hit.path)
+              const overlaps = existing.some(
+                (section) =>
+                  candidate.hit.lineStart <= section.lineEnd + 1 &&
+                  candidate.hit.lineEnd >= section.lineStart - 1,
+              )
+              if (existing.length >= maxPerPath && !overlaps) continue
+              await read(
+                candidate.hit.path,
+                candidate.hit.lineStart,
+                candidate.hit.lineEnd,
+                reason,
+                candidate.origins,
+                candidate.hit.contentHash,
+              )
+            }
+          }
+          const graphOptIn = Boolean(request.includeRelated && operationIndex.dependencyGraph)
+          if (graphOptIn) await addCandidates(firstPerPath.slice(0, 1), 'search', 1)
+          else {
+            await addCandidates(firstPerPath, 'search', 1)
+            await addCandidates(additional, 'search', 2)
+          }
+          const relatedDegradedReasons: string[] = []
+          if (request.includeRelated) {
+            const dependencyCandidates: typeof hits = []
+            const seedPaths = [...new Set(firstPerPath.slice(0, Math.min(3, request.relatedMaxPaths ?? 24)).map((candidate) => candidate.hit.path))]
+            if (operationIndex.dependencyGraph) {
+              if (seedPaths.length) {
+                const graph = structuredClone(await operationIndex.dependencyGraph({
+                  root: request.root,
+                  seeds: seedPaths,
+                  maxDepth: request.relatedDepth ?? 2,
+                  maxNodes: Math.max(seedPaths.length, request.relatedMaxPaths ?? 24),
+                  signal,
+                }))
+                signal.throwIfAborted()
+                assertIdentity(identity, [graph.identity])
+                relatedGraphResult = { status: 'available', graph }
+                const pathSet = graph.nodes.map((node) => node.path)
+                  .filter((path) => !seedPaths.includes(path))
+                  .slice(0, request.relatedMaxPaths ?? 24)
+                if (pathSet.length) {
+                  const related = structuredClone(await operationIndex.searchCode({
+                    root: request.root,
+                    query: request.query,
+                    paths: pathSet,
+                    limit: Math.min(request.limit ?? 8, 8),
+                    mode: 'hybrid',
+                    ...(request.language === undefined ? {} : { language: request.language }),
+                    ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+                    signal,
+                  }))
+                  assertIdentity(identity, [related.identity])
+                  if (related.degradedReason) relatedDegradedReasons.push(related.degradedReason)
+                  related.hits.forEach((hit, rank) => {
+                    if (!matchesRequestedHit(hit)) return
+                    const graphNode = graph.nodes.find((node) => node.path === hit.path)
+                    const origin: CodeContextRankOrigin = {
+                      source: 'related', relatedKind: 'dependency',
+                      ...(graphNode ? { relatedSeed: graphNode.seed } : {}),
+                      queryIndex: null, rank: rank + 1, mode: hit.ranking.mode,
+                      lexicalRank: hit.ranking.lexicalRank, denseRank: hit.ranking.denseRank,
+                      rerankRank: hit.ranking.rerankRank, score: hit.score, profileId: hit.profileId,
+                    }
+                    const prior = hits.find((base) => base.hit.id === hit.id)
+                    dependencyCandidates.push({
+                      hit: prior?.hit ?? hit, origins: [origin], score: 1 / (60 + rank + 1),
+                    })
+                  })
+                }
+              } else {
+                relatedGraphResult = { status: 'available', graph: {
+                  identity, seeds: [], nodes: [], edges: [],
+                  requestedDepth: request.relatedDepth ?? 2, reachedDepth: 0,
+                  limits: { depth: false, nodes: false, edges: false },
+                } }
+              }
+            } else {
+              relatedGraphResult = { status: 'unsupported' }
+            }
+            // Dependency candidates get first access to optional context budget.
+            await addCandidates(dependencyCandidates, 'related', 2)
+            if (graphOptIn) {
+              await addCandidates(firstPerPath.slice(1), 'search', 1)
+              await addCandidates(additional, 'search', 2)
+            }
+
+            // Preserve the pre-existing lexical similar-code phase for every adapter.
+            const similarCandidates: typeof hits = []
+            for (const candidate of seedPaths) {
+              signal.throwIfAborted()
+              const seedCandidate = firstPerPath.find((entry) => entry.hit.path === candidate)
+              if (!seedCandidate) continue
+              const related = structuredClone(await operationIndex.relatedCode({
+                root: request.root,
+                path: candidate,
+                ...(seedCandidate.hit.symbol ? { symbol: seedCandidate.hit.symbol } : {}),
+                limit: 4,
+                signal,
+              }))
+              signal.throwIfAborted()
+              if (related.stale) throw new CodeContextError('STALE_SNAPSHOT')
+              assertIdentity(identity, [related.identity])
+              related.similar.forEach((hit, rank) => {
+                if (!matchesRequestedHit(hit)) return
+                const origin: CodeContextRankOrigin = {
+                  source: 'related', relatedKind: 'similar', relatedSeed: candidate,
+                  queryIndex: null, rank: rank + 1, mode: hit.ranking.mode,
+                  lexicalRank: hit.ranking.lexicalRank, denseRank: hit.ranking.denseRank,
+                  rerankRank: hit.ranking.rerankRank, score: hit.score, profileId: hit.profileId,
+                }
+                const prior = hits.find((base) => base.hit.id === hit.id)
+                similarCandidates.push({
+                  hit: prior?.hit ?? hit, origins: [origin], score: 1 / (60 + rank + 1),
+                })
+              })
+            }
+            await addCandidates(similarCandidates, 'related', 2)
+          }
+          signal.throwIfAborted()
+          const finalStatus = structuredClone(await operationIndex.indexStatus(request.root, signal))
+          if (!finalStatus.identity) throw new CodeContextError('STALE_SNAPSHOT')
+          assertIdentity(identity, [finalStatus.identity])
+          const degradedReasons = lists.flatMap((list) =>
+            list.degradedReason ? [list.degradedReason] : [],
+          ).concat(relatedDegradedReasons)
+          return {
+            identity,
+            profileId,
+            sections,
+            budget: { usedChars, maxChars },
+            omitted,
+            degraded: degradedReasons.length > 0,
+            degradedReasons: [...new Set(degradedReasons)],
+            ...(relatedGraphResult ? { relatedGraph: relatedGraphResult } : {}),
+            ...(logicalContext ? { logicalContext } : {}),
+          }
+        }
+        return index.withReadSnapshot
+          ? index.withReadSnapshot(request.root, signal, run)
+          : run(index)
+      })
+    },
+    relatedCode(input: RelatedCodeRequest) {
+      const request = Object.freeze({ ...input })
+      if (
+        !request.root ||
+        request.root.length > 4096 ||
+        !request.path.trim() ||
+        request.path.length > 2000 ||
+        (request.symbol !== undefined && request.symbol.length > limits.maxQueryChars)
+      )
+        throw new CodeContextError('LIMIT')
+      if (
+        request.limit !== undefined &&
+        (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > limits.maxLimit)
+      )
+        throw new CodeContextError('LIMIT')
+      return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
+        signal.throwIfAborted()
+        const before = structuredClone(await index.indexStatus(request.root, signal))
+        if (!before.identity) throw new CodeContextError('STALE_SNAPSHOT')
+        signal.throwIfAborted()
+        const related = structuredClone(
+          await index.relatedCode({
+            root: request.root,
+            path: request.path,
+            ...(request.symbol === undefined ? {} : { symbol: request.symbol }),
+            limit: request.limit ?? 8,
+            signal,
+          }),
+        )
+        signal.throwIfAborted()
+        const after = structuredClone(await index.indexStatus(request.root, signal))
+        if (!after.identity || related.stale) throw new CodeContextError('STALE_SNAPSHOT')
+        assertIdentity(before.identity, [after.identity, related.identity])
+        return related
+      })
+    },
+    close: () => lifecycle.close(),
+  }
+}
+
+function validateLimits(l: CodeContextLimits): void {
+  for (const [key, value] of Object.entries(l))
+    if (!Number.isInteger(value) || value <= 0) throw new TypeError(`Invalid context limit: ${key}`)
+  if (
+    l.maxFeatureQueries > 8 ||
+    l.maxMandatory > 16 ||
+    l.maxConcurrency > 8 ||
+    l.maxLimit > 100 ||
+    l.maxQueryChars > 8000 ||
+    l.maxChars > 100000 ||
+    l.timeoutMs > 120000 ||
+    l.maxRangeLines > 200
+  )
+    throw new TypeError('Context limits exceed hard caps')
+}
+function validateRequest(input: CodeContextRequest, limits: CodeContextLimits): void {
+  if (
+    !input.root ||
+    input.root.length > 4096 ||
+    !input.query.trim() ||
+    input.query.length > limits.maxQueryChars
+  )
+    throw new CodeContextError('LIMIT')
+  if (
+    (input.featureQueries?.length ?? 0) > limits.maxFeatureQueries ||
+    (input.mustInclude?.length ?? 0) > limits.maxMandatory
+  )
+    throw new CodeContextError('LIMIT')
+  if (input.includeRelated !== undefined && typeof input.includeRelated !== 'boolean')
+    throw new CodeContextError('LIMIT')
+  if (input.includeLogical !== undefined && typeof input.includeLogical !== 'boolean')
+    throw new CodeContextError('LIMIT')
+  try {
+    normalizeCodeLanguage(input.language)
+    normalizeSourceKind(input.sourceKind)
+  } catch {
+    throw new CodeContextError('LIMIT')
+  }
+  if ((input.relatedDepth !== undefined || input.relatedMaxPaths !== undefined) && input.includeRelated !== true)
+    throw new CodeContextError('LIMIT')
+  if (input.relatedDepth !== undefined && (!Number.isInteger(input.relatedDepth) || input.relatedDepth < 1 || input.relatedDepth > 4))
+    throw new CodeContextError('LIMIT')
+  if (input.relatedMaxPaths !== undefined && (!Number.isInteger(input.relatedMaxPaths) || input.relatedMaxPaths < 1 || input.relatedMaxPaths > 64))
+    throw new CodeContextError('LIMIT')
+  if (input.featureQueries?.some((query) => !query.trim() || query.length > limits.maxQueryChars))
+    throw new CodeContextError('LIMIT')
+  if (
+    input.mustInclude?.some(
+      (range) =>
+        !range.path.trim() ||
+        range.path.length > 2000 ||
+        (range.lineStart !== undefined &&
+          (!Number.isInteger(range.lineStart) || range.lineStart < 1)) ||
+        (range.lineEnd !== undefined && (!Number.isInteger(range.lineEnd) || range.lineEnd < 1)) ||
+        (range.lineStart !== undefined &&
+          range.lineEnd !== undefined &&
+          range.lineEnd < range.lineStart),
+    )
+  )
+    throw new CodeContextError('LIMIT')
+  if (
+    input.limit !== undefined &&
+    (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > limits.maxLimit)
+  )
+    throw new CodeContextError('LIMIT')
+  if (
+    input.maxChars !== undefined &&
+    (!Number.isInteger(input.maxChars) || input.maxChars < 1 || input.maxChars > limits.maxChars)
+  )
+    throw new CodeContextError('LIMIT')
+}
+function assertIdentity(expected: CodeSourceIdentity, actual: CodeSourceIdentity[]): void {
+  if (
+    actual.some(
+      (value) =>
+        value.snapshotId !== expected.snapshotId ||
+        value.contentHash !== expected.contentHash ||
+        value.root !== expected.root ||
+        value.worktreeId !== expected.worktreeId,
+    )
+  )
+    throw new CodeContextError('STALE_SNAPSHOT')
+}
+function freezeRequest(input: CodeContextRequest): CodeContextRequest {
+  return Object.freeze({
+    ...input,
+    ...(input.featureQueries
+      ? { featureQueries: Object.freeze([...input.featureQueries]) as unknown as string[] }
+      : {}),
+    ...(input.mustInclude
+      ? {
+          mustInclude: Object.freeze(
+            input.mustInclude.map((range) => Object.freeze({ ...range })),
+          ) as unknown as RequiredCodeRange[],
+        }
+      : {}),
+  })
+}
+function makeSection(input: {
+  result: Awaited<ReturnType<CodeIndex['readSource']>>
+  reason: CodeContextSection['reason']
+  origins: CodeContextSection['rankOrigins']
+  chunkHash: string | null
+  profileId: string | null
+  truncated: boolean
+}): CodeContextSection {
+  return {
+    path: input.result.path,
+    lineStart: input.result.lineStart,
+    lineEnd: input.result.lineEnd,
+    text: input.result.text,
+    fileContentHash: input.result.contentHash,
+    candidateChunkHash: input.chunkHash,
+    profileId: input.origins.find((origin) => origin.profileId)?.profileId ?? input.profileId,
+    truncated: input.truncated,
+    fusionScore: input.origins.reduce((sum, origin) => sum + 1 / (60 + origin.rank), 0),
+    reason: input.reason,
+    rankOrigins: [...input.origins],
+  }
+}

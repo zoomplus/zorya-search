@@ -254,7 +254,7 @@ export interface CodeIndex {
     signal: AbortSignal,
     work: (
       index: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
-        Partial<Pick<CodeIndex, 'dependencyGraph' | 'indexCodeSymbols' | 'findCodeSymbols' | 'findCodeReferences' | 'traceCodeCalls'>>,
+        Partial<Pick<CodeIndex, 'dependencyGraph' | 'indexCodeSymbols' | 'findCodeSymbols' | 'findCodeReferences' | 'traceCodeCalls' | 'findCodeDuplicates'>>,
     ) => Promise<T>,
   ): Promise<T>
   watchRepository(

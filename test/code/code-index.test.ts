@@ -10,6 +10,8 @@ import { createCodeIndex } from '../../src/code/index.js'
 import { enumerateCode } from '../../src/code/enumerate.js'
 import { PROJECT_TEXT_SELECTION } from '../../src/project-text/policy.js'
 import { CodeIndexError } from '../../src/code/errors.js'
+import { createReuseContext } from '../../src/context/reuse.js'
+import type { JevDecisionsPort } from '../../src/providers/decision-types.js'
 import { chunkCode, createLocalImportResolver } from '../../src/code/chunker.js'
 import {
   prepareLexical,
@@ -188,6 +190,49 @@ test('duplicate body API reads verified indexed files once per AST function and 
     'UPPER2.TS',
   ])
   assert.equal(uppercase.groups[0]?.matchKind, 'exact-token-body')
+  let escaped: NonNullable<typeof code.findCodeDuplicates>
+  const scopedResult = await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    assert.equal(typeof scoped.findCodeDuplicates, 'function')
+    escaped = scoped.findCodeDuplicates!
+    return scoped.findCodeDuplicates!({ root, minTokens: 12, paths: ['a.ts', 'b.ts'] })
+  })
+  assert.deepEqual(scopedResult.groups[0]?.occurrences.map((item) => item.path), ['a.ts', 'b.ts'])
+  await assert.rejects(escaped!({ root, minTokens: 12, paths: ['a.ts', 'b.ts'] }))
+})
+
+test('reuse context resolves an actual indexed symbol beyond the first symbol page', async () => {
+  const root = await repository()
+  const declarations = Array.from({ length: 150 }, (_, i) =>
+    `export function ${i === 149 ? 'targetAfter100' : `helper${i}`}() { const queryMarker${i} = ${i}; return queryMarker${i} + 1 }`,
+  )
+  await writeFile(join(root, 'many.ts'), `${declarations.join('\n')}\n`)
+  await commit(root, 'reuse symbol pagination')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+  const decisions: JevDecisionsPort = {
+    profile: { provider: 'TypeSafe', model: 'typesafe/jev-1.14', space: 'test' },
+    usage: () => ({ calls: 0, inputTokens: null, totalTokens: null, estimatedCost: null, latencyMs: 0 }),
+    async decide({ state, questions }) {
+      const stateObject = state as { questions?: Record<string, { symbols?: Record<string, { name?: string }> }> }
+      const answers = Object.fromEntries(questions.map((question) => {
+        if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'explain_behavior' }]
+        if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'unspecified' }]
+        if (question.id === 'file') return [question.id, { type: 'choice', choice: 'f0' }]
+        const choices = Object.entries(stateObject.questions?.[question.id]?.symbols ?? {})
+        const selected = choices.find(([, symbol]) => symbol.name === 'targetAfter100')?.[0] ?? 'none'
+        return [question.id, { type: 'choice', choice: selected }]
+      }))
+      return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+        usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+    },
+  }
+  const reuse = createReuseContext({ index: code, decisions })
+  const result = await reuse.getReuseContext({ root, query: 'where is queryMarker149 implemented?' })
+  assert.equal(result.selection.selected[0]?.symbol.name, 'targetAfter100')
+  assert.equal(result.readCoverage[0]?.status, 'full')
+  assert.equal(result.readCoverage[0]?.fileHash.length, 64)
+  assert.ok(result.candidates.files[0]?.symbolPages === 2)
+  await reuse.close()
 })
 
 test('exact symbol queries put AST declarations first while retaining usages and respecting filters', async () => {

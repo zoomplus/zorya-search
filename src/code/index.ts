@@ -1095,9 +1095,14 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const searchCode: CodeIndex['searchCode'] = (input) =>
     own(input.signal, (signal) => searchCodeInner({ ...input, signal }))
 
-  const findCodeDuplicates: NonNullable<CodeIndex['findCodeDuplicates']> = (input) =>
-    own(input.signal, async (signal) => {
+  const findCodeDuplicatesInner: (
+    input: Parameters<NonNullable<CodeIndex['findCodeDuplicates']>>[0],
+    scope?: ReadScope,
+  ) => ReturnType<NonNullable<CodeIndex['findCodeDuplicates']>> = async (input, scope) => {
+      const signal = input.signal ?? scope?.signal
+      if (!signal) throw new CodeIndexError('CODE_INDEX_STALE')
       checkAbort(signal)
+      if (scope) assertReadScope(scope, input.root, signal)
       if (
         input.paths &&
         (input.paths.length > 256 ||
@@ -1131,7 +1136,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         (input.matchMode !== undefined && !['exact', 'renamed'].includes(input.matchMode))
       )
         throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID')
-      const snapshot = await current(input.root, signal)
+      const snapshot = scope?.snapshot ?? (await current(input.root, signal))
       const rows = await database.query<{
         path: string
         content_hash: string
@@ -1186,8 +1191,11 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         signal,
       )
       checkAbort(signal)
-      const after = await current(input.root, signal)
-      if (after.snapshot !== snapshot.snapshot) throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+      if (scope) assertReadScope(scope, input.root, signal)
+      else {
+        const after = await current(input.root, signal)
+        if (after.snapshot !== snapshot.snapshot) throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+      }
       const groupsTruncated = result.eligibleGroupCount > result.groups.length
       const occurrencesTruncated = result.occurrenceTruncated
       const scanTruncated = skippedOversize > 0 || result.skippedParse > 0 || result.skippedUnsupported > 0
@@ -1212,7 +1220,9 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
           complete: !groupsTruncated && !occurrencesTruncated && !scanTruncated,
         },
       }
-    })
+  }
+  const findCodeDuplicates: NonNullable<CodeIndex['findCodeDuplicates']> = (input) =>
+    own(input.signal, (signal) => findCodeDuplicatesInner({ ...input, signal }))
 
   const readSourceInner: (
     input: Parameters<CodeIndex['readSource']>[0],
@@ -1502,6 +1512,11 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         relatedCode: (input: Parameters<CodeIndex['relatedCode']>[0]) =>
           invoke(input.signal, (ownedSignal, canonicalRoot) =>
             relatedCodeInner({ ...input, root: canonicalRoot, signal: ownedSignal }, scope), input.root),
+        findCodeDuplicates: (input: Parameters<NonNullable<CodeIndex['findCodeDuplicates']>>[0]) => {
+          const captured = { ...input, ...(input.paths ? { paths: [...input.paths] } : {}) }
+          return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
+            findCodeDuplicatesInner({ ...captured, root: canonicalRoot, signal: ownedSignal }, scope), captured.root)
+        },
         dependencyGraph: (input: CodeDependencyGraphInput) => {
           const captured = { ...input, seeds: Array.isArray(input.seeds) ? [...input.seeds] : input.seeds }
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>

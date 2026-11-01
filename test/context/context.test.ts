@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createCodeContext, CodeContextError } from '../../src/context/index.js'
+import { createReuseContext } from '../../src/context/index.js'
 import { OperationLimitError, OperationTimeoutError } from '../../src/context/lifecycle.js'
 import type { CodeIndex, CodeHit, CodeSourceIdentity } from '../../src/code/types.js'
 import { createWebSearch } from '../../src/context/web.js'
 import { createClassificationTool } from '../../src/context/classify.js'
+import type { JevDecisionsPort } from '../../src/providers/decision-types.js'
 import { ProviderError, type Classifier } from '../../src/providers/contracts.js'
 import { createOpenRouterReranker } from '../../src/providers/openrouter.js'
 import { createCodeIndex } from '../../src/code/index.js'
@@ -138,6 +140,94 @@ test('code context fuses feature queries, merges overlapping ranges and keeps ha
   assert.ok(result.sections.some((x) => x.path === 'b.ts'))
   assert.ok(result.budget.usedChars <= result.budget.maxChars)
   await context.close()
+})
+
+test('context compatibility barrel retains code context and exposes reuse constructor', async () => {
+  assert.equal(typeof createCodeContext, 'function')
+  assert.equal(typeof createReuseContext, 'function')
+  const context = createCodeContext({ index: fakeIndex() })
+  const result = await context.getCodeContext({ root: '/repo', query: 'base' })
+  assert.equal(result.identity.snapshotId, 's1')
+  await context.close()
+})
+
+test('reuse context preserves original query, maps Jev choices to verified symbols, and runs scoped duplicate inspection', async () => {
+  const fileHash = 'file-a.ts'
+  const symbol = {
+    id: 'symbol-real-1', name: 'applyChange', qualifiedName: 'applyChange', kind: 'function' as const,
+    location: { path: 'a.ts', start: 0, end: 32, lineStart: 1, lineEnd: 2, fileHash },
+    parentId: null, container: null, signature: 'function applyChange()', signatureTruncated: false,
+    contract: false, synthetic: false, overloadGroupId: null,
+  }
+  const base = fakeIndex() as any
+  const originalQuery = 'How can I safely cancel a waiting request?'
+  const observedQueries: string[] = []
+  let observedSymbolState: any
+  let observedSymbolQuestion: any
+  base.searchCode = async (input: { query: string }) => {
+    observedQueries.push(input.query)
+    return { hits: [{
+      id: 'hit-a', path: 'a.ts', lineStart: 1, lineEnd: 2, symbol: 'applyChange', language: 'typescript',
+      contentHash: fileHash, repoId: 'r', worktreeId: 'w', branch: 'main', head: 'h', snapshotId: 's1',
+      profileId: null, score: 1, ranking: { mode: 'lexical', lexicalRank: 1, denseRank: null, rerankRank: null },
+    }], identity, degraded: false, degradedReason: null }
+  }
+  base.findCodeSymbols = async () => ({
+    analysis: { state: 'indexed', identity, profile: null, complete: true, coverage: [], coverageTotalFiles: 1, coverageOmittedFiles: 0,
+      coverageCounts: { parsed: 1, parseError: 0, unsupported: 0, truncated: 0, error: 0 }, unresolvedReferenceCount: 0,
+      unresolvedCallCount: 0, truncation: { symbols: false, references: false, files: false }, symbolCount: 1, referenceCount: 0, indexedAt: null },
+    symbols: [symbol], nextCursor: null, truncated: false,
+  })
+  base.findCodeDuplicates = async () => ({ identity, supportedLanguages: ['TypeScript'], groups: [],
+    counts: { scannedFiles: 1, indexedFiles: 1, eligibleFiles: 1, parsedFiles: 1, functions: 1, skippedParse: 0, skippedOversize: 0, skippedUnsupported: 0 },
+    truncation: { groups: false, occurrences: false, scan: false, complete: true } })
+  const decisions: JevDecisionsPort = {
+    profile: { provider: 'TypeSafe', model: 'typesafe/jev-1.14', space: 'jev' },
+    usage: () => ({ calls: 0, inputTokens: 0, totalTokens: 0, estimatedCost: 0, latencyMs: 0 }),
+    async decide({ questions, state }) {
+      const answers: Record<string, any> = Object.create(null)
+      if (questions.some((q) => q.id.startsWith('symbol_'))) {
+        observedSymbolState = state
+        observedSymbolQuestion = questions.find((q) => q.id.startsWith('symbol_'))
+      }
+      for (const question of questions) {
+        if (question.id === 'taskIntent') answers[question.id] = { type: 'choice', choice: 'explain_behavior' }
+        else if (question.id === 'sourceScope') answers[question.id] = { type: 'choice', choice: 'unspecified' }
+        else if (question.id === 'file') answers[question.id] = { type: 'choice', choice: 'f0', probabilities: { f0: 1, none: 0 } }
+        else answers[question.id] = { type: 'choice', choice: 's0', probabilities: { s0: 1, none: 0 } }
+      }
+      return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 } }
+    },
+  }
+  const reuse = createReuseContext({ index: base, decisions })
+  const result = await reuse.getReuseContext({ root: '/repo', query: originalQuery })
+  assert.equal(observedQueries[0], originalQuery)
+  assert.ok(observedQueries.includes(originalQuery))
+  assert.equal(result.selection.selected[0]?.symbol.id, symbol.id)
+  assert.equal(observedSymbolState.questions.symbol_0.symbols.s0.name, symbol.name)
+  assert.match(observedSymbolQuestion.criteria.s0, /applyChange/u)
+  assert.match(observedSymbolQuestion.instructions, /untrusted data/u)
+  assert.equal(result.context.sections.some((section) => section.path === 'a.ts'), true)
+  assert.equal(result.readCoverage[0]?.status, 'full')
+  assert.equal(result.duplicates.state, 'available')
+  assert.deepEqual(result.duplicates.scope, ['a.ts'])
+  await reuse.close()
+})
+
+test('reuse context stops semantic dispatch after a failed intent call', async () => {
+  let calls = 0
+  const decisions: JevDecisionsPort = {
+    profile: { provider: 'TypeSafe', model: 'typesafe/jev-1.14', space: 'jev' },
+    usage: () => ({ calls, inputTokens: null, totalTokens: null, estimatedCost: null, latencyMs: 0 }),
+    async decide() { calls++; throw new ProviderError('auth') },
+  }
+  const reuse = createReuseContext({ index: fakeIndex(), decisions })
+  const result = await reuse.getReuseContext({ root: '/repo', query: 'explain this behavior' })
+  assert.equal(calls, 1)
+  assert.equal(result.intent.state, 'unavailable')
+  assert.equal(result.selection.selected.length, 0)
+  assert.ok(result.selection.unassessed.length > 0)
+  await reuse.close()
 })
 
 test('code context enforces source-kind filters on legacy adapters that ignore search fields', async () => {
