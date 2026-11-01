@@ -37,6 +37,27 @@ async function fixture() {
   }
 }
 
+function waitForAbort(
+  signal: AbortSignal | null | undefined,
+  onAbort?: () => void,
+): Promise<never> {
+  return new Promise((_, reject) => {
+    if (!signal) {
+      reject(new Error('EXPECTED_ABORT_SIGNAL'))
+      return
+    }
+    const abort = () => {
+      onAbort?.()
+      reject(new DOMException('timeout', 'AbortError'))
+    }
+    if (signal.aborted) {
+      abort()
+      return
+    }
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
 test('strict versioned owner configuration rejects unsafe extras and snapshots input', () => {
   const config = {
     version: 1,
@@ -461,76 +482,98 @@ test('background indexing stops after a no-progress timeout or provider auth fai
   try {
     const config = {
       ...f.config,
-      limits: { timeoutMs: 300 },
-      indexing: { maxAttempts: 5, jobTimeoutMs: 5000, retryDelayMs: 100 },
+      limits: { timeoutMs: 10_000 },
+      indexing: { maxAttempts: 5, jobTimeoutMs: 30_000, retryDelayMs: 100 },
       embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
     }
     let timeoutCalls = 0
     const timeoutFetch: typeof globalThis.fetch = async (_input, init) => {
       timeoutCalls++
-      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true }))
+      const body = JSON.parse(String(init?.body)) as { input?: string[] }
+      if (timeoutCalls === 1) {
+        return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+      }
+      await waitForAbort(init?.signal)
       throw new Error('unreachable')
     }
     runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch: timeoutFetch } })
+    await runtime.indexRepository({ rootId: 'a' })
+    await writeFile(join(f.a, 'timeout-trigger.ts'), 'export const noNewCheckpointBeforeTimeout = true\n')
     const noProgress = runtime.startIndexing({ rootId: 'a' })
-    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: noProgress.job.jobId })).indexingJob?.state === 'failed', 5000)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: noProgress.job.jobId })).indexingJob?.state === 'failed', 15_000)
     let job = (await runtime.indexStatus({ rootId: 'a', jobId: noProgress.job.jobId })).indexingJob!
     assert.equal(job.attempt, 1)
     assert.equal(job.checkpointChunks, 0)
-    assert.equal(timeoutCalls, 1)
+    assert.equal(timeoutCalls, 2)
     await runtime.close()
     runtime = undefined
 
     let authCalls = 0
-    const authFetch: typeof globalThis.fetch = async () => {
+    const authFetch: typeof globalThis.fetch = async (_input, init) => {
       authCalls++
+      const body = JSON.parse(String(init?.body)) as { input?: string[] }
+      if (authCalls === 1) {
+        return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
+      }
       return new Response(JSON.stringify({ error: { message: 'private provider detail' } }), { status: 401 })
     }
     runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch: authFetch } })
+    await writeFile(join(f.a, 'auth-prime.ts'), 'export const providerAuthPrime = true\n')
+    await runtime.indexRepository({ rootId: 'a' })
+    await writeFile(join(f.a, 'auth-trigger.ts'), 'export const providerAuthTrigger = true\n')
     const auth = runtime.startIndexing({ rootId: 'a' })
-    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: auth.job.jobId })).indexingJob?.state === 'failed', 5000)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: auth.job.jobId })).indexingJob?.state === 'failed', 15_000)
     job = (await runtime.indexStatus({ rootId: 'a', jobId: auth.job.jobId })).indexingJob!
     assert.equal(job.attempt, 1)
     assert.equal(job.errorCode, 'PROVIDER_AUTH')
-    assert.equal(authCalls, 1)
+    assert.equal(authCalls, 2)
   } finally {
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })
   }
 })
 
-test('three timeout attempts each retry after their own new durable batches', async () => {
+test('three timeout attempts each retry after their own new durable batches', { timeout: 120_000 }, async () => {
   const f = await fixture()
-  await writeFile(
-    join(f.a, 'units.ts'),
-    Array.from({ length: 130 }, (_, index) => `export function repeated${index}() { return ${index} }`).join('\n') + '\n',
-  )
+  let successfulInputs: string[] = []
+  const abortedCalls = new Set<number>()
   let calls = 0
   const fetch: typeof globalThis.fetch = async (_input, init) => {
     calls++
-    if (calls === 2 || calls === 4) {
-      await new Promise<void>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true })
-      })
-    }
+    const callNumber = calls
     const body = JSON.parse(String(init?.body)) as { input?: string[] }
+    if (callNumber === 3 || callNumber === 5) {
+      await waitForAbort(init?.signal, () => abortedCalls.add(callNumber))
+    }
+    successfulInputs.push(...(body.input ?? []))
     return new Response(JSON.stringify({ data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0, 0] })) }), { status: 200 })
   }
   const config = {
     ...f.config,
-    limits: { timeoutMs: 400 },
-    indexing: { maxAttempts: 4, jobTimeoutMs: 10_000, retryDelayMs: 100 },
+    limits: { timeoutMs: 15_000 },
+    indexing: { maxAttempts: 4, jobTimeoutMs: 90_000, retryDelayMs: 100 },
     embedding: { provider: 'openrouter', model: 'fixture-embed', dimensions: 3, secret: { kind: 'env', name: 'EMBED_KEY' } },
   }
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
   try {
     runtime = await openSearchRuntime({ config, testDependencies: { env: { EMBED_KEY: 'fixture-key' }, fetch } })
+    await runtime.indexRepository({ rootId: 'a' })
+    successfulInputs.length = 0
+    await rm(join(f.a, 'alpha.ts'))
+    await writeFile(
+      join(f.a, 'units.ts'),
+      Array.from({ length: 128 }, (_, index) => `export function repeated${index}() { return ${index} }`).join('\n') + '\n',
+    )
     const admission = runtime.startIndexing({ rootId: 'a' })
-    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'completed', 12_000)
+    await waitFor(async () => (await runtime!.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob?.state === 'completed', 75_000)
     const job = (await runtime.indexStatus({ rootId: 'a', jobId: admission.job.jobId })).indexingJob!
     assert.equal(job.attempt, 3)
-    assert.equal(job.totalChunks, 131)
-    assert.equal(job.checkpointChunks, 131)
+    assert.equal(job.totalChunks, 128)
+    assert.equal(job.checkpointChunks, 128)
+    assert.equal(abortedCalls.size, 2)
+    assert.deepEqual([...abortedCalls], [3, 5])
+    assert.equal(successfulInputs.length, 128)
+    assert.equal(new Set(successfulInputs).size, 128)
     assert.equal(calls, 7)
   } finally {
     await runtime?.close()

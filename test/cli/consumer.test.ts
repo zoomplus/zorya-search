@@ -189,7 +189,7 @@ test(
         watchedProfile.roots.find(
           (root: { id: string }) => root.id === "secondary",
         ),
-        { id: "secondary", path: second, watch: true, watchIntervalMs: 1250 },
+        { id: "secondary", path: await realpath(second), watch: true, watchIntervalMs: 1250 },
       );
       const parallelAPath = join(dir, "parallel-a");
       const parallelBPath = join(dir, "parallel-b");

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -11,7 +12,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 const node = process.execPath
 const entry = resolve('dist/cli/entry.js')
 
-test('CLI OS signals cancel only a newly created job and leave a reused peer job running', {
+test('CLI cancellation joins its own job and leaves a reused peer job running', {
   timeout: 90_000,
   skip: !existsSync(entry) ? 'Run pnpm build before installed CLI signal verification.' : false,
 }, async () => {
@@ -45,17 +46,26 @@ globalThis.fetch=async (input,init)=>{
   if(url.hostname==='127.0.0.1'||url.hostname==='localhost') return original(input,init);
   calls++;
   const n=calls;
-  await writeFile(dir+'/started-'+n,'yes');
-  if(n===1) return new Promise((resolve,reject)=>init.signal.addEventListener('abort',async()=>{await writeFile(dir+'/aborted-1','yes');reject(new DOMException('cancelled','AbortError'))},{once:true}));
-  await new Promise((resolve,reject)=>{
-    const interval=setInterval(async()=>{try{await access(dir+'/release-2');clearInterval(interval);resolve()}catch{}},20);
-    init.signal.addEventListener('abort',async()=>{clearInterval(interval);await writeFile(dir+'/aborted-2','yes');reject(new DOMException('cancelled','AbortError'))},{once:true});
+  let interval;
+  const abortWait=new Promise((resolve,reject)=>{
+    const onAbort=async()=>{
+      if(interval) clearInterval(interval);
+      try { await writeFile(dir+'/aborted-'+n,'yes'); }
+      finally { reject(new DOMException('cancelled','AbortError')); }
+    };
+    if(init.signal.aborted) void onAbort();
+    else init.signal.addEventListener('abort',onAbort,{once:true});
   });
+  await writeFile(dir+'/started-'+n,'yes');
+  if(n===1) await abortWait;
+  else await Promise.race([abortWait,new Promise((resolve)=>{
+    interval=setInterval(async()=>{try{await access(dir+'/release-2');clearInterval(interval);resolve()}catch{}},20);
+  })]);
   const body=JSON.parse(String(init.body));
   return new Response(JSON.stringify({data:body.input.map((_,index)=>({index,embedding:[1,0,0]}))}),{status:200,headers:{'content-type':'application/json'}});
 };
 `)
-  const childEnv = { ...process.env, NODE_OPTIONS: `--import=${mockModule}`, CLI_MOCK_KEY: 'fixture-only' }
+  const childEnv = { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(mockModule).href}`, CLI_MOCK_KEY: 'fixture-only' }
   const children: ChildProcess[] = []
   const monitor = new Client({ name: 'job-signal-monitor', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } })
   let transport: StdioClientTransport | undefined
@@ -87,8 +97,8 @@ globalThis.fetch=async (input,init)=>{
     }
     throw new Error('CLI_PROGRESS_NOT_OBSERVED')
   }
-  const statusFor = async (rootId: string, jobId: string) =>
-    await monitor.callTool({ name: 'index_status', arguments: { rootId, jobId } })
+  const statusFor = async (rootId: string, jobId?: string) =>
+    await monitor.callTool({ name: 'index_status', arguments: { rootId, ...(jobId ? { jobId } : {}) } })
   const waitForJobState = async (rootId: string, jobId: string, state: string) => {
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline) {
@@ -100,34 +110,64 @@ globalThis.fetch=async (input,init)=>{
   }
   try {
     transport = new StdioClientTransport({ command: node, args: [entry, 'mcp', '--config', config], cwd: dir, env: childEnv, stderr: 'pipe' })
-    await monitor.connect(transport)
+    let proxyStderr = ''
+    transport.stderr?.setEncoding('utf8').on('data', (value) => { proxyStderr += value })
+    await monitor.connect(transport).catch((error: unknown) => {
+      throw new Error(`MCP_PROXY_CONNECT_FAILED:${proxyStderr}`, { cause: error })
+    })
 
     const ownedCli = spawnCli(['index', '--config', config, '--root-id', 'a'])
     await waitForFile(started1)
     await waitForCliText(ownedCli, 'Индексация a — running')
-    ownedCli.child.kill('SIGINT')
-    const ownedResult = await ownedCli.closed
-    assert.equal(ownedResult.code, 130, ownedResult.err)
-    const ownedPayload = JSON.parse(ownedResult.out) as { jobId: string; cancelledByThisInvocation: boolean }
-    assert.equal(ownedPayload.cancelledByThisInvocation, true)
+    const runningOwnedJob = (await statusFor('a')).structuredContent
+    const ownerJobId = (runningOwnedJob as { indexingJob?: { jobId?: string } } | undefined)?.indexingJob?.jobId
+    assert.ok(ownerJobId)
+    if (process.platform === 'win32') {
+      const cancelled = await monitor.callTool({ name: 'cancel_indexing', arguments: { rootId: 'a', jobId: ownerJobId } })
+      assert.equal((cancelled.structuredContent as { state?: string }).state, 'cancelled')
+      const ownedResult = await ownedCli.closed
+      assert.equal(ownedResult.code, 1, ownedResult.err)
+      const ownedStatus = JSON.parse(ownedResult.out) as { indexingJob?: { jobId?: string; state?: string } }
+      assert.equal(ownedStatus.indexingJob?.jobId, ownerJobId)
+      assert.equal(ownedStatus.indexingJob?.state, 'cancelled')
+    } else {
+      ownedCli.child.kill('SIGINT')
+      const ownedResult = await ownedCli.closed
+      assert.equal(ownedResult.code, 130, ownedResult.err)
+      const ownedPayload = JSON.parse(ownedResult.out) as { jobId: string; cancelledByThisInvocation: boolean }
+      assert.equal(ownedPayload.jobId, ownerJobId)
+      assert.equal(ownedPayload.cancelledByThisInvocation, true)
+    }
     await waitForFile(aborted1)
-    assert.equal((await waitForJobState('a', ownedPayload.jobId, 'cancelled')).isError, undefined)
+    assert.equal((await waitForJobState('a', ownerJobId, 'cancelled')).isError, undefined)
 
     const peerAdmission = await monitor.callTool({ name: 'start_indexing', arguments: { rootId: 'b' } })
     const peerJobId = (peerAdmission.structuredContent as { job: { jobId: string } }).job.jobId
     await waitForFile(started2)
     const peerCli = spawnCli(['index', '--config', config, '--root-id', 'b'])
     await waitForCliText(peerCli, 'Индексация b — running')
-    peerCli.child.kill('SIGINT')
-    const peerResult = await peerCli.closed
-    assert.equal(peerResult.code, 130, peerResult.err)
-    const peerPayload = JSON.parse(peerResult.out) as { jobId: string; cancelledByThisInvocation: boolean }
-    assert.equal(peerPayload.jobId, peerJobId)
-    assert.equal(peerPayload.cancelledByThisInvocation, false)
-    assert.equal(await readFile(aborted2, 'utf8').then(() => true, () => false), false)
-    assert.equal((await statusFor('b', peerJobId)).structuredContent && ((await statusFor('b', peerJobId)).structuredContent as { indexingJob?: { state?: string } }).indexingJob?.state, 'running')
-    await writeFile(release2, 'release')
-    await waitForJobState('b', peerJobId, 'completed')
+    if (process.platform === 'win32') {
+      const peerStatusWhileRunning = await statusFor('b', peerJobId)
+      assert.equal((peerStatusWhileRunning.structuredContent as { indexingJob?: { state?: string } }).indexingJob?.state, 'running')
+      await writeFile(release2, 'release')
+      const peerResult = await peerCli.closed
+      assert.equal(peerResult.code, 0, peerResult.err)
+      const peerStatus = JSON.parse(peerResult.out) as { indexingJob?: { jobId?: string; state?: string } }
+      assert.equal(peerStatus.indexingJob?.jobId, peerJobId)
+      assert.equal(peerStatus.indexingJob?.state, 'completed')
+    } else {
+      peerCli.child.kill('SIGINT')
+      const peerResult = await peerCli.closed
+      assert.equal(peerResult.code, 130, peerResult.err)
+      const peerPayload = JSON.parse(peerResult.out) as { jobId: string; cancelledByThisInvocation: boolean }
+      assert.equal(peerPayload.jobId, peerJobId)
+      assert.equal(peerPayload.cancelledByThisInvocation, false)
+      assert.equal(await readFile(aborted2, 'utf8').then(() => true, () => false), false)
+      const peerStatusWhileRunning = await statusFor('b', peerJobId)
+      assert.equal((peerStatusWhileRunning.structuredContent as { indexingJob?: { state?: string } }).indexingJob?.state, 'running')
+      await writeFile(release2, 'release')
+      await waitForJobState('b', peerJobId, 'completed')
+    }
   } finally {
     await writeFile(release2, 'release').catch(() => undefined)
     for (const child of children) if (child.exitCode === null) child.kill('SIGTERM')
