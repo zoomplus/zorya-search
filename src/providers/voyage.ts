@@ -14,8 +14,15 @@ export const MECHANISM_RETRIEVAL_PRESETS = Object.freeze({
   }),
 })
 
+/** Separate opt-in text preset; it is independent of the code and visual presets. */
+export const PROJECT_TEXT_RETRIEVAL_PRESET = Object.freeze({
+  embedding: Object.freeze({ model: 'voyageai/voyage-4-large', dimensions: 1024 }),
+  reranker: Object.freeze({ model: 'voyageai/rerank-2.5-lite', candidateLimit: 30 }),
+})
+
 const verifiedResponseNames: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'voyageai/voyage-code-4': Object.freeze(['voyageai/voyage-code-4', 'voyage-code-4']),
+  'voyageai/voyage-4-large': Object.freeze(['voyageai/voyage-4-large', 'voyage-4-large']),
   'voyageai/rerank-2.5-lite': Object.freeze(['voyageai/rerank-2.5-lite', 'rerank-2.5-lite']),
   'voyageai/voyage-multimodal-3.5': Object.freeze([
     'voyageai/voyage-multimodal-3.5',

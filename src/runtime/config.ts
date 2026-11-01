@@ -75,6 +75,12 @@ const reranker = z
     limits: providerLimits.optional(),
   })
   .strict()
+const projectText = z
+  .object({
+    embedding: embedding.optional(),
+    reranker: reranker.optional(),
+  })
+  .strict()
 const classifier = z
   .object({
     profileId: z
@@ -128,6 +134,7 @@ export const runtimeConfigSchema = z
     roots: z.array(root).min(1).max(32),
     embedding: embedding.optional(),
     reranker: reranker.optional(),
+    projectText: projectText.optional(),
     classifier: classifier.optional(),
     mechanism: mechanism.optional(),
     web: z
@@ -171,6 +178,7 @@ export const runtimeConfigSchema = z
     for (const [path, profile] of [
       [['embedding'], value.embedding],
       [['web', 'embedding'], value.web?.embedding],
+      [['projectText', 'embedding'], value.projectText?.embedding],
     ] as const) {
       if (profile?.provider !== 'openai-compatible') continue
       if (!profile.profileId)

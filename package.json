@@ -54,6 +54,10 @@
       "types": "./dist/code/index.d.ts",
       "import": "./dist/code/index.js"
     },
+    "./project-text": {
+      "types": "./dist/project-text/index.d.ts",
+      "import": "./dist/project-text/index.js"
+    },
     "./providers": {
       "types": "./dist/providers/index.d.ts",
       "import": "./dist/providers/index.js"

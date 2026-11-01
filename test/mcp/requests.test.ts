@@ -12,6 +12,8 @@ import {
   findCodeReferencesRequest,
   traceCodeCallsRequest,
   webSearchRequest,
+  projectTextSearchRequest,
+  projectTextReadRequest,
 } from '../../src/runtime/requests.js'
 import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
 
@@ -129,4 +131,69 @@ test('web search date range is strict and accepts only ordered real calendar dat
   ]) {
     assert.equal(webSearchRequest.safeParse({ query: 'patch notes', dateRange }).success, false)
   }
+})
+
+test('project text inputs strictly bound source kinds, query budgets, filters, and read ranges', () => {
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', kinds: ['rules'] })
+      .success,
+    true,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', kinds: ['other'] })
+      .success,
+    false,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({
+      rootId: 'repo',
+      query: 'setup',
+      kinds: ['rules', 'rules'],
+    }).success,
+    false,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', limit: 100 }).success,
+    true,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', limit: 101 }).success,
+    false,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', maxChars: 24_001 })
+      .success,
+    false,
+  )
+  assert.equal(
+    projectTextSearchRequest.safeParse({ rootId: 'repo', query: 'setup', root: '/tmp' }).success,
+    false,
+  )
+  assert.equal(
+    projectTextReadRequest.safeParse({
+      rootId: 'repo',
+      path: 'README.md',
+      lineStart: 2,
+      lineEnd: 201,
+    }).success,
+    true,
+  )
+  assert.equal(
+    projectTextReadRequest.safeParse({
+      rootId: 'repo',
+      path: 'README.md',
+      lineStart: 2,
+      lineEnd: 202,
+    }).success,
+    false,
+  )
+  assert.equal(
+    projectTextReadRequest.safeParse({
+      rootId: 'repo',
+      path: 'README.md',
+      lineStart: 4,
+      lineEnd: 3,
+    }).success,
+    false,
+  )
 })

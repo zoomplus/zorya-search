@@ -7,6 +7,8 @@ import ts from 'typescript'
 import { afterEach, test } from 'node:test'
 import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
 import { createCodeIndex } from '../../src/code/index.js'
+import { enumerateCode } from '../../src/code/enumerate.js'
+import { PROJECT_TEXT_SELECTION } from '../../src/project-text/policy.js'
 import { CodeIndexError } from '../../src/code/errors.js'
 import { chunkCode, createLocalImportResolver } from '../../src/code/chunker.js'
 import {
@@ -28,6 +30,28 @@ afterEach(async () => {
   const failures = [...indexResults, ...databaseResults, ...rootResults]
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
   if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), 'CODE_INDEX_TEST_CLEANUP_FAILED')
+})
+
+test('project text selection reuses traversal while default code enumeration remains unchanged', async () => {
+  const root = await temp()
+  await writeFile(join(root, 'module.ts'), 'export const answer = 42\n')
+  await writeFile(join(root, 'guide.mdc'), '# Agent rule\n')
+  await writeFile(join(root, 'notes.txt'), 'Local notes\n')
+  const limits: CodeIndexLimits = {
+    maxFiles: 20,
+    maxFileBytes: 1000,
+    maxTotalBytes: 5000,
+    maxChunks: 100,
+    maxChunkChars: 1000,
+    maxQueryChars: 100,
+    maxScanChunks: 100,
+    maxResults: 10,
+  }
+  const code = await enumerateCode(root, limits)
+  assert.deepEqual(code.files.map((file) => file.path), ['module.ts'])
+  const text = await enumerateCode(root, limits, undefined, undefined, PROJECT_TEXT_SELECTION)
+  assert.deepEqual(text.files.map((file) => file.path), ['guide.mdc', 'notes.txt'])
+  assert.equal(code.treeHash, (await enumerateCode(root, limits)).treeHash)
 })
 
 function trackCodeIndex<T extends { close(): Promise<void> }>(code: T): T {

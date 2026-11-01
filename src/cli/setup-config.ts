@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { PROJECT_TEXT_RETRIEVAL_PRESET } from "../providers/voyage.js";
 
 type EnvSecret = { kind: "env"; name: string };
 type RootConfig = {
@@ -36,6 +37,7 @@ export interface SetupConfigInput {
   classifier?: NamedModelInput;
   customEmbedding?: CustomEmbeddingInput;
   webEmbedding?: WebEmbeddingInput;
+  textEnv?: string;
 }
 
 const envName = /^[A-Z_][A-Z0-9_]{0,127}$/;
@@ -127,6 +129,7 @@ export function createSetupConfig(input: SetupConfigInput) {
     version: 1,
     dataDir: input.dataDir,
     roots: [input.root],
+    projectText: {},
   };
   const mechanism: Record<string, unknown> = {};
   if (input.codeEnv) mechanism.code = { secret: secret(input.codeEnv) };
@@ -134,6 +137,21 @@ export function createSetupConfig(input: SetupConfigInput) {
   if (Object.keys(mechanism).length) config.mechanism = mechanism;
   if (input.customEmbedding)
     config.embedding = customEmbedding(input.customEmbedding);
+  if (input.textEnv) {
+    const textSecret = secret(input.textEnv);
+    config.projectText = {
+      embedding: {
+        provider: "openrouter",
+        model: PROJECT_TEXT_RETRIEVAL_PRESET.embedding.model,
+        dimensions: PROJECT_TEXT_RETRIEVAL_PRESET.embedding.dimensions,
+        secret: textSecret,
+      },
+      reranker: {
+        model: PROJECT_TEXT_RETRIEVAL_PRESET.reranker.model,
+        secret: textSecret,
+      },
+    };
+  }
   if (input.webEnv || input.webEmbedding)
     config.web = {
       ...(input.webEnv ? { discovery: { secret: secret(input.webEnv) } } : {}),

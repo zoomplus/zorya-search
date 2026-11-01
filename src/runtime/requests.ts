@@ -78,6 +78,32 @@ export const readRequest = z
     snapshotId: z.string().min(1).max(256).optional(),
   })
   .strict()
+const projectTextKind = z.enum(['documentation', 'rules', 'skills'])
+export const projectTextSearchRequest = z
+  .object({
+    rootId: idField,
+    query: z.string().min(1).max(10_000),
+    kinds: z.array(projectTextKind).max(3).optional(),
+    paths: z.array(z.string().min(1).max(1024)).max(256).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    mode: z.enum(['lexical', 'hybrid']).optional(),
+    maxChars: z.number().int().min(1).max(24_000).optional(),
+  })
+  .strict()
+  .refine((value) => !value.kinds || new Set(value.kinds).size === value.kinds.length)
+export const projectTextReadRequest = z
+  .object({
+    rootId: idField,
+    path: z.string().min(1).max(1024),
+    lineStart: z.number().int().min(1).max(10_000_000).optional(),
+    lineEnd: z.number().int().min(1).max(10_000_000).optional(),
+    snapshotId: z.string().min(1).max(256).optional(),
+  })
+  .strict()
+  .refine((value) => value.lineEnd === undefined || value.lineEnd >= (value.lineStart ?? 1))
+  .refine(
+    (value) => value.lineEnd === undefined || value.lineEnd - (value.lineStart ?? 1) + 1 <= 200,
+  )
 export const relatedRequest = z
   .object({
     rootId: idField,
