@@ -36,6 +36,19 @@ function limitValue(value: number | undefined, fallback: number, maximum: number
   return limit
 }
 function filterIdentity(input: object): string { return sha(JSON.stringify(input)) }
+function normalizedEnclosingPath(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1024 || value.includes('\0'))
+    throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+  const slashed = value.replaceAll('\\', '/')
+  if (slashed.startsWith('/') || /^[a-zA-Z]:/u.test(slashed))
+    throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+  const segments = slashed.split('/')
+  if (segments.some((segment) => segment === '..'))
+    throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+  const normalized = segments.filter((segment) => segment !== '' && segment !== '.').join('/')
+  if (!normalized) throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+  return normalized
+}
 function sqlSourceKind(column: string, kind: string): string | null {
   if (kind === 'all') return null
   const tests = `(${column} ~* '(^|/)(test|tests|__tests__|fixtures|__fixtures__)(/|$)' OR ${column} ~* '(^|[.-])(test|spec)(\.[^.]+)*$')`
@@ -73,9 +86,27 @@ export function createSymbolQueries(database: QueryableDatabase, getCurrent: Get
       throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
     if (input.path !== undefined && (typeof input.path !== 'string' || input.path.length > 1024 || input.path.includes('\0')))
       throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+    if (input.symbolId !== undefined && (typeof input.symbolId !== 'string' || !/^[a-f0-9]{64}$/u.test(input.symbolId)))
+      throw new CodeIndexError('CODE_INDEX_SYMBOL_ID_INVALID')
+    let enclosing: { path: string; lineStart: number; lineEnd: number } | undefined
+    if (input.enclosing !== undefined) {
+      const candidate = input.enclosing
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
+        throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+      const path = normalizedEnclosingPath(candidate.path)
+      const lineStart = candidate.lineStart
+      const lineEnd = candidate.lineEnd ?? lineStart
+      if (!Number.isSafeInteger(lineStart) || lineStart < 1 || lineStart > 2_147_483_647 ||
+        !Number.isSafeInteger(lineEnd) || lineEnd < lineStart || lineEnd > 2_147_483_647)
+        throw new CodeIndexError('CODE_INDEX_SYMBOL_QUERY_INVALID')
+      enclosing = { path, lineStart, lineEnd }
+    }
     const language = input.language === undefined ? undefined : normalizeCodeLanguage(input.language)
     const sourceKind = normalizeSourceKind(input.sourceKind) ?? 'all'
-    const filters = filterIdentity([query ?? null, input.path ?? null, language ?? null, sourceKind])
+    const baseFilters = [query ?? null, input.path ?? null, language ?? null, sourceKind]
+    const filters = input.symbolId === undefined && enclosing === undefined
+      ? filterIdentity(baseFilters)
+      : filterIdentity([...baseFilters, { symbolId: input.symbolId ?? null, enclosing: enclosing ?? null }])
     const { current, analysis } = await context(input.root, input.signal)
     if (analysis.state === 'not_indexed' || analysis.state === 'unavailable' || !analysis.profile) {
       await assertCurrent(input.root, current, input.signal)
@@ -84,11 +115,20 @@ export function createSymbolQueries(database: QueryableDatabase, getCurrent: Get
     const afterId = decodeCursor(input.cursor, analysis, filters)
     const values: unknown[] = [current.snapshot, analysis.profile.id]
     const conditions = ['snapshot_id=$1', 'analysis_profile_id=$2']
+    if (input.symbolId !== undefined) { values.push(input.symbolId); conditions.push(`symbol_id=$${values.length}`) }
     if (query) { values.push(`%${query}%`); conditions.push(`(name ILIKE $${values.length} OR qualified_name ILIKE $${values.length})`) }
     if (input.path) {
       const escapedPath = input.path.replaceAll('\\', '/').replace(/\/$/u, '').replace(/[\\%_]/gu, '\\$&')
       values.push(escapedPath)
       conditions.push(`(path=$${values.length} OR path LIKE $${values.length} || '/%' ESCAPE '\\')`)
+    }
+    if (enclosing) {
+      values.push(enclosing.path)
+      const pathSlot = values.length
+      values.push(enclosing.lineStart)
+      const startSlot = values.length
+      values.push(enclosing.lineEnd)
+      conditions.push(`(path=$${pathSlot} AND line_start <= $${startSlot} AND line_end >= $${values.length})`)
     }
     if (language) {
       const normalized = languageValues(language)

@@ -173,6 +173,7 @@ export interface CodeReadResult {
   path: string
   lineStart: number
   lineEnd: number
+  fileLineCount?: number
   text: string
   contentHash: string
   snapshotId: string

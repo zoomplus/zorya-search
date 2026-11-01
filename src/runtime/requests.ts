@@ -42,6 +42,12 @@ export const findCodeSymbolsRequest = z.object({
   query: z.string().max(256).optional(),
   name: z.string().max(256).optional(),
   path: z.string().min(1).max(1024).optional(),
+  symbolId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  enclosing: z.object({
+    path: z.string().min(1).max(1024),
+    lineStart: z.number().int().min(1).max(2_147_483_647),
+    lineEnd: z.number().int().min(1).max(2_147_483_647).optional(),
+  }).strict().refine((range) => range.lineEnd === undefined || range.lineEnd >= range.lineStart).optional(),
   language: z.string().min(1).max(64).refine((value) => Boolean(value.trim())).optional(),
   sourceKind: z.enum(['implementation', 'tests', 'documentation', 'all']).optional(),
   limit: z.number().int().min(1).max(100).optional(),

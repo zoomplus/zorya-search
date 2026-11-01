@@ -34,6 +34,8 @@ export interface FindCodeSymbolsInput {
   query?: string
   name?: string
   path?: string
+  symbolId?: string
+  enclosing?: { path: string; lineStart: number; lineEnd?: number }
   language?: string
   sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
   limit?: number

@@ -1101,6 +1101,12 @@ async function createOwnedRuntime(
           ...(request.query === undefined ? {} : { query: request.query }),
           ...(request.name === undefined ? {} : { name: request.name }),
           ...(request.path === undefined ? {} : { path: request.path }),
+          ...(request.symbolId === undefined ? {} : { symbolId: request.symbolId }),
+          ...(request.enclosing === undefined ? {} : { enclosing: {
+            path: request.enclosing.path,
+            lineStart: request.enclosing.lineStart,
+            ...(request.enclosing.lineEnd === undefined ? {} : { lineEnd: request.enclosing.lineEnd }),
+          } }),
           ...(request.language === undefined ? {} : { language: request.language }),
           ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
           ...(request.limit === undefined ? {} : { limit: request.limit }),

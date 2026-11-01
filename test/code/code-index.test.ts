@@ -1263,6 +1263,11 @@ test('indexes AST symbols and import edges, searches offline, and returns proven
     snapshotId: sourceHit.snapshotId,
   })
   assert.match(source.text, /function addNumbers/u)
+  assert.equal(source.fileLineCount, 2)
+  await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    const scopedSource = await scoped.readSource({ root, path: 'service.ts', lineStart: 1, lineEnd: 2 })
+    assert.equal(scopedSource.fileLineCount, 3)
+  })
   await code.close()
   const restored = trackCodeIndex(createCodeIndex({ database }))
   assert.equal(

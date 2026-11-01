@@ -86,6 +86,11 @@ test('shared MCP/runtime schemas keep owner paths and credentials out of tool in
 test('symbol requests enforce bounded inputs, valid IDs and strict fields', () => {
   const symbolId = 'a'.repeat(64)
   assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', query: 'worker', limit: 100, cursor: 'opaque' }).success, true)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', symbolId, enclosing: { path: 'src/a.ts', lineStart: 2, lineEnd: 4 } }).success, true)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', symbolId: 'bad' }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', enclosing: { path: 'src/a.ts', lineStart: 0 } }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', enclosing: { path: 'src/a.ts', lineStart: 4, lineEnd: 2 } }).success, false)
+  assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', enclosing: { path: 'src/a.ts', lineStart: 2_147_483_648 } }).success, false)
   assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', query: 'x'.repeat(257) }).success, false)
   assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', path: 'x'.repeat(1025) }).success, false)
   assert.equal(findCodeSymbolsRequest.safeParse({ rootId: 'repo', limit: 101 }).success, false)

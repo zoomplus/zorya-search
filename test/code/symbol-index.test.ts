@@ -23,6 +23,112 @@ test.afterEach(async () => {
   await Promise.all(owned.dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
+test('symbol lookup intersects exact IDs with exact enclosing file ranges and binds added filters into cursors', async () => {
+  const { root, index } = await fixture()
+  await writeFile(join(root, 'src-files.ts'), `export function outer() {
+  function nested() { return 1 }
+  class Box {
+    method() { return nested() }
+  }
+  return new Box()
+}
+`)
+  await writeFile(join(root, 'src-files-extra.ts'), 'export function prefixCollision() { return 2 }\n')
+  await index.indexRepository({ root })
+  const all = (await index.findCodeSymbols!({ root, limit: 100 })).symbols
+  const outer = all.find((symbol) => symbol.name === 'outer')!
+  const nested = all.find((symbol) => symbol.name === 'nested')!
+  const method = all.find((symbol) => symbol.name === 'method')!
+  const enclosing = await index.findCodeSymbols!({
+    root,
+    enclosing: { path: 'src-files.ts', lineStart: nested.location.lineStart, lineEnd: nested.location.lineEnd },
+  })
+  assert.ok(enclosing.symbols.some((symbol) => symbol.id === outer.id))
+  assert.ok(enclosing.symbols.some((symbol) => symbol.id === nested.id))
+  assert.ok(!enclosing.symbols.some((symbol) => symbol.id === method.id))
+  assert.ok(enclosing.symbols.every((symbol) => symbol.location.path === 'src-files.ts'))
+
+  const exact = await index.findCodeSymbols!({ root, symbolId: nested.id })
+  assert.deepEqual(exact.symbols.map((symbol) => symbol.id), [nested.id])
+  assert.equal((await index.findCodeSymbols!({ root, symbolId: nested.id, query: 'missing-name' })).symbols.length, 0)
+  assert.equal((await index.findCodeSymbols!({ root, symbolId: nested.id, enclosing: {
+    path: 'src-files-extra.ts', lineStart: 1,
+  } })).symbols.length, 0)
+
+  const page = await index.findCodeSymbols!({ root, limit: 1 })
+  assert.ok(page.nextCursor)
+  await assert.rejects(index.findCodeSymbols!({ root, limit: 1, cursor: page.nextCursor!, symbolId: nested.id }),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SYMBOL_CURSOR_STALE')
+  await assert.rejects(index.findCodeSymbols!({ root, limit: 1, cursor: page.nextCursor!, enclosing: {
+    path: 'src-files.ts', lineStart: 1,
+  } }), (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SYMBOL_CURSOR_STALE')
+})
+
+test('symbol lookup rejects invalid exact IDs and unsafe or invalid enclosing ranges before reading metadata', async () => {
+  const { root, index, database } = await fixture()
+  await writeFile(join(root, 'source.ts'), 'export function safe() {}\n')
+  await index.indexRepository({ root })
+  let reads = 0
+  const originalQuery = database.query.bind(database)
+  const guarded = createCodeIndex({ database: {
+    async query<T>(sql: string, values?: readonly unknown[]) { reads++; return originalQuery<T>(sql, values) },
+    exec: database.exec.bind(database),
+    transaction: database.transaction.bind(database),
+  } })
+  owned.close.push(() => guarded.close())
+  for (const symbolId of ['bad', 'A'.repeat(64)]) {
+    await assert.rejects(guarded.findCodeSymbols!({ root, symbolId }),
+      (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SYMBOL_ID_INVALID')
+  }
+  for (const enclosing of [
+    { path: '', lineStart: 1 },
+    { path: '/etc/passwd', lineStart: 1 },
+    { path: 'C:\\secret.ts', lineStart: 1 },
+    { path: '../source.ts', lineStart: 1 },
+    { path: 'source.ts', lineStart: 0 },
+    { path: 'source.ts', lineStart: 3, lineEnd: 2 },
+  ]) {
+    const before = reads
+    await assert.rejects(guarded.findCodeSymbols!({ root, enclosing }),
+      (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SYMBOL_QUERY_INVALID')
+    assert.equal(reads, before)
+  }
+})
+
+test('symbol lookup snapshots the enclosing filter before asynchronous metadata reads', async () => {
+  const { root, index, database } = await fixture()
+  await writeFile(join(root, 'first.ts'), 'export function firstTarget() {}\n')
+  await writeFile(join(root, 'second.ts'), 'export function secondTarget() {}\n')
+  await index.indexRepository({ root })
+  let entered: (() => void) | undefined
+  let release: (() => void) | undefined
+  let block = false
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve })
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const guarded = createCodeIndex({ database: {
+    async query<T>(sql: string, values?: readonly unknown[]) {
+      if (block && sql.includes('FROM zorya_code_analysis_state')) {
+        block = false
+        entered?.()
+        await gate
+      }
+      return database.query<T>(sql, values)
+    },
+    exec: database.exec.bind(database),
+    transaction: database.transaction.bind(database),
+  } })
+  owned.close.push(() => guarded.close())
+  const enclosing = { path: 'first.ts', lineStart: 1 }
+  block = true
+  const pending = guarded.findCodeSymbols!({ root, enclosing })
+  await enteredPromise
+  enclosing.path = 'second.ts'
+  release?.()
+  const result = await pending
+  assert.ok(result.symbols.some((symbol) => symbol.name === 'firstTarget'))
+  assert.ok(!result.symbols.some((symbol) => symbol.name === 'secondTarget'))
+})
+
 test('full repository indexing publishes bounded symbol metadata and supports filtered queries, references, and call traces', async () => {
   const { root, index, database } = await fixture()
   await writeFile(join(root, 'source.ts'), `export function leaf(value: number) { return value + 1 }

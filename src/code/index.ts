@@ -748,8 +748,12 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     return { identity: value.identity, snapshot: value.snapshot,
       metadataGeneration: metadata.generation, metadataProfile: metadata.profile }
   })
+  const captureFindCodeSymbolsInput = (input: Parameters<NonNullable<CodeIndex['findCodeSymbols']>>[0]) => ({
+    ...input,
+    ...(input.enclosing === undefined ? {} : { enclosing: { ...input.enclosing } }),
+  })
   const findCodeSymbols: NonNullable<CodeIndex['findCodeSymbols']> = (input) => {
-    const captured = { ...input }
+    const captured = captureFindCodeSymbolsInput(input)
     return own(captured.signal, (signal) => symbolQueries.findCodeSymbols({ ...captured, signal }))
   }
   const findCodeReferences: NonNullable<CodeIndex['findCodeReferences']> = (input) => {
@@ -1256,6 +1260,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       path: input.path.replaceAll('\\', '/'),
       lineStart: start,
       lineEnd: Math.min(end, lines.length),
+      fileLineCount: lines.length,
       text,
       contentHash: currentFile.hash,
       snapshotId: before.snapshot,
@@ -1464,7 +1469,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
             dependencyGraphInner({ ...captured, root: canonicalRoot, signal: ownedSignal }, scope), captured.root)
         },
         findCodeSymbols: (input: Parameters<NonNullable<CodeIndex['findCodeSymbols']>>[0]) => {
-          const captured = { ...input }
+          const captured = captureFindCodeSymbolsInput(input)
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
             symbolQueries.findCodeSymbols({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
         },
