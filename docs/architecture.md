@@ -4,15 +4,17 @@
 
 ## Слои
 
-Текущие исходники выделяют отдельный `project-text` слой и таблицы `zorya_project_text_*` для документации, правил и навыков; он делит с кодовым индексом identity и базу владельца, но не сбрасывает code/knowledge data. Подробности доступны в [руководстве по тексту проекта](project-text.md). Эта новая capability пока не включена в GitHub archive `v0.1.6`.
+Карты потоков и отказных ветвей собраны в [обзоре service flows](service-flows.md). Обновляй карту соответствующего модуля при изменении поведения или контракта; она описывает исходный код, а не статус публикации или acceptance.
 
-- `src/core/` содержит контракты, проверки и оркестрацию поиска и индексации.
-- `src/storage/` реализует embedded и PostgreSQL хранение. Владение соединением зависит от фабрики. `openEmbeddedDatabase` владеет созданной базой и блокировкой каталога, а `createCodeIndex` получает заимствованную базу и не закрывает её.
-- `src/code/` индексирует текст репозитория и выдаёт lexical или гибридные code hits. Результаты привязаны к repository, worktree, snapshot и content hash.
-- `src/providers/` адаптирует embedding, rerank, web discovery/read и classification API.
-- `src/context/` формирует ограниченный контекст кода или web-источников и вызывает классификатор по критериям клиента.
-- `src/visual/` выполняет отдельный opt-in поиск по явно переданным вызывающим кодом текстовым или графическим references. Он не снимает экран и не оценивает корректность UI.
-- `src/mcp/` публикует инструменты для существующего MCP-клиента. `src/daemon/` предоставляет локальный HTTP endpoint и, в версии `v0.1.1`, удалённый OAuth-защищённый режим с loopback binding. Внешний TLS proxy и authorization server настраивает владелец. Stdio proxy подключается к уже запущенному локальному daemon.
+Текущие исходники выделяют отдельный `project-text` слой и таблицы `zorya_project_text_*` для документации, правил и навыков; он делит с кодовым индексом identity и базу владельца, но не сбрасывает code/knowledge data. Подробности доступны в [руководстве по тексту проекта](project-text.md) и [карте модуля](../src/project-text/README.md). Эта новая capability пока не включена в GitHub archive `v0.1.6`.
+
+- `src/core/` содержит контракты, проверки и оркестрацию поиска и индексации ([карта](../src/core/README.md)).
+- `src/storage/` реализует embedded и PostgreSQL хранение ([карта](../src/storage/README.md)). Владение соединением зависит от фабрики. `openEmbeddedDatabase` владеет созданной базой и блокировкой каталога, а `createCodeIndex` получает заимствованную базу и не закрывает её.
+- `src/code/` индексирует текст репозитория и выдаёт lexical или гибридные code hits ([карта](../src/code/README.md)). Результаты привязаны к repository, worktree, snapshot и content hash.
+- `src/providers/` адаптирует embedding, rerank, web discovery/read и classification API ([карта](../src/providers/README.md)).
+- `src/context/` формирует ограниченный контекст кода или web-источников и вызывает классификатор по критериям клиента ([карта](../src/context/README.md)).
+- `src/visual/` выполняет отдельный opt-in поиск по явно переданным вызывающим кодом текстовым или графическим references ([карта](../src/visual/README.md)). Он не снимает экран и не оценивает корректность UI.
+- `src/mcp/` публикует инструменты для существующего MCP-клиента ([карта](../src/mcp/README.md)). `src/daemon/` предоставляет локальный HTTP endpoint ([карта](../src/daemon/README.md)) и, в версии `v0.1.1`, удалённый OAuth-защищённый режим с loopback binding. Внешний TLS proxy и authorization server настраивает владелец. Stdio proxy подключается к уже запущенному локальному daemon.
 
 Публичные subpaths задаёт `package.json`. Используй только документированные exports и типы установленной версии. SDK, MCP transport и client setup — разные уровни: установленная библиотека сама не подключает инструменты к редактору или текущему чату.
 
