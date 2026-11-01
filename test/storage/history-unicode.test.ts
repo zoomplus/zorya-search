@@ -7,18 +7,38 @@ import { PostgresKnowledgeRepository, wrapPostgresPool } from '../../src/index.j
 const connectionString = process.env.ELEMENT_DATABASE_URL
 
 test('Postgres history excerpts respect the UTF-16 contract without changing stored text', { skip: !connectionString }, async () => {
+  const bootstrapUrl = new URL(connectionString!)
+  const bootstrapDatabaseName = bootstrapUrl.pathname.replace(/^\/+/, '')
   const adminPool = new Pool({ connectionString: connectionString! })
-  const schema = `element_debug_history_unicode_${randomUUID().replaceAll('-', '')}`
-  let schemaCreated = false
+  const databaseName = `history_unicode_${randomUUID().replaceAll('-', '')}`
+  let databaseCreated = false
   let pool: Pool | undefined
   let database: ReturnType<typeof wrapPostgresPool> | undefined
   try {
-    await adminPool.query(`CREATE SCHEMA "${schema}"`)
-    schemaCreated = true
-    pool = new Pool({ connectionString: connectionString!, options: `-c search_path=${schema}` })
+    assert.notEqual(databaseName, bootstrapDatabaseName)
+    await adminPool.query(`CREATE DATABASE "${databaseName}" TEMPLATE template0`)
+    databaseCreated = true
+    const ownedDatabaseUrl = new URL(connectionString!)
+    ownedDatabaseUrl.pathname = `/${databaseName}`
+    pool = new Pool({ connectionString: ownedDatabaseUrl.href })
     database = wrapPostgresPool(pool)
+    const connectedDatabase = await database.query<{ databaseName: string }>(
+      'SELECT current_database() AS "databaseName"',
+    )
+    assert.equal(connectedDatabase.rows[0]?.databaseName, databaseName)
+    assert.notEqual(connectedDatabase.rows[0]?.databaseName, bootstrapDatabaseName)
+
+    const extensionBeforeInitialization = await database.query<{ vectorType: string | null }>(
+      `SELECT to_regtype('public.vector')::text AS "vectorType"`,
+    )
+    assert.equal(extensionBeforeInitialization.rows[0]?.vectorType, null)
+
     const repository = new PostgresKnowledgeRepository(database)
-    await repository.initialize({ isolatedSchema: schema })
+    await repository.initialize()
+    const extensionAfterInitialization = await database.query<{ vectorType: string | null }>(
+      `SELECT to_regtype('public.vector')::text AS "vectorType"`,
+    )
+    assert.ok(extensionAfterInitialization.rows[0]?.vectorType)
 
     const cases = [
       { name: 'ascii before a pair that would exceed the limit', text: `${'a'.repeat(1199)}😀tail`, expected: 'a'.repeat(1199) },
@@ -88,7 +108,10 @@ test('Postgres history excerpts respect the UTF-16 contract without changing sto
   } finally {
     if (database) await database.close()
     if (pool) await pool.end()
-    if (schemaCreated) await adminPool.query(`DROP SCHEMA "${schema}" CASCADE`)
-    await adminPool.end()
+    try {
+      if (databaseCreated) await adminPool.query(`DROP DATABASE "${databaseName}"`)
+    } finally {
+      await adminPool.end()
+    }
   }
 })
