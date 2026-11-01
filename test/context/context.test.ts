@@ -309,6 +309,16 @@ test('web search reports source provenance and partial fetch errors without gene
   await web.close()
 })
 
+test('web search and readWebSource retain source whitespace in returned excerpts', async () => {
+  const literal='  const marker = 1\n\tif (marker) {\n    return "needle"\n  }\n'
+  const context=createWebSearch({web:{discover:async()=>['https://example.com/literal'],fetchDocument:async(url)=>({url,title:'Literal',text:literal,fetchedAt:'2026-01-01T00:00:00.000Z',publishedAt:null,sourceUpdatedAt:null})},limits:{maxChunkChars:200}})
+  const result=await context.searchWeb({query:'needle',limit:1})
+  assert.equal(result.passages[0]?.excerpt,literal)
+  const read=await context.readWebSource({url:'https://example.com/literal'})
+  assert.equal(read.text,literal)
+  await context.close()
+})
+
 test('web search marks malformed embedding and reranker responses as explicit partial failures', async () => {
   const web = createWebSearch({
     web: {

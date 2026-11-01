@@ -3,13 +3,18 @@ import { isIP, type LookupFunction } from "node:net";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingHttpHeaders } from "node:http";
-import { parseDocument } from "htmlparser2";
 import {
   documentSchema,
   type SourceDocument,
   type WebSource,
 } from "../core/contracts.js";
 import { ProviderError, type ProviderUsage } from "./contracts.js";
+import {
+  parseDate,
+  parsePdfDocument,
+  parseWebDocument,
+  type ParsedWebDocument,
+} from "./web-document.js";
 import {
   limitsOf,
   readBoundedJson,
@@ -273,6 +278,8 @@ export function createBraveWebSource(
               },
             );
           }
+          if (!Buffer.isBuffer(fetched.body) || fetched.body.byteLength > lim.maxResponseBytes)
+            throw new ProviderError("budget");
           if (fetched.status < 200 || fetched.status >= 300)
             throw statusError(fetched.status);
           const contentType = header(fetched.headers, "content-type")
@@ -285,53 +292,45 @@ export function createBraveWebSource(
           )?.toLowerCase();
           if (contentEncoding && contentEncoding !== "identity")
             throw new ProviderError("malformed");
-          if (
-            ![
-              "text/html",
-              "application/xhtml+xml",
-              "text/plain",
-              "application/json",
-            ].includes(contentType ?? "")
-          )
+          const isPdf = contentType === "application/pdf";
+          if (!isPdf && !isSupportedWebType(contentType ?? ""))
             throw new ProviderError("malformed", fetched.status);
-          const charset = /charset\s*=\s*([\w-]+)/i
-            .exec(header(fetched.headers, "content-type") ?? "")?.[1]
-            ?.toLowerCase();
-          if (
-            charset &&
-            !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
-          )
-            throw new ProviderError("malformed");
-          let raw: string;
-          try {
-            raw = new TextDecoder("utf-8", { fatal: true }).decode(
-              fetched.body,
-            );
-          } catch {
-            throw new ProviderError("malformed");
+          let parsed: ParsedWebDocument;
+          if (isPdf) {
+            parsed = await parsePdfDocument(fetched.body, fetched.url.hostname, operationSignal);
+          } else {
+            const charset = /charset\s*=\s*([\w-]+)/i
+              .exec(header(fetched.headers, "content-type") ?? "")?.[1]
+              ?.toLowerCase();
+            if (
+              charset &&
+              !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
+            )
+              throw new ProviderError("malformed");
+            let raw: string;
+            try {
+              raw = new TextDecoder("utf-8", { fatal: true }).decode(
+                fetched.body,
+              );
+            } catch {
+              throw new ProviderError("malformed");
+            }
+            parsed = parseWebDocument(raw, contentType ?? "", fetched.url.hostname);
           }
-          const html =
-            contentType === "text/html" ||
-            contentType === "application/xhtml+xml";
-          const parsed = html
-            ? htmlDocument(raw)
-            : {
-                title: fetched.url.hostname,
-                text: raw.replace(/\s+/g, " ").trim(),
-              };
-          const title = parsed.title;
-          const text = parsed.text;
-          if (!text) throw new ProviderError("malformed");
-          const doc = {
+          if (!parsed.sourceUpdatedAt) {
+            parsed.sourceUpdatedAt = lastModifiedDate(fetched.headers);
+          }
+          if (!parsed.text.trim()) throw new ProviderError("malformed");
+          const document = {
             url: fetched.url.href,
-            title,
-            text: text.slice(0, lim.maxResponseBytes),
+            title: parsed.title,
+            text: parsed.text,
             fetchedAt: new Date().toISOString(),
-            publishedAt: null,
-            sourceUpdatedAt: null,
+            publishedAt: parsed.publishedAt,
+            sourceUpdatedAt: parsed.sourceUpdatedAt,
           };
           try {
-            return documentSchema.parse(doc) as SourceDocument;
+            return documentSchema.parse(document) as SourceDocument;
           } catch {
             throw new ProviderError("malformed");
           }
@@ -499,7 +498,22 @@ function requestPinned(
       agent: false as const,
       method: "GET",
       headers: {
-        accept: "text/html, text/plain, application/json",
+        accept: [
+          "text/html",
+          "application/xhtml+xml",
+          "text/plain",
+          "text/markdown",
+          "application/json",
+          "application/ld+json",
+          "application/activity+json",
+          "application/feed+json",
+          "application/xml",
+          "text/xml",
+          "application/rss+xml",
+          "application/atom+xml",
+          "application/pdf",
+          "*/*;q=0.1",
+        ].join(", "),
         "accept-encoding": "identity",
         "user-agent": "ZoryaSearch/1.0",
       },
@@ -735,87 +749,23 @@ function header(
   const value = headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
 }
-function htmlDocument(html: string): { title: string; text: string } {
-  const document = parseDocument(html, { decodeEntities: true });
-  const ignored = new Set([
-    "script",
-    "style",
-    "nav",
-    "noscript",
-    "svg",
-    "template",
-  ]);
-  const blocks = new Set([
-    "address",
-    "article",
-    "blockquote",
-    "br",
-    "dd",
-    "div",
-    "dl",
-    "dt",
-    "fieldset",
-    "figcaption",
-    "figure",
-    "footer",
-    "form",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "header",
-    "hr",
-    "li",
-    "main",
-    "ol",
-    "p",
-    "pre",
-    "section",
-    "table",
-    "td",
-    "th",
-    "tr",
-    "ul",
-  ]);
-  const content: string[] = [];
-  const title: string[] = [];
-  const stack: Array<{
-    node: (typeof document)["children"][number];
-    insideTitle: boolean;
-  }> = [...document.children]
-    .reverse()
-    .map((node) => ({ node, insideTitle: false }));
-  while (stack.length) {
-    const { node, insideTitle } = stack.pop()!;
-    if (node.type === "text") {
-      if (insideTitle) title.push(node.data);
-      else content.push(node.data);
-      continue;
-    }
-    if (
-      node.type === "tag" ||
-      node.type === "script" ||
-      node.type === "style"
-    ) {
-      if (ignored.has(node.name)) continue;
-      const inTitle = insideTitle || node.name === "title";
-      if (blocks.has(node.name)) content.push(" ");
-      if ("children" in node) {
-        for (let index = node.children.length - 1; index >= 0; index--)
-          stack.push({ node: node.children[index]!, insideTitle: inTitle });
-      }
-      continue;
-    }
-    if ("children" in node)
-      for (let index = node.children.length - 1; index >= 0; index--)
-        stack.push({ node: node.children[index]!, insideTitle });
-  }
-  return {
-    title:
-      title.join(" ").replace(/\s+/g, " ").trim().slice(0, 500) ||
-      "Untitled source",
-    text: content.join(" ").replace(/\s+/g, " ").trim(),
-  };
+
+function isSupportedWebType(contentType: string): boolean {
+  return [
+    "text/html",
+    "application/xhtml+xml",
+    "text/plain",
+    "application/json",
+    "text/markdown",
+    "text/x-markdown",
+    "application/xml",
+    "text/xml",
+    "application/rss+xml",
+    "application/atom+xml",
+  ].includes(contentType) || contentType.endsWith("+json") || contentType.endsWith("+xml");
+}
+
+function lastModifiedDate(headers: IncomingHttpHeaders): string | null {
+  const value = header(headers, "last-modified");
+  return parseDate(value ?? null);
 }
