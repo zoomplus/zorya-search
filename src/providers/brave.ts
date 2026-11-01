@@ -24,6 +24,7 @@ import {
 } from "./http.js";
 import { BraveQuota } from "./brave-quota.js";
 import { BraveDocumentCache } from "./brave-document-cache.js";
+import { BraveInFlightDocuments } from "./brave-inflight.js";
 
 export type WebLoader = (
   url: URL,
@@ -86,6 +87,11 @@ export function createBraveWebSource(
     maxSearchRequests,
   });
   const queue = new Semaphore(lim.concurrency);
+  const coalescedFetchLimit = queue.capacity + queue.maxQueued;
+  const inFlightDocuments = new BraveInFlightDocuments(
+    coalescedFetchLimit,
+    coalescedFetchLimit,
+  );
   if (!Number.isSafeInteger(maxRequestsPerSecond) || maxRequestsPerSecond < 1 || maxRequestsPerSecond > 100)
     throw new RangeError("Некорректный предел частоты запросов Brave");
   const quota = new BraveQuota(maxRequestsPerSecond, config.sharedQuota);
@@ -274,124 +280,128 @@ export function createBraveWebSource(
         input,
         options.allowPrivateForTests === true,
       );
-      return queue.run(
+      return inFlightDocuments.fetch(
+        url.href,
         signal,
-        async (operationSignal) => {
-          const started = Date.now();
-          let fetched: Awaited<ReturnType<WebLoader>> & { validatorsSent?: boolean };
-          let cacheTicket: ReturnType<BraveDocumentCache["begin"]> | undefined;
-          try {
-            if (options.loader) {
-              stats.calls++;
-              try {
-                fetched = await options.loader(
+        (sharedSignal) => queue.run(
+          sharedSignal,
+          async (operationSignal) => {
+            const started = Date.now();
+            let fetched: Awaited<ReturnType<WebLoader>> & { validatorsSent?: boolean };
+            let cacheTicket: ReturnType<BraveDocumentCache["begin"]> | undefined;
+            try {
+              if (options.loader) {
+                stats.calls++;
+                try {
+                  fetched = await options.loader(
+                    url,
+                    operationSignal,
+                    lim.maxResponseBytes,
+                  );
+                } finally {
+                  stats.latencyMs += Date.now() - started;
+                }
+              } else {
+                cacheTicket = documentCache.begin(url.href);
+                fetched = await loadPublicUrl(
                   url,
                   operationSignal,
                   lim.maxResponseBytes,
+                  options.allowPrivateForTests === true,
+                  lim.timeoutMs,
+                  options.resolveForTests,
+                  cacheTicket.validators,
+                  (duration) => {
+                    stats.calls++;
+                    stats.latencyMs += duration;
+                  },
                 );
-              } finally {
-                stats.latencyMs += Date.now() - started;
+                if (fetched.status === 304) {
+                  if (
+                    !cacheTicket.entry ||
+                    !cacheTicket.validators ||
+                    fetched.validatorsSent !== true ||
+                    fetched.url.href !== url.href
+                  )
+                    throw new ProviderError("malformed", 304);
+                  const responseEtag = header(fetched.headers, "etag");
+                  if (responseEtag && cacheTicket.validators.etag && !weaklyMatchesETag(responseEtag, cacheTicket.validators.etag))
+                    throw new ProviderError("malformed", 304);
+                  const refreshed = documentCache.refresh(
+                    cacheTicket,
+                    fetched.headers,
+                    new Date().toISOString(),
+                  );
+                  if (!refreshed) throw new ProviderError("malformed", 304);
+                  return refreshed;
+                }
               }
-            } else {
-              cacheTicket = documentCache.begin(url.href);
-              fetched = await loadPublicUrl(
-                url,
-                operationSignal,
-                lim.maxResponseBytes,
-                options.allowPrivateForTests === true,
-                lim.timeoutMs,
-                options.resolveForTests,
-                cacheTicket.validators,
-                (duration) => {
-                  stats.calls++;
-                  stats.latencyMs += duration;
-                },
-              );
-              if (fetched.status === 304) {
-                if (
-                  !cacheTicket.entry ||
-                  !cacheTicket.validators ||
-                  fetched.validatorsSent !== true ||
-                  fetched.url.href !== url.href
-                )
-                  throw new ProviderError("malformed", 304);
-                const responseEtag = header(fetched.headers, "etag");
-                if (responseEtag && cacheTicket.validators.etag && !weaklyMatchesETag(responseEtag, cacheTicket.validators.etag))
-                  throw new ProviderError("malformed", 304);
-                const refreshed = documentCache.refresh(
-                  cacheTicket,
-                  fetched.headers,
-                  new Date().toISOString(),
-                );
-                if (!refreshed) throw new ProviderError("malformed", 304);
-                return refreshed;
-              }
-            }
-            if (!Buffer.isBuffer(fetched.body) || fetched.body.byteLength > lim.maxResponseBytes)
-              throw new ProviderError("budget");
-            if (fetched.status < 200 || fetched.status >= 300)
-              throw statusError(fetched.status);
-            const contentType = header(fetched.headers, "content-type")
-              ?.split(";")[0]
-              ?.trim()
-              .toLowerCase();
-            const contentEncoding = header(
-              fetched.headers,
-              "content-encoding",
-            )?.toLowerCase();
-            if (contentEncoding && contentEncoding !== "identity")
-              throw new ProviderError("malformed");
-            const isPdf = contentType === "application/pdf";
-            if (!isPdf && !isSupportedWebType(contentType ?? ""))
-              throw new ProviderError("malformed", fetched.status);
-            let parsed: ParsedWebDocument;
-            if (isPdf) {
-              parsed = await parsePdfDocument(fetched.body, fetched.url.hostname, operationSignal);
-            } else {
-              const charset = /charset\s*=\s*([\w-]+)/i
-                .exec(header(fetched.headers, "content-type") ?? "")?.[1]
-                ?.toLowerCase();
-              if (
-                charset &&
-                !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
-              )
+              if (!Buffer.isBuffer(fetched.body) || fetched.body.byteLength > lim.maxResponseBytes)
+                throw new ProviderError("budget");
+              if (fetched.status < 200 || fetched.status >= 300)
+                throw statusError(fetched.status);
+              const contentType = header(fetched.headers, "content-type")
+                ?.split(";")[0]
+                ?.trim()
+                .toLowerCase();
+              const contentEncoding = header(
+                fetched.headers,
+                "content-encoding",
+              )?.toLowerCase();
+              if (contentEncoding && contentEncoding !== "identity")
                 throw new ProviderError("malformed");
-              let raw: string;
+              const isPdf = contentType === "application/pdf";
+              if (!isPdf && !isSupportedWebType(contentType ?? ""))
+                throw new ProviderError("malformed", fetched.status);
+              let parsed: ParsedWebDocument;
+              if (isPdf) {
+                parsed = await parsePdfDocument(fetched.body, fetched.url.hostname, operationSignal);
+              } else {
+                const charset = /charset\s*=\s*([\w-]+)/i
+                  .exec(header(fetched.headers, "content-type") ?? "")?.[1]
+                  ?.toLowerCase();
+                if (
+                  charset &&
+                  !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
+                )
+                  throw new ProviderError("malformed");
+                let raw: string;
+                try {
+                  raw = new TextDecoder("utf-8", { fatal: true }).decode(
+                    fetched.body,
+                  );
+                } catch {
+                  throw new ProviderError("malformed");
+                }
+                parsed = parseWebDocument(raw, contentType ?? "", fetched.url.hostname);
+              }
+              if (!parsed.sourceUpdatedAt && fetched.status !== 304) {
+                parsed.sourceUpdatedAt = lastModifiedDate(fetched.headers);
+              }
+              if (!parsed.text.trim()) throw new ProviderError("malformed");
+              const document = {
+                url: fetched.url.href,
+                title: parsed.title,
+                text: parsed.text,
+                fetchedAt: new Date().toISOString(),
+                publishedAt: parsed.publishedAt,
+                sourceUpdatedAt: parsed.sourceUpdatedAt,
+              };
               try {
-                raw = new TextDecoder("utf-8", { fatal: true }).decode(
-                  fetched.body,
-                );
+                const parsedDocument = documentSchema.parse(document) as SourceDocument;
+                if (!options.loader && fetched.status === 200 && cacheTicket && fetched.url.href === url.href && !operationSignal.aborted) {
+                  documentCache.store(cacheTicket, parsedDocument, fetched.headers);
+                }
+                return parsedDocument;
               } catch {
                 throw new ProviderError("malformed");
               }
-              parsed = parseWebDocument(raw, contentType ?? "", fetched.url.hostname);
+            } finally {
+              if (cacheTicket) documentCache.release(cacheTicket);
             }
-            if (!parsed.sourceUpdatedAt && fetched.status !== 304) {
-              parsed.sourceUpdatedAt = lastModifiedDate(fetched.headers);
-            }
-            if (!parsed.text.trim()) throw new ProviderError("malformed");
-            const document = {
-              url: fetched.url.href,
-              title: parsed.title,
-              text: parsed.text,
-              fetchedAt: new Date().toISOString(),
-              publishedAt: parsed.publishedAt,
-              sourceUpdatedAt: parsed.sourceUpdatedAt,
-            };
-            try {
-              const parsedDocument = documentSchema.parse(document) as SourceDocument;
-              if (!options.loader && fetched.status === 200 && cacheTicket && fetched.url.href === url.href && !operationSignal.aborted) {
-                documentCache.store(cacheTicket, parsedDocument, fetched.headers);
-              }
-              return parsedDocument;
-            } catch {
-              throw new ProviderError("malformed");
-            }
-          } finally {
-            if (cacheTicket) documentCache.release(cacheTicket);
-          }
-        },
-        lim.timeoutMs,
+          },
+          lim.timeoutMs,
+        ),
       );
     },
   };
