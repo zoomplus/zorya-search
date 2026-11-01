@@ -227,6 +227,11 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.ok(alphaEntry)
     assert.equal(alphaEntry?.location.path, 'alpha.ts')
     assert.ok((alphaEntry?.location.lineStart ?? 0) > 0)
+    const logicalContext = await modern.callTool({ name: 'get_code_context', arguments: {
+      rootId: 'alpha', query: 'alphaEntry', includeLogical: true,
+    } })
+    assert.notEqual(logicalContext.isError, true)
+    assert.match(JSON.stringify(logicalContext.structuredContent), /logicalContext/u)
     const outgoing = await modern.callTool({ name: 'find_code_references', arguments: { rootId: 'alpha', symbolId: alphaEntry!.id, direction: 'outgoing', kind: 'call' } })
     assert.notEqual(outgoing.isError, true)
     assert.ok(((outgoing.structuredContent as { references?: unknown[] }).references ?? []).length > 0)

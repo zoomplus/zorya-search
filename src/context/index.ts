@@ -1,6 +1,11 @@
 import type { CodeHit, CodeIndex, CodeSourceIdentity, CodeDependencyGraph } from '../code/types.js'
 import { createLifecycle } from './lifecycle.js'
 import { codeLanguageMatches, codeSourceKindMatches, normalizeCodeLanguage, normalizeSourceKind } from '../code/filters.js'
+import { collectLogicalContext } from './logical.js'
+import type { LogicalContextResult } from './logical-types.js'
+import { CodeContextError } from './errors.js'
+export { CodeContextError } from './errors.js'
+export type * from './logical-types.js'
 
 export interface CodeContextLimits {
   maxQueryChars: number
@@ -36,6 +41,7 @@ export interface CodeContextRequest {
   featureQueries?: string[]
   mustInclude?: RequiredCodeRange[]
   includeRelated?: boolean
+  includeLogical?: boolean
   language?: string
   sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
   relatedDepth?: number
@@ -76,7 +82,7 @@ export interface CodeContextSection {
   profileId: string | null
   truncated: boolean
   fusionScore: number
-  reason: 'mandatory' | 'search' | 'related'
+  reason: 'mandatory' | 'search' | 'related' | 'logical'
   rankOrigins: CodeContextRankOrigin[]
 }
 
@@ -89,15 +95,7 @@ export interface CodeContextResult {
   degraded: boolean
   degradedReasons: string[]
   relatedGraph?: { status: 'available'; graph: CodeDependencyGraph } | { status: 'unsupported' }
-}
-
-export class CodeContextError extends Error {
-  constructor(
-    readonly code: 'STALE_SNAPSHOT' | 'MANDATORY_BUDGET' | 'CLOSED' | 'LIMIT' | 'TIMEOUT',
-  ) {
-    super(`Code context operation failed: ${code}`)
-    this.name = 'CodeContextError'
-  }
+  logicalContext?: LogicalContextResult
 }
 
 export function createCodeContext(options: {
@@ -113,6 +111,8 @@ export function createCodeContext(options: {
     readSource: source.readSource.bind(source),
     relatedCode: source.relatedCode.bind(source),
     ...(source.dependencyGraph ? { dependencyGraph: source.dependencyGraph.bind(source) } : {}),
+    ...(source.findCodeSymbols ? { findCodeSymbols: source.findCodeSymbols.bind(source) } : {}),
+    ...(source.findCodeReferences ? { findCodeReferences: source.findCodeReferences.bind(source) } : {}),
     ...(source.withReadSnapshot ? { withReadSnapshot: source.withReadSnapshot.bind(source) } : {}),
   })
   const lifecycle = createLifecycle(limits.maxConcurrency)
@@ -134,7 +134,7 @@ export function createCodeContext(options: {
       return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
         const run = async (
           operationIndex: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> &
-            Partial<Pick<CodeIndex, 'dependencyGraph'>>,
+            Partial<Pick<CodeIndex, 'dependencyGraph' | 'findCodeSymbols' | 'findCodeReferences'>>,
         ) => {
           signal.throwIfAborted()
           const status = structuredClone(await operationIndex.indexStatus(request.root, signal))
@@ -219,7 +219,8 @@ export function createCodeContext(options: {
             reason: CodeContextSection['reason'],
             origins: CodeContextSection['rankOrigins'],
             chunkHash: string | null,
-          ): Promise<void> => {
+            options: { preserveBoundaries?: boolean } = {},
+          ): Promise<boolean> => {
             signal.throwIfAborted()
             if (
               reason === 'mandatory' &&
@@ -256,7 +257,7 @@ export function createCodeContext(options: {
                 (sum, origin) => sum + 1 / (60 + origin.rank),
                 0,
               )
-              return
+              return true
             }
             const boundedLineEnd =
               lineStart !== undefined &&
@@ -306,8 +307,9 @@ export function createCodeContext(options: {
                 if (
                   section.path === result.path &&
                   !connected.includes(section) &&
-                  start <= section.lineEnd + 1 &&
-                  end >= section.lineStart - 1
+                  (options.preserveBoundaries
+                    ? start <= section.lineEnd && end >= section.lineStart
+                    : start <= section.lineEnd + 1 && end >= section.lineStart - 1)
                 ) {
                   connected.push(section)
                   start = Math.min(start, section.lineStart)
@@ -353,10 +355,10 @@ export function createCodeContext(options: {
                     throw new CodeContextError('MANDATORY_BUDGET')
                   usedChars += addedChars
                   sections.push(...additions)
-                  return
+                  return true
                 }
                 omitted.push({ path, reason: 'range-too-large' })
-                return
+                return false
               }
               const lines: Array<string | undefined> = Array(end - start + 1)
               const populate = (lineStart: number, lineEnd: number, text: string) => {
@@ -386,7 +388,7 @@ export function createCodeContext(options: {
               if (usedChars + additionalChars > maxChars) {
                 if (reason === 'mandatory') throw new CodeContextError('MANDATORY_BUDGET')
                 omitted.push({ path, reason: 'budget' })
-                return
+                return false
               }
               usedChars += additionalChars
               for (const duplicate of connected.slice(1)) {
@@ -403,6 +405,7 @@ export function createCodeContext(options: {
                 previous.reason = 'mandatory'
               else if (reason === 'search' || previous.reason === 'search' || connected.some((s) => s.reason === 'search'))
                 previous.reason = 'search'
+              else if (reason === 'logical') previous.reason = 'logical'
               else previous.reason = 'related'
               previous.rankOrigins.push(
                 ...connected
@@ -421,13 +424,13 @@ export function createCodeContext(options: {
                 (sum, origin) => sum + 1 / (60 + origin.rank),
                 0,
               )
-              return
+              return true
             }
             const cost = result.text.length
             if (usedChars + cost > maxChars) {
               if (reason === 'mandatory') throw new CodeContextError('MANDATORY_BUDGET')
               omitted.push({ path, reason: 'budget' })
-              return
+              return false
             }
             usedChars += cost
             sections.push({
@@ -443,6 +446,7 @@ export function createCodeContext(options: {
               truncated,
               fusionScore: origins.reduce((sum, origin) => sum + 1 / (60 + origin.rank), 0),
             })
+            return true
           }
 
           // Required paths are read first and never silently truncated or omitted.
@@ -452,6 +456,41 @@ export function createCodeContext(options: {
             if (end !== undefined && end - (start ?? 1) + 1 > limits.maxRangeLines)
               throw new CodeContextError('LIMIT')
             await read(item.path, start, end, 'mandatory', [], null)
+          }
+          let logicalContext: LogicalContextResult | undefined
+          if (request.includeLogical) {
+            const logicalSeeds: Array<{ hit: CodeHit; origins: CodeContextRankOrigin[] }> = []
+            const seenSeeds = new Set<string>()
+            for (const candidate of hits) {
+              const key = `${candidate.hit.path}:${candidate.hit.lineStart}:${candidate.hit.lineEnd}`
+              if (seenSeeds.has(key)) continue
+              seenSeeds.add(key)
+              logicalSeeds.push(candidate)
+            }
+            logicalContext = await collectLogicalContext({
+              root: request.root,
+              seeds: logicalSeeds,
+              ...(request.language === undefined ? {} : { language: request.language }),
+              ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+              identity,
+              signal,
+              maxRangeLines: limits.maxRangeLines,
+              ...(operationIndex.findCodeSymbols ? { symbols: operationIndex.findCodeSymbols.bind(operationIndex) } : {}),
+              ...(operationIndex.findCodeReferences ? { references: operationIndex.findCodeReferences.bind(operationIndex) } : {}),
+              readSource: (input) => operationIndex.readSource({ ...input, signal }),
+              getCoveredRanges: (path, lineStart, lineEnd) => {
+                const ranges: Array<{ path: string; lineStart: number; lineEnd: number }> = []
+                for (const section of sections.filter((entry) => entry.path === path)) {
+                  const start = Math.max(lineStart, section.lineStart)
+                  const end = Math.min(lineEnd, section.lineEnd)
+                  if (start <= end) ranges.push({ path, lineStart: start, lineEnd: end })
+                }
+                return ranges.sort((a, b) => a.lineStart - b.lineStart)
+              },
+              includeRange: (path, lineStart, lineEnd, origins) => read(
+                path, lineStart, lineEnd, 'logical', origins, null, { preserveBoundaries: true },
+              ),
+            })
           }
           const byPath = new Map<string, typeof hits>()
           for (const candidate of hits) {
@@ -603,6 +642,7 @@ export function createCodeContext(options: {
             degraded: degradedReasons.length > 0,
             degradedReasons: [...new Set(degradedReasons)],
             ...(relatedGraphResult ? { relatedGraph: relatedGraphResult } : {}),
+            ...(logicalContext ? { logicalContext } : {}),
           }
         }
         return index.withReadSnapshot
@@ -679,6 +719,8 @@ function validateRequest(input: CodeContextRequest, limits: CodeContextLimits): 
   )
     throw new CodeContextError('LIMIT')
   if (input.includeRelated !== undefined && typeof input.includeRelated !== 'boolean')
+    throw new CodeContextError('LIMIT')
+  if (input.includeLogical !== undefined && typeof input.includeLogical !== 'boolean')
     throw new CodeContextError('LIMIT')
   try {
     normalizeCodeLanguage(input.language)

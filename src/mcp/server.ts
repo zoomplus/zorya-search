@@ -132,7 +132,7 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
   },
   get_code_context: {
     description:
-      'Return bounded source context and likely relevant locations for the calling agent to verify. Search does not edit source.',
+      'Return bounded source context and likely relevant locations for the calling agent to verify. Set includeLogical to opt in to static symbol blocks and proven relations with explicit coverage and omissions; it does not claim runtime call completeness. includeRelated independently adds import-graph and similarity candidates. Search does not edit source.',
     schema: contextRequest,
     annotations: annotationsFor('get_code_context'),
   },

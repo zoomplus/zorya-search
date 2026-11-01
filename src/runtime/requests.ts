@@ -106,6 +106,7 @@ export const contextRequest = z
       .max(16)
       .optional(),
     includeRelated: z.boolean().optional(),
+    includeLogical: z.boolean().optional(),
     relatedDepth: z.number().int().min(1).max(4).optional(),
     relatedMaxPaths: z.number().int().min(1).max(64).optional(),
     maxChars: z.number().int().min(1).max(24_000).optional(),

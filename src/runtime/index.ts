@@ -1184,6 +1184,7 @@ async function createOwnedRuntime(
       sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
       mustInclude?: Array<{ path: string; lineStart?: number; lineEnd?: number }>
       includeRelated?: boolean
+      includeLogical?: boolean
       relatedDepth?: number
       relatedMaxPaths?: number
       maxChars?: number
@@ -1213,6 +1214,7 @@ async function createOwnedRuntime(
           ...(request.includeRelated === undefined
             ? {}
             : { includeRelated: request.includeRelated }),
+          ...(request.includeLogical === undefined ? {} : { includeLogical: request.includeLogical }),
           ...(request.relatedDepth === undefined ? {} : { relatedDepth: request.relatedDepth }),
           ...(request.relatedMaxPaths === undefined ? {} : { relatedMaxPaths: request.relatedMaxPaths }),
           ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),

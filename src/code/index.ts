@@ -1418,6 +1418,45 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         closing: false,
         closed: false,
       }
+      const scopedSymbolQueries = createSymbolQueries(database, async (root, operationSignal) => {
+        const signalForRead = operationSignal ?? scope.signal
+        assertReadScope(scope, root, signalForRead)
+        const result = await database.query<{
+          current_snapshot: string | null
+          root: string
+          branch: string | null
+          head: string | null
+          content_hash: string | null
+          profile_id: string | null
+          chunk_config_id: string | null
+          generation: string | number | null
+          current_profile_id: string | null
+        }>(
+          `SELECT w.current_snapshot,w.root,w.branch,w.head,w.content_hash,w.profile_id,w.chunk_config_id,
+                  s.generation,s.current_profile_id
+           FROM zorya_code_worktrees w
+           LEFT JOIN zorya_code_analysis_state s
+             ON s.worktree_id=w.worktree_id AND s.snapshot_id=w.current_snapshot
+           WHERE w.worktree_id=$1`,
+          [scope.snapshot.identity.worktreeId],
+        )
+        checkAbort(signalForRead)
+        assertReadScope(scope, root, signalForRead)
+        const row = result.rows[0]
+        if (!row || row.current_snapshot !== scope.snapshot.snapshot || row.root !== scope.root ||
+          row.branch !== scope.snapshot.identity.branch || row.head !== scope.snapshot.identity.head ||
+          row.content_hash !== scope.snapshot.identity.contentHash || row.profile_id !== scope.snapshot.profileId ||
+          row.chunk_config_id !== chunkConfigId ||
+          (row.generation === null ? null : Number(row.generation)) !== symbolFence.generation ||
+          row.current_profile_id !== symbolFence.profile)
+          throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+        return {
+          identity: structuredClone(scope.snapshot.identity),
+          snapshot: scope.snapshot.snapshot,
+          metadataGeneration: symbolFence.generation,
+          metadataProfile: symbolFence.profile,
+        }
+      })
       const invoke = <T>(
         callerOperationSignal: AbortSignal | undefined,
         operation: (ownedSignal: AbortSignal, canonicalRoot: string) => Promise<T>,
@@ -1471,17 +1510,17 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
         findCodeSymbols: (input: Parameters<NonNullable<CodeIndex['findCodeSymbols']>>[0]) => {
           const captured = captureFindCodeSymbolsInput(input)
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
-            symbolQueries.findCodeSymbols({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+            scopedSymbolQueries.findCodeSymbols({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
         },
         findCodeReferences: (input: Parameters<NonNullable<CodeIndex['findCodeReferences']>>[0]) => {
           const captured = { ...input }
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
-            symbolQueries.findCodeReferences({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+            scopedSymbolQueries.findCodeReferences({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
         },
         traceCodeCalls: (input: Parameters<NonNullable<CodeIndex['traceCodeCalls']>>[0]) => {
           const captured = { ...input }
           return invoke(captured.signal, (ownedSignal, canonicalRoot) =>
-            symbolQueries.traceCodeCalls({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
+            scopedSymbolQueries.traceCodeCalls({ ...captured, root: canonicalRoot, signal: ownedSignal }), captured.root)
         },
       })
       try {

@@ -175,6 +175,9 @@ test('runtime forwards source-kind and named-language filters to code and contex
     assert.deepEqual(tests.hits.map((hit) => hit.path), ['test/runtime.test.ts'])
     const docs = await runtime.getCodeContext({ rootId: 'a', query: 'runtimeSharedMarker', sourceKind: 'documentation' })
     assert.deepEqual(docs.sections.map((section) => section.path), ['docs/README.md'])
+    const logical = await runtime.getCodeContext({ rootId: 'a', query: 'runtimeSharedMarker', includeLogical: true })
+    assert.ok(logical.logicalContext)
+    assert.ok(['available', 'partial', 'not_indexed', 'unavailable'].includes(logical.logicalContext!.state))
   } finally {
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })

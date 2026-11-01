@@ -248,9 +248,14 @@ test('missing metadata is explicit and reads never backfill it', async () => {
   await database.query('DELETE FROM zorya_code_analysis')
   const before = await database.query<{ count: string }>('SELECT count(*)::text AS count FROM zorya_code_analysis')
   const result = await index.findCodeSymbols!({ root, query: 'hiddenUntilIndexed' })
+  const scoped = await index.withReadSnapshot!(root, new AbortController().signal, (snapshot) =>
+    snapshot.findCodeSymbols!({ root, query: 'hiddenUntilIndexed' }),
+  )
   const after = await database.query<{ count: string }>('SELECT count(*)::text AS count FROM zorya_code_analysis')
   assert.equal(result.analysis.state, 'not_indexed')
   assert.equal(result.symbols.length, 0)
+  assert.equal(scoped.analysis.state, 'not_indexed')
+  assert.equal(scoped.symbols.length, 0)
   assert.deepEqual(after.rows, before.rows)
 })
 
@@ -287,7 +292,46 @@ test('symbol reads reject metadata generation changes and close joins blocked SQ
   await index.indexRepository({ root })
   const worktree = (await index.indexStatus(root)).identity!.worktreeId
 
-  let started = queryStarted()
+  const standalone = await index.findCodeSymbols!({ root, query: 'fencedSymbol' })
+  const scoped = await index.withReadSnapshot!(root, new AbortController().signal, (snapshot) =>
+    snapshot.findCodeSymbols!({ root, query: 'fencedSymbol' }),
+  )
+  assert.deepEqual(scoped.symbols, standalone.symbols)
+  assert.equal(scoped.analysis.profile?.id, standalone.analysis.profile?.id)
+
+  await assert.rejects(index.withReadSnapshot!(root, new AbortController().signal, async (snapshot) => {
+    await raw.query('UPDATE zorya_code_worktrees SET current_snapshot=$2 WHERE worktree_id=$1', [worktree, 'f'.repeat(64)])
+    await snapshot.findCodeSymbols!({ root, query: 'fencedSymbol' })
+  }), (error: unknown) => error instanceof CodeIndexError &&
+    error.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+  await raw.query('UPDATE zorya_code_worktrees SET current_snapshot=$2 WHERE worktree_id=$1',
+    [worktree, standalone.analysis.identity.snapshotId])
+  await assert.rejects(index.withReadSnapshot!(root, new AbortController().signal, async (snapshot) => {
+    await snapshot.findCodeSymbols!({ root, query: 'fencedSymbol' })
+    await raw.query('UPDATE zorya_code_analysis_state SET generation=generation+1 WHERE worktree_id=$1', [worktree])
+    await snapshot.findCodeSymbols!({ root, query: 'fencedSymbol' })
+  }), (error: unknown) => error instanceof CodeIndexError &&
+    error.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+
+  let started: Promise<void>
+  started = queryStarted()
+  queryGatePromise = queryGate()
+  blockNext = true
+  const scopeAbort = new AbortController()
+  const scopedRead = index.withReadSnapshot!(root, scopeAbort.signal, (snapshot) =>
+    snapshot.findCodeSymbols!({ root, query: 'fencedSymbol' }),
+  )
+  await started
+  scopeAbort.abort(new Error('scope cancelled'))
+  let scopeSettled = false
+  void scopedRead.finally(() => { scopeSettled = true }).catch(() => {})
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(scopeSettled, false)
+  release?.()
+  await assert.rejects(scopedRead)
+  assert.equal((await raw.query('SELECT 1')).rowCount, 1)
+
+  started = queryStarted()
   queryGatePromise = queryGate()
   blockNext = true
   const inFlight = index.findCodeSymbols!({ root, query: 'fencedSymbol' })
