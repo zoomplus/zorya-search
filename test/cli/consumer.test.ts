@@ -17,7 +17,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { once } from "node:events";
 import { runtimeConfigSchema } from "../../src/runtime/config.js";
-import { ownerDir } from "../../src/cli/files.js";
+import { canonicalConfigPath, ownerDir } from "../../src/cli/files.js";
 
 const node = process.execPath;
 const entry = resolve("dist/cli/entry.js");
@@ -69,6 +69,7 @@ test(
         dir,
       );
       assert.equal(setup.code, 0, setup.err);
+      const canonicalConfig = await canonicalConfigPath(config);
 
       await rm(data, { recursive: true, force: true });
       await writeFile(data, marker);
@@ -81,7 +82,7 @@ test(
       assert.doesNotMatch(result.err, new RegExp(marker));
       assert.doesNotMatch(result.err, /[A-Za-z]:\\[^\s]+|\/[^\s]+/);
       const files = await import("node:fs/promises").then((fs) =>
-        fs.readdir(ownerDir(config)),
+        fs.readdir(ownerDir(canonicalConfig)),
       );
       assert.deepEqual(files, []);
     } finally {
