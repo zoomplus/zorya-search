@@ -151,6 +151,13 @@ export interface CodeIndex {
     similar: CodeHit[]
     stale: boolean
   }>
+  withReadSnapshot?<T>(
+    root: string,
+    signal: AbortSignal,
+    work: (
+      index: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'>,
+    ) => Promise<T>,
+  ): Promise<T>
   watchRepository(
     root: string,
     options?: { signal?: AbortSignal; intervalMs?: number; onError?: (code: string) => void },

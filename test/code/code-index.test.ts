@@ -95,6 +95,211 @@ test('bounded rerank shortlist can promote a candidate beyond the requested outp
   assert.equal(result.hits.length, 1)
 })
 
+test('read snapshots preserve dense results, rerank inputs, cancellation ownership, and admission limits', async () => {
+  const root = await repository()
+  await writeFile(join(root, 'first.ts'), 'export const sharedNeedle = "first"\n')
+  await writeFile(join(root, 'second.ts'), 'export const sharedNeedle = "second"\n')
+  await commit(root, 'scoped read fixture')
+
+  const rerankCalls: Array<{ query: string; documents: string[] }> = []
+  let heldQuery: string | undefined
+  let queryStarted: (() => void) | undefined
+  let heldQueryRelease: (() => void) | undefined
+  let releaseHeldQuery = false
+  let observedQuerySignal: AbortSignal | undefined
+  let settledAborts = 0
+  const profile = {
+    provider: 'fixture',
+    space: 'scoped-dense',
+    model: 'fixture',
+    dimensions: 2,
+    inputType: 'text' as const,
+    chunkerVersion: 'ts-ast-symbol-v1',
+  }
+  const { code } = await index(
+    root,
+    {
+      async embed({ texts, signal }) {
+        if (texts.length === 1 && texts[0] === heldQuery) {
+          observedQuerySignal = signal
+          queryStarted?.()
+          await new Promise<never>((_resolve, reject) => {
+            const finishOnAbort = () => setTimeout(() => {
+              settledAborts++
+              reject(signal.reason)
+            }, 8)
+            const finishOnRelease = () => {
+              signal.removeEventListener('abort', finishOnAbort)
+              heldQueryRelease = undefined
+              _resolve()
+            }
+            signal.addEventListener(
+              'abort',
+              finishOnAbort,
+              { once: true },
+            )
+            if (releaseHeldQuery) heldQueryRelease = finishOnRelease
+          })
+        }
+        return texts.map(() => [1, 0])
+      },
+      async rerank({ query, documents }) {
+        rerankCalls.push({ query, documents: [...documents] })
+        return documents
+          .map((_, position) => ({ index: position, score: documents.length - position }))
+          .reverse()
+      },
+    },
+    profile,
+  )
+  await code.indexRepository({ root })
+
+  const queries = ['sharedNeedle', 'first']
+  const before = await Promise.all(
+    queries.map((query) => code.searchCode({ root, query, mode: 'hybrid', limit: 8 })),
+  )
+  const beforeRerank = rerankCalls.splice(0)
+  let retained: Pick<CodeIndex, 'indexStatus' | 'searchCode' | 'readSource' | 'relatedCode'> | undefined
+  const after = await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    retained = scoped
+    const status = await scoped.indexStatus(root)
+    status.identity!.snapshotId = 'mutated-by-caller'
+    const results = await Promise.all(
+      queries.map((query) => scoped.searchCode({ root, query, mode: 'hybrid', limit: 8 })),
+    )
+    assert.equal((await scoped.indexStatus(root)).identity?.snapshotId, before[0]!.identity.snapshotId)
+    return results
+  })
+  assert.deepEqual(after, before)
+  assert.deepEqual(
+    [...rerankCalls].sort((a, b) => a.query.localeCompare(b.query)),
+    [...beforeRerank].sort((a, b) => a.query.localeCompare(b.query)),
+  )
+  let joinedChild: ReturnType<CodeIndex['searchCode']> | undefined
+  await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    joinedChild = scoped.searchCode({ root, query: 'first', mode: 'hybrid', limit: 8 })
+  })
+  assert.ok((await joinedChild!).hits.length > 0)
+  await assert.rejects(
+    retained!.indexStatus(root),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_STALE',
+  )
+
+  const statuses = await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) =>
+    Promise.allSettled(Array.from({ length: 64 }, () => scoped.indexStatus(root))),
+  )
+  assert.equal(statuses.filter((result) => result.status === 'fulfilled').length, 63)
+  assert.equal(statuses.filter((result) => result.status === 'rejected').length, 1)
+  assert.equal(
+    (statuses.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason.message,
+    'CODE_INDEX_BUSY',
+  )
+
+  const armQuery = (query: string, waitForRelease = false) => {
+    heldQuery = query
+    releaseHeldQuery = waitForRelease
+    return new Promise<void>((resolveStarted) => {
+      queryStarted = resolveStarted
+    })
+  }
+  const startSearch = (scoped: Pick<CodeIndex, 'searchCode'>, query: string, signal?: AbortSignal) =>
+    scoped.searchCode({ root, query, mode: 'hybrid', ...(signal ? { signal } : {}) })
+
+  const parentQuery = 'cancel-parent-owned-signal'
+  const parentAbort = new AbortController()
+  const parentReason = new Error('parent aborted')
+  const parentStarted = armQuery(parentQuery)
+  const parentWork = code.withReadSnapshot!(root, parentAbort.signal, async (scoped) => {
+    const pending = startSearch(scoped, parentQuery)
+    await parentStarted
+    parentAbort.abort(parentReason)
+    await pending
+  })
+  await assert.rejects(parentWork, (error: unknown) => error === parentReason)
+  assert.equal(observedQuerySignal?.aborted, true)
+  assert.ok(settledAborts >= 1)
+
+  const independentQuery = 'cancel-independent-signal'
+  const independentStarted = armQuery(independentQuery)
+  await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    const independent = new AbortController()
+    const pending = startSearch(scoped, independentQuery, independent.signal)
+    await independentStarted
+    assert.ok(observedQuerySignal)
+    const independentReason = new Error('call aborted')
+    independent.abort(independentReason)
+    await assert.rejects(pending, (error: unknown) => error === independentReason)
+    assert.equal(observedQuerySignal?.aborted, true)
+    assert.ok((await scoped.indexStatus(root)).identity)
+  })
+  assert.ok(settledAborts >= 2)
+
+  const callbackQuery = 'cancel-callback-failure'
+  const callbackStarted = armQuery(callbackQuery)
+  const callbackError = new Error('callback failed')
+  const callbackFailure = code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    void startSearch(scoped, callbackQuery)
+    await callbackStarted
+    throw callbackError
+  })
+  await assert.rejects(callbackFailure, (error: unknown) => error === callbackError)
+  assert.ok(settledAborts >= 3)
+
+  const alias = await temp()
+  await rm(alias, { recursive: true, force: true })
+  await symlink(root, alias)
+  const foreign = await repository()
+  await writeFile(join(foreign, 'foreign.ts'), 'export const foreignRootContent = true\n')
+  await commit(foreign, 'foreign fixture')
+  await code.withReadSnapshot!(root, new AbortController().signal, async (scoped) => {
+    assert.equal((await scoped.indexStatus(alias)).identity?.snapshotId, before[0]!.identity.snapshotId)
+    await assert.rejects(
+      scoped.readSource({ root: foreign, path: 'foreign.ts' }),
+      (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_STALE',
+    )
+  })
+
+  const aliasQuery = 'wait-release-alias-retarget'
+  const aliasStarted = armQuery(aliasQuery, true)
+  const aliasWork = code.withReadSnapshot!(alias, new AbortController().signal, (scoped) =>
+    scoped.searchCode({ root: alias, query: aliasQuery, mode: 'hybrid' }),
+  )
+  await aliasStarted
+  await rm(alias)
+  await symlink(foreign, alias)
+  heldQueryRelease?.()
+  await assert.rejects(
+    aliasWork,
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH',
+  )
+
+  const publishQuery = 'wait-release-index-publish'
+  const publishStarted = armQuery(publishQuery, true)
+  const publishWork = code.withReadSnapshot!(root, new AbortController().signal, (scoped) =>
+    scoped.searchCode({ root, query: publishQuery, mode: 'hybrid' }),
+  )
+  await publishStarted
+  await writeFile(join(root, 'first.ts'), 'export const changedDuringSearch = "new snapshot"\n')
+  const published = await code.indexRepository({ root })
+  assert.notEqual(published.identity?.snapshotId, before[0]!.identity.snapshotId)
+  heldQueryRelease?.()
+  await assert.rejects(
+    publishWork,
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH',
+  )
+
+  const closeQuery = 'cancel-index-close'
+  const closeStarted = armQuery(closeQuery)
+  const closeWork = code.withReadSnapshot!(root, new AbortController().signal, (scoped) =>
+    scoped.searchCode({ root, query: closeQuery, mode: 'hybrid' }),
+  )
+  await closeStarted
+  const closing = code.close()
+  await assert.rejects(closeWork)
+  await closing
+  assert.ok(settledAborts >= 4)
+})
+
 function countCodeWrites(database: QueryableDatabase) {
   let writes = 0
   const wrap = (client: QueryableDatabase): QueryableDatabase => ({

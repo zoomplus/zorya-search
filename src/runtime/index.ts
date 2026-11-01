@@ -434,10 +434,14 @@ async function createOwnedRuntime(
             if (remaining <= 0) throw new SearchRuntimeError('TIMEOUT')
             job.attempt++
             job.checkpointWrites = 0
-            const attemptSignal = AbortSignal.any([
-              job.controller.signal,
-              AbortSignal.timeout(Math.min(config.limits?.timeoutMs ?? 60_000, remaining)),
-            ])
+            const attemptController = new AbortController()
+            const attemptTimeout = Math.min(config.limits?.timeoutMs ?? 60_000, remaining)
+            const attemptTimer = setTimeout(
+              () => attemptController.abort(new SearchRuntimeError('TIMEOUT')),
+              attemptTimeout,
+            )
+            attemptTimer.unref?.()
+            const attemptSignal = AbortSignal.any([job.controller.signal, attemptController.signal])
             try {
               await runIndexExclusive(job.rootId, attemptSignal, (progress) => {
                 job.totalChunks = progress.totalChunks
@@ -451,7 +455,11 @@ async function createOwnedRuntime(
               job.state = 'completed'
               break
             } catch (error) {
-              const safe = attemptSignal.aborted && !job.controller.signal.aborted
+              clearTimeout(attemptTimer)
+              const attemptDeadlineWon =
+                attemptController.signal.aborted &&
+                attemptSignal.reason === attemptController.signal.reason
+              const safe = attemptDeadlineWon
                 ? new SearchRuntimeError('TIMEOUT')
                 : sanitize(error, undefined, job.controller.signal)
               const checkpointAdvanced = job.checkpointWrites > 0
@@ -472,6 +480,8 @@ async function createOwnedRuntime(
                 }
                 job.controller.signal.addEventListener('abort', abort, { once: true })
               })
+            } finally {
+              clearTimeout(attemptTimer)
             }
           }
         } catch (error) {
@@ -1420,6 +1430,8 @@ function sanitize(
   if (operationSignal?.aborted) {
     const reason = operationSignal.reason
     if (reason instanceof SearchRuntimeError) return reason
+    if (reason instanceof Error && reason.name === 'OperationTimeoutError')
+      return new SearchRuntimeError('OPERATION_TIMEOUT')
     return new SearchRuntimeError('CANCELLED')
   }
   if (error instanceof SearchRuntimeError) return error
