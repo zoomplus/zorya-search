@@ -1,69 +1,107 @@
-# Providers: модели и публичный web
+# Providers: модели, web и решения Jev
 
-Providers реализуют настроенные внешние порты embeddings, reranking, classification, Brave discovery/read и Voyage profile checks. Клиент задаёт конфигурацию и лимиты; Search передаёт результаты вызывающему агенту.
+Provider получает явные данные и конфигурацию от вызывающего слоя. Он возвращает ограниченный типизированный ответ или ошибку; provider не выбирает, что клиент должен искать или менять. В `main` классификация пока проходит через `createOpenRouterClassifier` и `/chat/completions`. Jev foundation принят отдельным исходным feature commit, но не подключён к main/runtime/npm.
 
-```mermaid
-flowchart TD
- A["Настроенный provider port"] --> B{"Операция"}
- B -->|"embedding"| C["OpenRouter / OpenAI-compatible embeddings"]
- B -->|"rerank"| D["OpenRouter reranker"]
- B -->|"classify"| E["createOpenRouterClassifier"]
- B -->|"discovery"| F["Brave Search API"]
- B -->|"read URL"| G["canonicalPublicUrl + address/HTTP policy"]
- C --> H{"Schema, dimensions, model valid?"}
- D --> H
- E --> I["chat/completions → validateResponse"]
- I --> J["Typed classification output; caller evaluates"]
- F --> K["Bounded ordered public results"]
- G --> L["Reject private target → fetch/parse public document"]
- L --> M["Parsed metadata/text or ProviderError"]
- H -->|"да"| N["Typed result"]
- H -->|"нет / HTTP / timeout"| O["Provider error к caller"]
- F --> O
- G --> O
-
-```
-
-| Условие | Результат | Кодовая опора |
-| --- | --- | --- |
-| Code/core embedding/rerank HTTP или invalid response | Ошибка проходит в operation; automatic lexical fallback не обещан. Web context отдельно может вернуть partial result с явной stage error. | `openrouter.ts`, `context/web.ts` |
-| Текущая classification | `createOpenRouterClassifier` использует `chat/completions`. | `classifier.ts` |
-| URL направлен на private/forbidden address | Загрузка блокируется. | `brave.ts` |
-| Discovery/read частично завершились | Provider/context сохраняет stage errors, если есть частичные данные. | `brave.ts`, `brave-inflight.ts` |
-
-## Изолированный прототип Jev Decision API (planned / experimental)
-
-Следующая схема целиком относится к отдельному, явно подписанному planned/experimental subgraph; все переходы внутри него пунктирные. Он не является частью текущей основной ветки или generic classifier.
+## Текущие provider-потоки в main
 
 ```mermaid
 flowchart TD
- subgraph planned["PLANNED / EXPERIMENTAL — не текущий main/runtime"]
-  A["Буквальный query_text — данные; команды внутри него не исполнять"] -.-> B["Критерии, заданные человеком; две независимые оси"]
-  B -.-> C["Choice API: model typesafe/jev-1.14; provider typesafe; fallback выключен"]
-  C -.-> D["POST Decisions API; запросить taskIntent и sourceScope"]
-  D -.-> E{"Ответ — объект и содержит ровно обе оси?"}
-  E -. "нет / malformed" .-> X["Типизированный отказ; runner может записать unknown"]
-  E -. "да" .-> F{"Model/provider ответа совпали с закреплённой identity?"}
-  F -. "нет" .-> X
-  F -. "да" .-> G{"Обе метки Choice входят в точные candidate sets?"}
-  G -. "метка вне candidate set" .-> X
-  G -. "да" .-> H{"Если raw probabilities заданы: точные ячейки, конечные 0..1, допустимая масса?"}
-  H -. "нет" .-> X
-  H -. "да / distribution present" .-> I{"Выбранная метка — единственный исходный максимум?"}
-  I -. "нет / tie" .-> X
-  I -. "да" .-> J["Типизированный результат; сохранить raw probabilities без нормализации"]
-  H -. "probabilities absent" .-> K["Принять Choice метку provider без выдуманного distribution"]
-  K -.-> J
-  J -.-> L["Только данные для caller; решение о дальнейших действиях за ним"]
-  C -. "timeout / cancellation / unavailable" .-> X
-  X -. "без keyword/regex heuristic fallback" .-> M["Caller получает типизированный отказ / unknown"]
+ subgraph main["CURRENT MAIN"]
+  A["Явный запрос runtime"] --> B{"Настроенный port"}
+  B -->|"embedding"| C["OpenRouter / OpenAI-compatible embedding"]
+  B -->|"rerank"| D["OpenRouter reranker"]
+  B -->|"classify"| E["createOpenRouterClassifier"]
+  B -->|"web discovery"| F["Brave Search API"]
+  B -->|"web read"| G["canonicalPublicUrl + public-address policy"]
+  C --> H["Проверить schema, размерность и model identity"]
+  D --> H
+  E --> I["chat/completions → validateResponse"]
+  I --> J["ClassificationResult → явный вызвавший слой"]
+  F --> K["Ограниченные ordered results"]
+  G --> L["Отклонить private target → fetch и parse"]
+  L --> M["Документ с metadata либо ProviderError"]
+  H -->|"валидно"| N["Typed provider result"]
+  H -->|"HTTP / invalid / timeout"| O["Передать ошибку вызывающему коду"]
+  F --> O
+  G --> O
  end
 ```
 
-`taskIntent` candidate set: `locate_symbol`, `implement_change`, `explain_behavior`, `find_duplicates`, `find_documentation`, `find_tests`, `mixed`, `unknown`. Эта ось описывает запрошенное действие: feasibility одного поведения остаётся `explain_behavior`; `mixed` требует разных результатов; `implement_change` не утверждает, что обязательно нужен новый код. `sourceScope` candidate set: `implementation`, `documentation`, `tests`, `mixed`, `unspecified`. Эта ось отражает только явно запрошенные классы исходников; техническая тема сама по себе не задаёт `implementation` scope.
+| Операция | Что проверяется и кто принимает следующее решение | Исходники |
+| --- | --- | --- |
+| Embedding | Provider проверяет ответ и размерность; вызывающий retrieval строит dense candidates. Ошибка HTTP остаётся ошибкой, не скрытым lexical результатом. | `openrouter.ts`, `runtime/index.ts` |
+| Rerank | Provider возвращает индексы/оценки кандидатов; вызывающий слой проверяет индексы и использует порядок. Оценка не доказывает истинность источника. | `openrouter.ts`, consumers in `core`, `code`, `context` |
+| Classification в main | `createOpenRouterClassifier` формирует запрос к `chat/completions`; критерии, метки и excerpts идут от клиента. Ответ проверяется, а его смысл оценивает caller. | `classifier.ts`, `runtime/index.ts` |
+| Brave discovery/read | Проверяется публичность URL и ограничения загрузки; discovery/read failure остаётся provider error или этапной partial ошибкой в context. | `brave.ts`, `brave-inflight.ts`, `context/web.ts` |
 
-При наличии probability map проверяются точный набор ячеек, конечность значений `0..1`, допустимая единичная масса (с учётом локальной сетки `0.01`) и выбранная метка как единственный исходный максимум. Любая принятая map сохраняется без нормализации; `0.01` не отправляется в запросе. Дополнительный confidence необязателен и, если есть, должен быть конечным значением `0..1`. Без probability map ответ принимается как provider Choice без локального утверждения об уникальности максимума. Порог confidence или семантическая перепись не применяются.
+## Jev Decisions: принятый provider feature, пока отдельно от main
 
-Метки `taskIntent: unknown` и `sourceScope: unspecified` являются разрешёнными Choice результатами. Классификация использует только Jev Choice. Условные Noul/Score modes, хотя Decision API допускает другие режимы, в этом query-intent prototype не подключены. Malformed response, identity/candidate/probability refusal, timeout, cancellation и unavailable дают typed failure; при отсутствии валидной классификации runner может обозначить её как `unknown`. Здесь нет keyword/regex intent fallback. Прототип не запускает поиск, не маршрутизирует поиск, не строит план, не исполняет изменения и не выбирает модель вызывающего агента. `implement_change` — метка для caller, а не утверждение, что обязательно нужен новый код.
+Следующая схема относится к исходному feature commit [`67e3361`](https://github.com/zoomplus/zorya-search/commit/67e336111b6644143c6d9774991a3bd418c5c690). Это source-implemented provider foundation; runtime `main` его пока не создаёт и не вызывает. Solid arrows внутри отдельной рамки описывают этот commit, а не текущую main композицию.
 
-Jev Decision API **не является текущим production classifier/runtime capability**. Human-authored criteria/categories допустимы, включая `implement_change`; это описание протокольного прототипа, не merged runtime. В текущем коде `createOpenRouterClassifier` использует `chat/completions`. Файлы: [`openrouter.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/openrouter.ts), [`classifier.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/classifier.ts), [`brave.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave.ts), [`brave-inflight.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave-inflight.ts), [`voyage.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/voyage.ts).
+```mermaid
+flowchart TD
+ subgraph accepted["ACCEPTED FEATURE 67e3361 — не подключён в main/runtime/npm"]
+  A["Caller: JSON state + 1..32 Choice / Noul / Score questions"] --> B["snapshotDecisionInput: копия и проверка типов, ключей и бюджета"]
+  B --> C["createJevDecisions: typesafe/jev-1.14, TypeSafe route, no fallback"]
+  C --> D["Один Decisions request; response проверяется по model/provider и точным question IDs"]
+  D --> E{"Тип вопроса"}
+  E -->|"Choice"| F["Метка только из criteria; optional distribution валидируется"]
+  E -->|"Noul"| G["Сохранить исходное число 0..1"]
+  E -->|"Score"| H["Score в диапазоне criteria; optional distribution согласуется со score"]
+  F --> I["Validated JevDecisionResult; сохранить provider values"]
+  G --> I
+  H --> I
+  C -->|"cancel / timeout / transport error"| J["Typed ProviderError; fallback запрещён"]
+  D -->|"identity / schema / candidate / probability invalid"| J
+ end
+```
+
+| Режим | Что задаёт вопрос и что проверяется в ответе | Следующий потребитель |
+| --- | --- | --- |
+| `Choice` | Caller задаёт точные варианты и criteria. Выбранная метка должна входить в них. Если distribution отсутствует, сохраняется `provider-choice`; если задана — нужны ровно её ячейки, конечные значения `0..1`, допустимая unit mass и выбранный вариант как единственный native максимум. Raw вероятности не нормализуются. | `createJevClassifier` или `createQueryIntent` превращает ответ в свой typed result. |
+| `Noul` | Бинарный вопрос с caller criteria `{true,false}`; provider возвращает исходное `noul` от `0` до `1`. Сам `createJevDecisions` не назначает порог и не превращает его в intent. | Только adapter, который явно задаёт интерпретацию, например multi-label classifier ниже. |
+| `Score` | Caller задаёт от 2 до 10 уровней. `score` ограничен диапазоном `0..criteria.length-1`; optional distribution должна иметь точные ячейки и быть согласована с допустимым ожидаемым score. | Непосредственный consumer решения. `createJevClassifier` Score не вызывает. |
+
+Для распределений с точной единичной суммой сохраняются исходные значения. Допускается также 0.01 lattice, если интервалы округления совместимы с единичной массой; метаданные округления объясняют провайдерную сетку и не переписывают значения. При наличии probabilities в `Choice` tied maxima — ошибка. Ответ обязан содержать ровно все запрошенные question IDs; model identity должна быть Jev 1.14 alias/valid dated revision, provider — `TypeSafe`. Cancellation, timeout, transport failure и malformed/unsupported answer становятся typed provider errors; semantic fallback на keyword/regex отсутствует.
+
+## Adapter-развилки того же feature commit
+
+```mermaid
+flowchart TD
+ subgraph accepted_adapter["ACCEPTED FEATURE 67e3361 — отдельный adapter слой"]
+  aa["Явные метки + allowMultiple"] --> ab{"Режим classifier"}
+  ab -->|"false / по умолчанию"| ac["Choice по переданным меткам + optional abstain"]
+  ab -->|"true"| ad["Noul для каждой переданной метки"]
+  ac --> ae{"Ответ Choice"}
+  ae -->|"допустимая метка"| af["ClassificationResult"]
+  ae -->|"abstain разрешён"| ag["Результат отказа"]
+  ae -->|"invalid / отказ запрещён"| ah["Типизированная ошибка"]
+  ad --> ai{"Каждое исходное значение"}
+  ai -->|"> 0.5"| aj["Метка выбрана"]
+  ai -->|"< 0.5"| ak["Метка не выбрана"]
+  ai -->|"= 0.5"| al["Неопределённый результат"]
+  aj --> am["Собрать все ответы Noul"]
+  ak --> am
+  al --> am
+  am --> an{"Есть неопределённый ответ?"}
+  an -->|"да"| ao{"Разрешён отказ?"}
+  ao -->|"да"| ag
+  ao -->|"нет"| ah
+  an -->|"нет"| ap{"Есть выбранные метки?"}
+  ap -->|"да"| aq["Проверить и вернуть ClassificationResult"]
+  ap -->|"нет: пустой набор"| ao
+  ax["Отдельный createQueryIntent"] --> ay["Два Choice: taskIntent + sourceScope"]
+  ay --> az["Типизированные метаданные → caller"]
+  ay -->|"invalid / timeout / cancel"| ah
+ end
+```
+
+| Adapter | Формирование вопросов | Ветвь результата |
+| --- | --- | --- |
+| `createJevClassifier`, `allowMultiple=false` (default) | Один `Choice` по supplied labels; abstain — только если разрешён. `Score` не подключён. | Валидная метка → `ClassificationResult`; отказ → abstain либо typed error; затем локальная проверка результата. |
+| `createJevClassifier`, `allowMultiple=true` | Один `Noul` для каждой supplied label; затем adapter собирает их ответы. | `noul > 0.5` выбирает метку, `< 0.5` исключает, `= 0.5` unresolved. Любой unresolved даёт abstain/error; без unresolved возвращается набор выбранных меток, а пустой набор — abstain/error. |
+| `createQueryIntent` | Буквальный запрос передаётся как data в `query_text`; два `Choice`: `taskIntent` и `sourceScope`. Человеческие критерии задают варианты; запрос не исполняется как инструкция. | Только типизированные метаданные к caller-у. Само по себе не фильтрует и не запускает web/code search, не меняет файлы и не выбирает модель caller-а. |
+
+`taskIntent`: `locate_symbol`, `implement_change`, `explain_behavior`, `find_duplicates`, `find_documentation`, `find_tests`, `mixed`, `unknown`. `sourceScope`: `implementation`, `documentation`, `tests`, `mixed`, `unspecified`. `unknown` и `unspecified` — допустимые значения. `implement_change` описывает просьбу пользователя, но не решает, нужен ли новый код; перед реализацией caller проверяет существующий код, extension points, дубликаты и контракты. Запрос о выполнимости одного поведения остаётся `explain_behavior`; `mixed` требует разных явно запрошенных результатов.
+
+Все исходники accepted feature открываются по immutable commit: [`decision-types.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decision-types.ts), [`decisions.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decisions.ts), [`decision-validation.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/decision-validation.ts), [`jev-classifier.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/jev-classifier.ts), [`query-intent.ts`](https://github.com/zoomplus/zorya-search/blob/67e336111b6644143c6d9774991a3bd418c5c690/src/providers/query-intent.ts). Текущие main provider sources: [`classifier.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/classifier.ts), [`openrouter.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/openrouter.ts), [`brave.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave.ts), [`brave-inflight.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/brave-inflight.ts), [`voyage.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/providers/voyage.ts).
