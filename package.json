@@ -79,12 +79,12 @@
     "ignore": "7.0.14",
     "typescript": "5.9.3",
     "zod": "4.6.6",
-    "jose": "6.2.14"
-  },
-  "optionalDependencies": {
+    "jose": "6.2.14",
     "@electric-sql/pglite": "0.5.14",
     "@electric-sql/pglite-pgvector": "0.0.15",
-    "pg": "8.16.3",
+    "pg": "8.16.3"
+  },
+  "optionalDependencies": {
     "pdfjs-dist": "5.4.624"
   },
   "devDependencies": {
