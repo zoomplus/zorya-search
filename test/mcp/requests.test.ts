@@ -6,12 +6,18 @@ import {
   contextRequest,
   readRequest,
   searchRequest,
+  codeDuplicatesRequest,
   cancelIndexingRequest,
   webSearchRequest,
 } from '../../src/runtime/requests.js'
 import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
 
 test('shared MCP/runtime schemas keep owner paths and credentials out of tool inputs', () => {
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.readOnlyHint, true)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.idempotentHint, true)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.find_code_duplicates.annotations.openWorldHint, false)
+  assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'repo', matchMode: 'renamed', limit: 20 }).success, true)
+  assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'repo', extra: true }).success, false)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.start_indexing.annotations.openWorldHint, true)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.cancel_indexing.annotations.openWorldHint, false)
   assert.equal(cancelIndexingRequest.safeParse({ rootId: 'repo', jobId: '00000000-0000-4000-8000-000000000000' }).success, true)

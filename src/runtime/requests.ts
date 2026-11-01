@@ -18,6 +18,24 @@ export const searchRequest = z
     mode: z.enum(['lexical', 'hybrid']).optional(),
   })
   .strict()
+export const codeDuplicatesRequest = z
+  .object({
+    rootId: idField,
+    paths: z.array(z.string().min(1).max(1024)).max(256).optional(),
+    language: z
+      .string()
+      .min(1)
+      .max(64)
+      .refine((value) => Boolean(value.trim()))
+      .optional(),
+    sourceKind: z.enum(['implementation', 'tests', 'documentation', 'all']).optional(),
+    matchMode: z.enum(['exact', 'renamed']).optional(),
+    minTokens: z.number().int().min(12).max(5000).optional(),
+    minOccurrences: z.number().int().min(2).max(50).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    maxOccurrencesPerGroup: z.number().int().min(2).max(50).optional(),
+  })
+  .strict()
 export const readRequest = z
   .object({
     rootId: idField,

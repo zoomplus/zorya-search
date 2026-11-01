@@ -10,8 +10,19 @@ import {
   RuntimeConfigError,
   SearchRuntimeError,
 } from '../../src/runtime/index.js'
+import { codeDuplicatesRequest } from '../../src/runtime/requests.js'
 import { readBoundedRegularFile } from '../../src/runtime/config.js'
 import { createHash } from 'node:crypto'
+
+test('code duplicate request is bounded, strict, and defaults remain index-owned', () => {
+  assert.equal(
+    codeDuplicatesRequest.safeParse({ rootId: 'app', matchMode: 'renamed', minTokens: 12 })
+      .success,
+    true,
+  )
+  assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'app', minTokens: 11 }).success, false)
+  assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'app', unknown: true }).success, false)
+})
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'zorya-runtime-'))
@@ -164,6 +175,42 @@ test('runtime forwards source-kind and named-language filters to code and contex
     assert.deepEqual(tests.hits.map((hit) => hit.path), ['test/runtime.test.ts'])
     const docs = await runtime.getCodeContext({ rootId: 'a', query: 'runtimeSharedMarker', sourceKind: 'documentation' })
     assert.deepEqual(docs.sections.map((section) => section.path), ['docs/README.md'])
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
+test('runtime forwards duplicate requests inside the granted root and rejects ungranted roots', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    await writeFile(
+      join(f.a, 'copy.ts'),
+      'export function copied(input:number){ const local=input+2; return local*3 }\n',
+    )
+    await writeFile(
+      join(f.a, 'other.ts'),
+      'export function original(value:number){const result=value+2;return result*3}\n',
+    )
+    runtime = await openSearchRuntime({ config: f.config })
+    await runtime.indexRepository({ rootId: 'a' })
+    const result = await runtime.findCodeDuplicates({
+      rootId: 'a',
+      language: 'typescript',
+      minTokens: 12,
+    })
+    assert.equal(result.groups.length, 1)
+    assert.ok(result.groups[0]?.occurrences.every((item) => ['copy.ts', 'other.ts'].includes(item.path)))
+    await assert.rejects(
+      runtime.findCodeDuplicates({ rootId: 'missing' }),
+      (error: unknown) =>
+        error instanceof SearchRuntimeError && error.code === 'ROOT_NOT_CONFIGURED',
+    )
+    await assert.rejects(
+      runtime.findCodeDuplicates({ rootId: 'a', minTokens: 11 }),
+      (error: unknown) => error instanceof SearchRuntimeError && error.code === 'INVALID_REQUEST',
+    )
   } finally {
     await runtime?.close()
     await rm(f.dir, { recursive: true, force: true })

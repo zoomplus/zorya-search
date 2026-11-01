@@ -86,6 +86,59 @@ export interface CodeSearchInput {
   signal?: AbortSignal
 }
 
+export interface CodeDuplicatesInput {
+  root: string
+  paths?: string[]
+  language?: string
+  sourceKind?: 'implementation' | 'tests' | 'documentation' | 'all'
+  matchMode?: 'exact' | 'renamed'
+  minTokens?: number
+  minOccurrences?: number
+  limit?: number
+  maxOccurrencesPerGroup?: number
+  signal?: AbortSignal
+}
+
+export interface CodeDuplicateOccurrence {
+  path: string
+  symbol: string
+  kind: string
+  lineStart: number
+  lineEnd: number
+  fileContentHash: string
+  signature: string
+  bodyTokenCount: number
+}
+
+export interface CodeDuplicateGroup {
+  matchKind: 'exact-token-body' | 'renamed-local-body'
+  occurrences: CodeDuplicateOccurrence[]
+  occurrenceCount: number
+  tokenCount: number
+}
+
+export interface CodeDuplicatesResult {
+  identity: CodeSourceIdentity
+  supportedLanguages: string[]
+  groups: CodeDuplicateGroup[]
+  counts: {
+    scannedFiles: number
+    indexedFiles: number
+    eligibleFiles: number
+    parsedFiles: number
+    functions: number
+    skippedParse: number
+    skippedOversize: number
+    skippedUnsupported: number
+  }
+  truncation: {
+    groups: boolean
+    occurrences: boolean
+    scan: boolean
+    complete: boolean
+  }
+}
+
 export interface CodeIndexStatus {
   identity: CodeSourceIdentity | null
   indexedAt: string | null
@@ -176,6 +229,7 @@ export interface CodeIndex {
     degraded: boolean
     degradedReason: string | null
   }>
+  findCodeDuplicates?(input: CodeDuplicatesInput): Promise<CodeDuplicatesResult>
   indexStatus(root: string, signal?: AbortSignal): Promise<CodeIndexStatus>
   readSource(input: CodeReadInput): Promise<CodeReadResult>
   relatedCode(input: CodeRelatedInput): Promise<{

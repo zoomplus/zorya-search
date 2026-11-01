@@ -12,7 +12,10 @@ import type {
   CodeEmbeddingProfile,
   CodeDependencyGraphInput,
   CodeDependencyGraph,
+  CodeDuplicatesInput,
+  CodeDuplicatesResult,
 } from './types.js'
+import { findDuplicateBodies } from './duplicates.js'
 import { CodeIndexError } from './errors.js'
 import { createCodePathPolicy, enumerateCode, readScopedFile } from './enumerate.js'
 import { identifyRoot } from './identity.js'
@@ -988,6 +991,125 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
   const searchCode: CodeIndex['searchCode'] = (input) =>
     own(input.signal, (signal) => searchCodeInner({ ...input, signal }))
 
+  const findCodeDuplicates: NonNullable<CodeIndex['findCodeDuplicates']> = (input) =>
+    own(input.signal, async (signal) => {
+      checkAbort(signal)
+      if (
+        input.paths &&
+        (input.paths.length > 256 ||
+          input.paths.some(
+            (path) =>
+              !path ||
+              path.length > 1024 ||
+              path.startsWith('/') ||
+              path.split(/[\\/]/u).includes('..'),
+          ))
+      )
+        throw new CodeIndexError('CODE_INDEX_PATH_FILTER_INVALID')
+      normalizeSourceKind(input.sourceKind)
+      const minTokens = input.minTokens ?? 12
+      const minOccurrences = input.minOccurrences ?? 2
+      const limit = input.limit ?? 20
+      const maxOccurrencesPerGroup = input.maxOccurrencesPerGroup ?? 10
+      if (
+        !Number.isInteger(minTokens) ||
+        minTokens < 12 ||
+        minTokens > 5000 ||
+        !Number.isInteger(minOccurrences) ||
+        minOccurrences < 2 ||
+        minOccurrences > 50 ||
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        limit > 100 ||
+        !Number.isInteger(maxOccurrencesPerGroup) ||
+        maxOccurrencesPerGroup < 2 ||
+        maxOccurrencesPerGroup > 50 ||
+        (input.matchMode !== undefined && !['exact', 'renamed'].includes(input.matchMode))
+      )
+        throw new CodeIndexError('CODE_INDEX_LIMIT_INVALID')
+      const snapshot = await current(input.root, signal)
+      const rows = await database.query<{
+        path: string
+        content_hash: string
+        bytes: number
+      }>(
+        'SELECT path,content_hash,bytes FROM zorya_code_files WHERE snapshot_id=$1 ORDER BY path LIMIT $2',
+        [snapshot.snapshot, limits.maxFiles + 1],
+      )
+      if (rows.rows.length > limits.maxFiles) throw new CodeIndexError('CODE_INDEX_QUERY_SCAN_LIMIT')
+      const languageFilter = normalizeCodeLanguage(input.language)
+      const selected = rows.rows.filter(
+        (row) =>
+          codeSourceKindMatches(row.path, input.sourceKind ?? 'implementation') &&
+          codeLanguageMatches(row.path.split('.').at(-1)?.toLowerCase() ?? '', languageFilter) &&
+          (!input.paths?.length ||
+            input.paths.some(
+              (path) =>
+                row.path === path || row.path.startsWith(path.endsWith('/') ? path : `${path}/`),
+            )),
+      )
+      let totalBytes = 0
+      let skippedOversize = 0
+      const sources: Array<{ path: string; text: string; hash: string }> = []
+      for (const row of selected) {
+        checkAbort(signal)
+        if (row.bytes > limits.maxFileBytes || totalBytes + row.bytes > limits.maxTotalBytes) {
+          skippedOversize++
+          continue
+        }
+        const file = await readScopedFile(
+          snapshot.identity.root,
+          row.path,
+          limits.maxFileBytes,
+          signal,
+          pathPolicy.excludes,
+        )
+        if (file.hash !== row.content_hash) throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED')
+        totalBytes += file.bytes
+        sources.push({ path: row.path, text: file.text, hash: file.hash })
+        if (sources.length % 32 === 0)
+          await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      const result = await findDuplicateBodies(
+        sources,
+        {
+          matchMode: input.matchMode ?? 'renamed',
+          minTokens,
+          minOccurrences,
+          limit,
+          maxOccurrencesPerGroup,
+        },
+        signal,
+      )
+      checkAbort(signal)
+      const after = await current(input.root, signal)
+      if (after.snapshot !== snapshot.snapshot) throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH')
+      const groupsTruncated = result.eligibleGroupCount > result.groups.length
+      const occurrencesTruncated = result.occurrenceTruncated
+      const scanTruncated = skippedOversize > 0 || result.skippedParse > 0 || result.skippedUnsupported > 0
+      return {
+        identity: structuredClone(snapshot.identity),
+        supportedLanguages: ['JavaScript', 'TypeScript'],
+        groups: result.groups,
+        counts: {
+          scannedFiles: rows.rows.length,
+          indexedFiles: rows.rows.length,
+          eligibleFiles: selected.length,
+          parsedFiles: result.parsed,
+          functions: result.functions,
+          skippedParse: result.skippedParse,
+          skippedOversize,
+          skippedUnsupported: result.skippedUnsupported,
+        },
+        truncation: {
+          groups: groupsTruncated,
+          occurrences: occurrencesTruncated,
+          scan: scanTruncated,
+          complete: !groupsTruncated && !occurrencesTruncated && !scanTruncated,
+        },
+      }
+    })
+
   const readSourceInner: (
     input: Parameters<CodeIndex['readSource']>[0],
     scope?: ReadScope,
@@ -1328,6 +1450,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     indexRepository,
     sourceFingerprint,
     searchCode,
+    findCodeDuplicates,
     indexStatus,
     readSource,
     relatedCode,

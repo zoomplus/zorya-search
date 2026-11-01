@@ -10,6 +10,7 @@ import type {
   CodeSearchInput,
   CodeReadInput,
   CodeRelatedInput,
+  CodeDuplicatesInput,
 } from '../code/types.js'
 import {
   CodeContextError,
@@ -44,6 +45,7 @@ import {
   indexStatusRequest,
   indexRequest,
   searchRequest,
+  codeDuplicatesRequest,
   readRequest,
   relatedRequest,
   contextRequest,
@@ -1036,6 +1038,30 @@ async function createOwnedRuntime(
           ...(request.mode === undefined ? {} : { mode: request.mode }),
           signal: operationSignal,
         } as CodeSearchInput)
+      })
+    },
+    async findCodeDuplicates(input: Omit<CodeDuplicatesInput, 'root'> & { rootId: string }) {
+      const { request, signal } = captureRequest(codeDuplicatesRequest, input)
+      return execute(signal, async (operationSignal) => {
+        const root = await assertRoot(request.rootId)
+        const index = getIndex(request.rootId)
+        if (!index.findCodeDuplicates) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return index.findCodeDuplicates({
+          root: root.path,
+          ...(request.paths === undefined ? {} : { paths: request.paths }),
+          ...(request.language === undefined ? {} : { language: request.language }),
+          ...(request.sourceKind === undefined ? {} : { sourceKind: request.sourceKind }),
+          ...(request.matchMode === undefined ? {} : { matchMode: request.matchMode }),
+          ...(request.minTokens === undefined ? {} : { minTokens: request.minTokens }),
+          ...(request.minOccurrences === undefined
+            ? {}
+            : { minOccurrences: request.minOccurrences }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          ...(request.maxOccurrencesPerGroup === undefined
+            ? {}
+            : { maxOccurrencesPerGroup: request.maxOccurrencesPerGroup }),
+          signal: operationSignal,
+        })
       })
     },
     async readSource(input: Omit<CodeReadInput, 'root'> & { rootId: string }) {

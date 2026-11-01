@@ -18,6 +18,7 @@ import {
   readRequest,
   relatedRequest,
   searchRequest,
+  codeDuplicatesRequest,
   statusRequest,
   webReadRequest,
   webSearchRequest,
@@ -87,6 +88,12 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
     schema: searchRequest,
     annotations: annotationsFor('search_code'),
   },
+  find_code_duplicates: {
+    description:
+      'Find mechanically similar function body candidates in indexed implementation files. Results require caller inspection and do not claim semantic equivalence or perform edits.',
+    schema: codeDuplicatesRequest,
+    annotations: annotationsFor('find_code_duplicates'),
+  },
   read_source: {
     description:
       'Read a source range with snapshot validation so the calling agent can inspect it. Search does not edit the source.',
@@ -135,6 +142,7 @@ export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, 'read' | 'index
   capabilities: 'read',
   index_status: 'read',
   search_code: 'read',
+  find_code_duplicates: 'read',
   read_source: 'read',
   related_code: 'read',
   get_code_context: 'read',
@@ -239,6 +247,12 @@ export function createSearchMcpServer(
     runtime.searchCode({ ...input, ...(signal ? { signal } : {}) } as Parameters<
       typeof runtime.searchCode
     >[0]),
+  )
+  add('find_code_duplicates', (input, signal) =>
+    runtime.findCodeDuplicates({
+      ...input,
+      ...(signal ? { signal } : {}),
+    } as Parameters<typeof runtime.findCodeDuplicates>[0]),
   )
   add('read_source', (input, signal) =>
     runtime.readSource({ ...input, ...(signal ? { signal } : {}) } as Parameters<

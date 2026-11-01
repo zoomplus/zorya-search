@@ -110,6 +110,62 @@ test('bounded rerank shortlist can promote a candidate beyond the requested outp
   assert.equal(result.hits.length, 1)
 })
 
+test('duplicate body API reads verified indexed files once per AST function and returns source ranges', async () => {
+  const root = await repository()
+  await writeFile(
+    join(root, 'a.ts'),
+    'export function alpha(input: number) { const amount = input + 2; return amount * 4 }\n',
+  )
+  await writeFile(
+    join(root, 'b.ts'),
+    'export function beta(source: number) {\n // equal body\n const result=source+2; return result*4\n}\n',
+  )
+  await writeFile(
+    join(root, 'UPPER.TS'),
+    'export function upperOne(value:number){ const temp=value+1; return temp*2 }\n',
+  )
+  await writeFile(
+    join(root, 'UPPER2.TS'),
+    'export function upperTwo(value:number){ const temp=value+1; return temp*2 }\n',
+  )
+  await writeFile(
+    join(root, 'tests.test.ts'),
+    'export function testOnly(value: number) { const amount = value + 2; return amount * 4 }\n',
+  )
+  await commit(root, 'duplicate bodies')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+  const renamed = await code.findCodeDuplicates!({ root, minTokens: 12, paths: ['a.ts', 'b.ts'] })
+  assert.equal(renamed.groups.length, 1)
+  assert.deepEqual(renamed.supportedLanguages, ['JavaScript', 'TypeScript'])
+  assert.deepEqual(renamed.groups[0]?.occurrences.map((o) => o.path), ['a.ts', 'b.ts'])
+  assert.equal(renamed.groups[0]?.occurrences[0]?.fileContentHash.length, 64)
+  assert.equal(renamed.identity.snapshotId, (await code.indexStatus(root)).identity?.snapshotId)
+  assert.equal(
+    (await code.findCodeDuplicates!({
+      root,
+      matchMode: 'exact',
+      minTokens: 12,
+      paths: ['a.ts', 'b.ts'],
+    })).groups.length,
+    0,
+  )
+  assert.equal(
+    (await code.findCodeDuplicates!({ root, sourceKind: 'tests', minTokens: 12 })).groups.length,
+    0,
+  )
+  const uppercase = await code.findCodeDuplicates!({
+    root,
+    language: 'typescript',
+    paths: ['UPPER.TS', 'UPPER2.TS'],
+  })
+  assert.deepEqual(uppercase.groups[0]?.occurrences.map((item) => item.path), [
+    'UPPER.TS',
+    'UPPER2.TS',
+  ])
+  assert.equal(uppercase.groups[0]?.matchKind, 'exact-token-body')
+})
+
 test('exact symbol queries put AST declarations first while retaining usages and respecting filters', async () => {
   const root = await repository()
   await writeFile(join(root, 'a-usage.ts'), `export function chatter() { return ${'exactTarget + '.repeat(24)}0 }\n`)
