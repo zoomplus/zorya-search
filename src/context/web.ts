@@ -4,6 +4,11 @@ import { canonicalUrl } from '../core/retrieval.js'
 import { ProviderError, type ProviderErrorCode, type ProviderProfile } from '../providers/contracts.js'
 import { createLifecycle } from './lifecycle.js'
 import { mapConcurrentOrdered } from './ordered-pool.js'
+import {
+  buildWebDiscoveryQueries,
+  collectWebDiscovery,
+  type WebDiscoverySummary,
+} from './web-discovery.js'
 
 export interface WebContextModels {
   embed?: {
@@ -45,6 +50,7 @@ const defaults: WebSearchLimits = {
 }
 export interface WebPassage {
   canonicalURL: string
+  queryIndexes?: number[]
   title: string
   fetchedAt: string
   publishedAt: string | null
@@ -62,10 +68,12 @@ export interface WebPassage {
 }
 export interface WebSearchResult {
   passages: WebPassage[]
+  discovery?: WebDiscoverySummary
   rankingMode: 'lexical' | 'hybrid' | 'lexical-reranked' | 'hybrid-reranked'
   errors: Array<{
     stage: 'discovery' | 'document' | 'embedding' | 'rerank'
     url?: string
+    queryIndex?: number
     code:
       | 'DISCOVERY_FAILED'
       | 'DISCOVERY_LIMIT'
@@ -112,10 +120,19 @@ export function createWebSearch(options: {
       limit?: number
       maxChars?: number
       dateRange?: WebDateRange
+      additionalQueries?: string[]
       signal?: AbortSignal
     }): Promise<WebSearchResult> {
       if (!input.query.trim() || input.query.length > limits.maxQueryChars)
         throw new TypeError('Invalid web query')
+      const additionalQueries = snapshotAdditionalQueries(
+        input.additionalQueries,
+        limits.maxQueryChars,
+      )
+      const useAdditionalQueries = Boolean(additionalQueries?.length)
+      const discoveryQueries = useAdditionalQueries
+        ? buildWebDiscoveryQueries(input.query, additionalQueries!)
+        : undefined
       const limit = input.limit ?? 8,
         maxChars = input.maxChars ?? limits.maxChars
       if (
@@ -130,44 +147,67 @@ export function createWebSearch(options: {
       const dateRange = input.dateRange === undefined
         ? undefined
         : webDateRangeSchema.parse(input.dateRange)
-      const request = Object.freeze({ ...input })
+      const request = Object.freeze({
+        ...input,
+        ...(additionalQueries === undefined ? {} : { additionalQueries }),
+      })
       return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
         const errors: WebSearchResult['errors'] = []
         let urls: string[]
-        try {
-          signal.throwIfAborted()
-          const discovered = await web.discover(
-            request.query,
-            Math.min(limits.maxDocuments, limit * 2),
+        let queryIndexesByUrl: Map<string, number[]> | undefined
+        let discoverySummary: WebDiscoverySummary | undefined
+        if (discoveryQueries) {
+          const collected = await collectWebDiscovery({
+            queries: discoveryQueries,
+            source: web,
+            target: Math.min(limits.maxDocuments, limit * 2),
+            maxArrayUrls: limits.maxDocuments * 2,
+            maxDocuments: limits.maxDocuments,
+            concurrency: limits.maxConcurrency,
+            ...(dateRange ? { dateRange } : {}),
             signal,
-            dateRange ? { dateRange } : undefined,
-          )
-          if (!Array.isArray(discovered)) throw new Error('DISCOVERY_INVALID')
-          const bounded = discovered.slice(0, limits.maxDocuments * 2)
-          if (bounded.length < discovered.length)
-            errors.push({ stage: 'discovery', code: 'DISCOVERY_LIMIT' })
-          const normalized = new Set<string>()
-          for (const candidate of bounded) {
-            if (typeof candidate !== 'string' || candidate.length > 2048) {
-              errors.push({ stage: 'discovery', code: 'DISCOVERY_INVALID_URL' })
-              continue
+            providerFailureContext,
+          })
+          urls = collected.urls
+          queryIndexesByUrl = collected.queryIndexesByUrl
+          discoverySummary = collected.summary
+          errors.push(...collected.errors)
+        } else {
+          try {
+            signal.throwIfAborted()
+            const discovered = await web.discover(
+              request.query,
+              Math.min(limits.maxDocuments, limit * 2),
+              signal,
+              dateRange ? { dateRange } : undefined,
+            )
+            if (!Array.isArray(discovered)) throw new Error('DISCOVERY_INVALID')
+            const bounded = discovered.slice(0, limits.maxDocuments * 2)
+            if (bounded.length < discovered.length)
+              errors.push({ stage: 'discovery', code: 'DISCOVERY_LIMIT' })
+            const normalized = new Set<string>()
+            for (const candidate of bounded) {
+              if (typeof candidate !== 'string' || candidate.length > 2048) {
+                errors.push({ stage: 'discovery', code: 'DISCOVERY_INVALID_URL' })
+                continue
+              }
+              try {
+                normalized.add(canonicalUrl(candidate))
+              } catch {
+                errors.push({ stage: 'discovery', code: 'DISCOVERY_INVALID_URL' })
+              }
             }
-            try {
-              normalized.add(canonicalUrl(candidate))
-            } catch {
-              errors.push({ stage: 'discovery', code: 'DISCOVERY_INVALID_URL' })
+            urls = [...normalized].slice(0, limits.maxDocuments)
+          } catch (error) {
+            signal.throwIfAborted()
+            const provider = providerFailureContext(error)
+            return {
+              passages: [],
+              rankingMode: 'lexical',
+              errors: [{ stage: 'discovery', code: 'DISCOVERY_FAILED', ...(provider ? { provider } : {}) }],
+              partial: true,
+              budget: { usedChars: 0, maxChars },
             }
-          }
-          urls = [...normalized].slice(0, limits.maxDocuments)
-        } catch (error) {
-          signal.throwIfAborted()
-          const provider = providerFailureContext(error)
-          return {
-            passages: [],
-            rankingMode: 'lexical',
-            errors: [{ stage: 'discovery', code: 'DISCOVERY_FAILED', ...(provider ? { provider } : {}) }],
-            partial: true,
-            budget: { usedChars: 0, maxChars },
           }
         }
         const preparedDocuments = mapConcurrentOrdered(
@@ -348,6 +388,9 @@ export function createWebSearch(options: {
           usedChars += excerpt.length
           passages.push({
             canonicalURL: item.row.url,
+            ...(queryIndexesByUrl
+              ? { queryIndexes: queryIndexesByUrl.get(item.row.requestedURL) ?? [] }
+              : {}),
             title: item.row.doc.title,
             fetchedAt: item.row.doc.fetchedAt,
             publishedAt: item.row.doc.publishedAt,
@@ -368,6 +411,7 @@ export function createWebSearch(options: {
         signal.throwIfAborted()
         return {
           passages,
+          ...(discoverySummary ? { discovery: discoverySummary } : {}),
           rankingMode,
           errors,
           partial: errors.length > 0,
@@ -411,6 +455,22 @@ export function createWebSearch(options: {
     close: () => lifecycle.close(),
   }
 }
+function snapshotAdditionalQueries(
+  additionalQueries: unknown,
+  maxQueryChars: number,
+): readonly string[] | undefined {
+  if (additionalQueries === undefined) return undefined
+  if (!Array.isArray(additionalQueries) || additionalQueries.length > 7)
+    throw new TypeError('Invalid additional web queries')
+  const snapshot: string[] = []
+  for (const query of additionalQueries) {
+    if (typeof query !== 'string' || !query.trim() || query.length > maxQueryChars)
+      throw new TypeError('Invalid additional web query')
+    snapshot.push(query)
+  }
+  return Object.freeze(snapshot)
+}
+
 function validateLimits(l: WebSearchLimits) {
   for (const v of Object.values(l))
     if (!Number.isInteger(v) || v < 1) throw new TypeError('Invalid web limit')
