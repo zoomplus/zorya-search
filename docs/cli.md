@@ -4,10 +4,10 @@ CLI предоставляет команды для локальной наст
 
 ## Быстрый старт
 
-Для Node.js `>=20.19.0` установите закреплённый GitHub archive `v0.1.3` в текущий проект и создайте конфигурацию. Команды не устанавливают MCP в чат или редактор и не запускают индексацию:
+Для Node.js `>=20.19.0` установите закреплённый GitHub archive `v0.1.4` в текущий проект и создайте конфигурацию. Команды не устанавливают MCP в чат или редактор и не запускают индексацию:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.3/zorya-search-0.1.3.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.4/zorya-search-0.1.4.tgz
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
