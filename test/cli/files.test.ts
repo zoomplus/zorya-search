@@ -98,7 +98,7 @@ test("CLI setup writes separate code and optional visual env references without 
       env: "CUSTOM_EMBEDDING_KEY",
     },
     webReranker: { model: "owner/web-reranker", env: "WEB_RERANKER_KEY" },
-    classifier: { model: "owner/classifier", env: "CLASSIFIER_KEY" },
+    classifier: { model: "typesafe/jev-1.14", env: "CLASSIFIER_KEY" },
     webEnv: "WEB_DISCOVERY_KEY",
   });
   assert.deepEqual(custom.embedding, {
@@ -114,7 +114,7 @@ test("CLI setup writes separate code and optional visual env references without 
     secret: { kind: "env", name: "WEB_RERANKER_KEY" },
   });
   assert.deepEqual(custom.classifier, {
-    model: "owner/classifier",
+    model: "typesafe/jev-1.14",
     secret: { kind: "env", name: "CLASSIFIER_KEY" },
   });
   assert.throws(

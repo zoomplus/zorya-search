@@ -2,6 +2,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
+import { JEV_DECISIONS_MODEL } from '../providers/decisions.js'
 
 const secretRef = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('env'), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/) }).strict(),
@@ -98,6 +99,12 @@ const classifier = z
     limits: providerLimits.optional(),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (value.model !== JEV_DECISIONS_MODEL)
+      ctx.addIssue({ code: 'custom', path: ['model'], message: 'Search classifier requires typesafe/jev-1.14' })
+    if (value.limits?.attempts !== undefined && value.limits.attempts !== 1)
+      ctx.addIssue({ code: 'custom', path: ['limits', 'attempts'], message: 'Jev classifier requires attempts=1' })
+  })
 const mechanism = z.object({
   code: z.object({ secret: secretRef, limits: providerLimits.optional() }).strict().optional(),
   visual: z.object({ secret: secretRef, limits: providerLimits.optional() }).strict().optional(),

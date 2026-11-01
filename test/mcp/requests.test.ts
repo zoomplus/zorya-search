@@ -14,10 +14,20 @@ import {
   webSearchRequest,
   projectTextSearchRequest,
   projectTextReadRequest,
+  reuseContextRequest,
 } from '../../src/runtime/requests.js'
-import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
+import { SEARCH_MCP_TOOL_CONTRACTS, requiredOperationsForTool } from '../../src/mcp/server.js'
 
 test('shared MCP/runtime schemas keep owner paths and credentials out of tool inputs', () => {
+  assert.deepEqual(requiredOperationsForTool('get_reuse_context'), ['read', 'classify'])
+  assert.equal(requiredOperationsForTool('toString'), undefined)
+  assert.equal(requiredOperationsForTool('__proto__'), undefined)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.get_reuse_context.annotations.readOnlyHint, true)
+  assert.equal(SEARCH_MCP_TOOL_CONTRACTS.get_reuse_context.annotations.openWorldHint, true)
+  assert.equal(reuseContextRequest.safeParse({ rootId: 'repo', query: 'change lookup', maxChars: 48_000, limit: 40 }).success, true)
+  assert.equal(reuseContextRequest.safeParse({ rootId: 'repo', query: 'x', maxChars: 48_001 }).success, false)
+  assert.equal(reuseContextRequest.safeParse({ rootId: 'repo', query: 'x', signal: {} }).success, false)
+  assert.equal(reuseContextRequest.safeParse({ rootId: 'repo', query: 'x', includeLogical: true }).success, false)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.readOnlyHint, false)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.idempotentHint, false)
   assert.equal(SEARCH_MCP_TOOL_CONTRACTS.index_code_symbols.annotations.openWorldHint, false)

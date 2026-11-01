@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { PROJECT_TEXT_RETRIEVAL_PRESET } from "../providers/voyage.js";
+import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
 
 type EnvSecret = { kind: "env"; name: string };
 type RootConfig = {
@@ -35,6 +36,7 @@ export interface SetupConfigInput {
   webEnv?: string;
   webReranker?: NamedModelInput;
   classifier?: NamedModelInput;
+  jevEnv?: string;
   customEmbedding?: CustomEmbeddingInput;
   webEmbedding?: WebEmbeddingInput;
   textEnv?: string;
@@ -125,6 +127,9 @@ export function createSetupConfig(input: SetupConfigInput) {
     throw new Error("CODE_AND_CUSTOM_EMBEDDING_CONFLICT");
   if (input.webEmbedding && !input.webEnv)
     throw new Error("WEB_EMBEDDING_REQUIRES_WEB_DISCOVERY");
+  if (input.classifier && input.jevEnv !== undefined) throw new Error("CLASSIFIER_OPTIONS_CONFLICT");
+  if (input.classifier && input.classifier.model !== JEV_DECISIONS_MODEL)
+    throw new Error("CLASSIFIER_MODEL_UNSUPPORTED");
   const config: Record<string, unknown> = {
     version: 1,
     dataDir: input.dataDir,
@@ -161,8 +166,10 @@ export function createSetupConfig(input: SetupConfigInput) {
     };
   if (input.webReranker)
     config.reranker = namedModel(input.webReranker, "WEB_RERANKER_INVALID");
-  if (input.classifier)
-    config.classifier = namedModel(input.classifier, "CLASSIFIER_INVALID");
+  const classifier = input.jevEnv !== undefined
+    ? { model: JEV_DECISIONS_MODEL, env: input.jevEnv }
+    : input.classifier;
+  if (classifier) config.classifier = namedModel(classifier, "CLASSIFIER_INVALID");
   return config;
 }
 

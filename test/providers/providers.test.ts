@@ -496,186 +496,36 @@ test("provider configs and profiles are snapshots and endpoint differences creat
   assert.notEqual(otherEndpoint.profile.space, firstSpace);
 });
 
-test("classification constrains labels and grounds evidence in input", async () => {
+test("legacy classifier shape routes only pinned Jev Decisions requests", async () => {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = []
   const classifier = createOpenRouterClassifier({
-    baseUrl: "https://router.test/api/v1",
-    apiKey: "secret",
-    model: "custom/classifier",
-    fetch: async () =>
-      jsonResponse({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                labels: [
-                  {
-                    label: "yes",
-                    confidence: 0.7,
-                    evidence: ["the quoted fact"],
-                  },
-                ],
-                abstained: false,
-                uncertainty: [],
-              }),
-            },
-          },
-        ],
-      }),
-  });
-  assert.deepEqual(
-    await classifier.classify({
-      text: "the quoted fact",
-      labels: ["yes", "no"],
-      criteria: "meaning",
-      signal: new AbortController().signal,
-    }),
-    {
-      labels: [
-        { label: "yes", confidence: 0.7, evidence: ["the quoted fact"] },
-      ],
-      abstained: false,
-      uncertainty: [],
+    baseUrl: "https://router.test/api/v1", apiKey: "fixture", model: "typesafe/jev-1.14", profileId: "owner-profile",
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return jsonResponse({ id: "fixture-id", model: "typesafe/jev-1.14-20261014", provider: "TypeSafe", answers: { classification: { type: "choice", choice: "option_0", confidence: 0.7 } }, usage: { input_tokens: 10, output_tokens: 2, cost: 0.0001 } })
     },
-  );
-  for (const value of [
-    { labels: [{ label: "unknown" }], abstained: false, uncertainty: [] },
-    {
-      labels: [{ label: "yes", evidence: ["invented"] }],
-      abstained: false,
-      uncertainty: [],
-    },
-    { labels: [], abstained: false, uncertainty: [] },
-    {
-      labels: [{ label: "yes" }, { label: "no" }],
-      abstained: false,
-      uncertainty: [],
-    },
-  ]) {
-    const invalid = createOpenRouterClassifier({
-      baseUrl: "https://router.test/api/v1",
-      apiKey: "secret",
-      model: "custom/classifier",
-      fetch: async () =>
-        jsonResponse({
-          choices: [{ message: { content: JSON.stringify(value) } }],
-        }),
-    });
-    await assert.rejects(
-      invalid.classify({
-        text: "the quoted fact",
-        labels: ["yes", "no"],
-        criteria: "meaning",
-        signal: new AbortController().signal,
-      }),
-      (e: unknown) => e instanceof ProviderError && e.code === "malformed",
-    );
-  }
-});
+  })
+  const result = await classifier.classify({ text: "data", labels: ["yes", "no"], criteria: "caller criterion", allowAbstain: false, signal: new AbortController().signal })
+  assert.deepEqual(result.labels.map((item) => item.label), ["yes"])
+  assert.equal(classifier.profile.provider, "typesafe")
+  assert.equal(classifier.profile.model, "typesafe/jev-1.14")
+  assert.equal(classifier.profile.profileId, "owner-profile")
+  assert.equal(requests[0]?.url, "https://router.test/api/alpha/decisions")
+  assert.deepEqual(requests[0]?.body.provider, { order: ["typesafe"], allow_fallbacks: false, require_parameters: true })
+  assert.deepEqual(Object.keys(requests[0]?.body.questions as object), ["classification"])
+  assert.equal((requests[0]?.body.questions as Record<string, { type: string }>).classification?.type, "choice")
+  assert.equal(classifier.usage().calls, 1)
+  assert.equal(classifier.usage().inputTokens, 10)
+  assert.equal("messages" in requests[0]!.body, false)
+})
 
-test("classification allows default abstention, rejects it only when forbidden, and rejects extra keys", async () => {
-  const abstention = { labels: [], abstained: true, uncertainty: ["unclear"] };
-  const make = (value: unknown) =>
-    createOpenRouterClassifier({
-      baseUrl: "https://router.test/api/v1",
-      apiKey: "secret",
-      model: "custom/classifier",
-      fetch: async () =>
-        jsonResponse({
-          choices: [{ message: { content: JSON.stringify(value) } }],
-        }),
-    });
-  const input = {
-    text: "maybe",
-    labels: ["yes", "no"],
-    criteria: "meaning",
-    signal: new AbortController().signal,
-  };
-  assert.deepEqual(await make(abstention).classify(input), abstention);
-  await assert.rejects(
-    make(abstention).classify({ ...input, allowAbstain: false }),
-    (e: unknown) => e instanceof ProviderError && e.code === "malformed",
-  );
-  await assert.rejects(
-    make({ ...abstention, extra: true }).classify(input),
-    (e: unknown) => e instanceof ProviderError && e.code === "malformed",
-  );
-  await assert.rejects(
-    make({
-      labels: [{ label: "yes", confidence: null, evidence: null, extra: true }],
-      abstained: false,
-      uncertainty: [],
-    }).classify(input),
-    (e: unknown) => e instanceof ProviderError && e.code === "malformed",
-  );
-});
-
-test("classification maps null and array provider bodies to typed malformed errors", async () => {
-  for (const value of [null, []]) {
-    const classifier = createOpenRouterClassifier({
-      baseUrl: "https://router.test/api/v1",
-      apiKey: "secret",
-      model: "classifier",
-      fetch: async () => jsonResponse(value),
-    });
-    await assert.rejects(
-      classifier.classify({
-        text: "data",
-        labels: ["yes", "no"],
-        criteria: "meaning",
-        signal: new AbortController().signal,
-      }),
-      (e: unknown) => e instanceof ProviderError && e.code === "malformed",
-    );
-  }
-});
-
-test("classifier snapshots mutable model, endpoint, and routing configuration", async () => {
-  const payloads: Array<{ url: string; body: Record<string, unknown> }> = [];
-  const config = {
-    baseUrl: "https://classify.example/v1",
-    apiKey: "secret",
-    model: "classifier-a",
-    provider: { order: ["first"] },
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-      payloads.push({
-        url: String(input),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-      });
-      return jsonResponse({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                labels: [{ label: "yes", confidence: null, evidence: null }],
-                abstained: false,
-                uncertainty: [],
-              }),
-            },
-          },
-        ],
-      });
-    },
-  };
-  const classifier = createOpenRouterClassifier(config);
-  config.baseUrl = "https://changed.example/v1";
-  config.model = "classifier-b";
-  config.provider.order[0] = "second";
-  await classifier.classify({
-    text: "source",
-    labels: ["yes", "no"],
-    criteria: "meaning",
-    signal: new AbortController().signal,
-  });
-  assert.equal(
-    payloads[0]?.url,
-    "https://classify.example/v1/chat/completions",
-  );
-  assert.equal(payloads[0]?.body.model, "classifier-a");
-  assert.deepEqual(payloads[0]?.body.provider, {
-    require_parameters: true,
-    order: ["first"],
-  });
-});
+test("legacy classifier rejects other model, routing, attempts and incompatible endpoint", () => {
+  const base = { baseUrl: "https://router.test/api/v1", apiKey: "fixture", model: "typesafe/jev-1.14", fetch: async () => jsonResponse({}) }
+  assert.throws(() => createOpenRouterClassifier({ ...base, model: "custom/classifier" }), /typesafe\/jev-1.14/u)
+  assert.throws(() => createOpenRouterClassifier({ ...base, provider: { order: ["elsewhere"] } }), /маршрутизац/u)
+  assert.throws(() => createOpenRouterClassifier({ ...base, limits: { attempts: 2 } }), /attempts=1/u)
+  assert.throws(() => createOpenRouterClassifier({ ...base, baseUrl: "https://router.test/v1" }), /оканчиваться/u)
+})
 
 test("Brave source deduplicates, caps discovery, parses documents, and blocks private or non-web URLs", async () => {
   const web = createBraveWebSource({

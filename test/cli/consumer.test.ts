@@ -18,6 +18,17 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { once } from "node:events";
 import { runtimeConfigSchema } from "../../src/runtime/config.js";
 import { canonicalConfigPath, ownerDir } from "../../src/cli/files.js";
+import { createSetupConfig } from "../../src/cli/setup-config.js";
+
+test('setup opt-in writes only the pinned Jev classifier and rejects legacy conflicts', () => {
+  const base = { dataDir: '/tmp/search-state', root: { id: 'app', path: '/tmp/search-root' } }
+  const configured = createSetupConfig({ ...base, jevEnv: 'JEV_KEY' }) as { classifier?: { model?: string; secret?: { name?: string } } }
+  assert.equal(configured.classifier?.model, 'typesafe/jev-1.14')
+  assert.equal(configured.classifier?.secret?.name, 'JEV_KEY')
+  assert.throws(() => createSetupConfig({ ...base, classifier: { model: 'other/model', env: 'OLD_KEY' } }), /CLASSIFIER_MODEL_UNSUPPORTED/u)
+  assert.throws(() => createSetupConfig({ ...base, classifier: { model: 'typesafe/jev-1.14', env: 'OLD_KEY' }, jevEnv: 'JEV_KEY' }), /CLASSIFIER_OPTIONS_CONFLICT/u)
+  assert.throws(() => createSetupConfig({ ...base, jevEnv: '' }), /ENV_NAME_INVALID/u)
+})
 
 const node = process.execPath;
 const entry = resolve("dist/cli/entry.js");
@@ -522,6 +533,9 @@ test(
       assert.match(r.out, /search-fixture\.ts/);
       r = await run(["context", "--query", "searchableMarker", ...common]);
       assert.equal(r.code, 0, r.err);
+      r = await run(["reuse", "--query", "searchableMarker", ...common]);
+      assert.equal(r.code, 1, r.err);
+      assert.match(r.out, /CAPABILITY_DISABLED/u);
       r = await run(["text-status", ...common]);
       assert.equal(r.code, 0, r.err);
       assert.equal(JSON.parse(r.out).structuredContent.snapshotId !== null, true);

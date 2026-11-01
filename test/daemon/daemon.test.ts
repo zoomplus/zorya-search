@@ -49,13 +49,35 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       'token-readonly-'.padEnd(40, 'r'),
       { principalId: 'alpha-reader', rootIds: ['alpha'], operations: ['read'] as const },
     ],
+    [
+      'token-classify-'.padEnd(40, 'c'),
+      { principalId: 'alpha-classifier', rootIds: ['alpha'], operations: ['classify'] as const },
+    ],
+    [
+      'token-none-'.padEnd(40, 'n'),
+      { principalId: 'alpha-no-grants', rootIds: ['alpha'], operations: [] as const },
+    ],
   ])
   const fetchStarts: Array<{ signal: AbortSignal }> = []
   const controlledFetch: typeof fetch = (_input, init) =>
-    new Promise<Response>((_resolve, reject) => {
+    new Promise<Response>((resolve, reject) => {
       const signal = init?.signal
       if (!signal) {
         reject(new Error('signal missing'))
+        return
+      }
+      let body: { state?: Record<string, unknown>; questions?: Record<string, { type?: string; criteria?: Record<string, string> }> }
+      try { body = JSON.parse(String(init?.body)) as typeof body } catch { reject(new Error('invalid fixture request')); return }
+      const questions = body.questions ?? {}
+      if (Object.keys(questions).some((id) => ['taskIntent', 'sourceScope'].includes(id) || id.startsWith('file_') || id.startsWith('symbol_'))) {
+        const answers = Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+          if (id === 'taskIntent') return [id, { type: 'choice', choice: 'implement_change' }]
+          if (id === 'sourceScope') return [id, { type: 'choice', choice: 'implementation' }]
+          if (question.type === 'noul') return [id, { type: 'noul', noul: 0.9 }]
+          const choice = Object.keys(question.criteria ?? {}).find((key) => key !== 'none') ?? 'none'
+          return [id, { type: 'choice', choice }]
+        }))
+        resolve(new Response(JSON.stringify({ model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe', answers, usage: { input_tokens: 8, output_tokens: 3 } }), { headers: { 'content-type': 'application/json' } }))
         return
       }
       fetchStarts.push({ signal })
@@ -71,7 +93,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       { id: 'alpha', path: alpha },
       { id: 'beta', path: beta },
     ],
-    classifier: { model: 'offline-test', secret: { kind: 'env', name: 'MCP_TEST_KEY' } },
+    classifier: { model: 'typesafe/jev-1.14', secret: { kind: 'env', name: 'MCP_TEST_KEY' } },
   }
   const clients: Client[] = []
   const alphaToken = 'token-alpha-'.padEnd(40, 'x')
@@ -164,7 +186,9 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal(installedManifest.name, '@zorya/search')
     assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
-    assert.equal(listed.tools.length, 18)
+    assert.equal(listed.tools.length, 19)
+    assert.equal(listed.tools.some((tool) => tool.name === 'get_reuse_context'), true)
+    assert.deepEqual(listed.tools.find((tool) => tool.name === 'get_reuse_context')?._meta?.securitySchemes, undefined)
     assert.equal(listed.tools.some((tool) => tool.name === 'search_visual_references'), false)
     assert.ok(listed.tools.some((tool) => tool.name === 'search_code'))
     assert.ok(listed.tools.some((tool) => tool.name === 'find_code_duplicates'))
@@ -215,6 +239,24 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.match(JSON.stringify(visibleRoots), /alpha/)
     assert.doesNotMatch(JSON.stringify(visibleRoots), /beta/)
     const readOnly = await makeClient('auto', readOnlyToken)
+    assert.equal((await readOnly.listTools()).tools.some((tool) => tool.name === 'get_reuse_context'), false)
+    const deniedReuseCalls = fetchStarts.length
+    for (const restrictedToken of ['token-readonly-'.padEnd(40, 'r'), 'token-classify-'.padEnd(40, 'c'), 'token-none-'.padEnd(40, 'n')]) {
+      const restricted = await makeClient('auto', restrictedToken)
+      assert.equal((await restricted.listTools()).tools.some((tool) => tool.name === 'get_reuse_context'), false)
+      if (restrictedToken.startsWith('token-readonly-')) {
+        const restrictedCapabilities = await restricted.callTool({ name: 'capabilities', arguments: {} })
+        assert.equal((restrictedCapabilities.structuredContent as { reuseContext?: boolean }).reuseContext, false)
+      } else {
+        const deniedCapabilities = await restricted.callTool({ name: 'capabilities', arguments: {} })
+        assert.equal(deniedCapabilities.isError, true)
+      }
+      await assert.rejects(() => restricted.callTool({ name: 'get_reuse_context', arguments: { rootId: 'alpha', query: 'change alphaEntry' } }))
+      assert.equal(fetchStarts.length, deniedReuseCalls)
+      await restricted.close()
+    }
+    assert.equal((await modern.listTools()).tools.some((tool) => tool.name === 'get_reuse_context'), true)
+    assert.equal(((await modern.callTool({ name: 'capabilities', arguments: {} })).structuredContent as { reuseContext?: boolean }).reuseContext, true)
     const readOnlyRefresh = await readOnly.callTool({ name: 'index_code_symbols', arguments: { rootId: 'alpha' } })
     assert.equal(readOnlyRefresh.isError, true)
     assert.match(JSON.stringify(readOnlyRefresh), /ACCESS_DENIED/)
@@ -232,6 +274,12 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     } })
     assert.notEqual(logicalContext.isError, true)
     assert.match(JSON.stringify(logicalContext.structuredContent), /logicalContext/u)
+    const reuseContext = await modern.callTool({ name: 'get_reuse_context', arguments: { rootId: 'alpha', query: 'change alphaEntry implementation' } })
+    assert.notEqual(reuseContext.isError, true)
+    const reuseJson = JSON.stringify(reuseContext)
+    assert.ok(Buffer.byteLength(reuseJson) < 1_000_000)
+    assert.match(reuseJson, /alpha\.ts/u)
+    assert.match(reuseJson, /"status":"full"/u)
     const outgoing = await modern.callTool({ name: 'find_code_references', arguments: { rootId: 'alpha', symbolId: alphaEntry!.id, direction: 'outgoing', kind: 'call' } })
     assert.notEqual(outgoing.isError, true)
     assert.ok(((outgoing.structuredContent as { references?: unknown[] }).references ?? []).length > 0)
@@ -1014,7 +1062,7 @@ test('MCP preserves checked provider quota codes while redacting provider respon
       version: 1,
       dataDir: join(dir, 'state'),
       roots: [{ id: 'root', path: root }],
-      classifier: { model: 'offline-test', secret: { kind: 'env', name: 'CLASSIFIER_TEST_KEY' } },
+      classifier: { model: 'typesafe/jev-1.14', secret: { kind: 'env', name: 'CLASSIFIER_TEST_KEY' } },
     },
     runtimeOptions: {
       testDependencies: {

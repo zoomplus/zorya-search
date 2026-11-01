@@ -33,7 +33,10 @@ import {
 import { createClassificationTool } from '../context/classify.js'
 import type { ClassificationResult } from '../providers/contracts.js'
 import { createWebSearch, type WebSearchResult } from '../context/web.js'
-import { createOpenRouterClassifier } from '../providers/classifier.js'
+import { createJevClassifier } from '../providers/jev-classifier.js'
+import { createJevDecisions } from '../providers/decisions.js'
+import type { JevDecisionsPort } from '../providers/decision-types.js'
+import { createReuseContext } from '../context/reuse.js'
 import { createBraveWebSource, type BraveWebSourceConfig } from '../providers/brave.js'
 import {
   createOpenAICompatibleEmbedding,
@@ -67,6 +70,7 @@ import {
   readRequest,
   relatedRequest,
   contextRequest,
+  reuseContextRequest,
   webSearchRequest,
   webReadRequest,
   classifyRequest,
@@ -115,6 +119,7 @@ export interface RuntimeCapabilities {
   webRead: boolean
   webDiscovery: boolean
   classification: boolean
+  reuseContext: boolean
   visual: boolean
   projectText: boolean
   projectTextIndexing: boolean
@@ -401,14 +406,30 @@ function createProviders(
         ...fetchOption,
       })
     : undefined
-  const classifier = config.classifier
-    ? createOpenRouterClassifier({
-        baseUrl: 'https://openrouter.ai/api/v1',
-        model: config.classifier.model,
-        ...(config.classifier.profileId ? { profileId: config.classifier.profileId } : {}),
+  const classifierLimits = config.classifier?.limits
+  const decisions: JevDecisionsPort | undefined = config.classifier
+    ? createJevDecisions({
+        baseUrl: 'https://openrouter.ai/api',
         apiKey: resolveSecret(config.classifier.secret),
-        ...(config.classifier.limits ? { limits: compact(config.classifier.limits) } : {}),
+        ...(classifierLimits ? { limits: {
+          maxItems: Math.min(32, classifierLimits.maxItems ?? 32),
+          maxInputBytes: classifierLimits.maxInputBytes ?? 131_072,
+          maxResponseBytes: classifierLimits.maxResponseBytes ?? 262_144,
+          timeoutMs: classifierLimits.timeoutMs ?? 15_000,
+          attempts: 1,
+          concurrency: classifierLimits.concurrency ?? 1,
+        } } : {}),
         ...fetchOption,
+      })
+    : undefined
+  const classifier = decisions
+    ? createJevClassifier(decisions, {
+        maxItems: Math.min(100, classifierLimits?.maxItems ?? 100),
+        maxInputBytes: classifierLimits?.maxInputBytes ?? 131_072,
+        timeoutMs: classifierLimits?.timeoutMs ?? 15_000,
+        concurrency: classifierLimits?.concurrency ?? 1,
+        questionBatchSize: Math.min(32, classifierLimits?.maxItems ?? 32),
+        ...(config.classifier?.profileId ? { profileId: config.classifier.profileId } : {}),
       })
     : undefined
   const webLimits = config.web?.discovery?.limits ?? config.web?.limits
@@ -438,6 +459,7 @@ function createProviders(
     reranker,
     codeReranker,
     classifier,
+    decisions,
     visualEmbedding,
     projectTextDocumentEmbedding,
     projectTextQueryEmbedding,
@@ -460,6 +482,7 @@ async function createOwnedRuntime(
   const indexes = new Map<string, CodeIndex>()
   const projectTextIndexes = new Map<string, ProjectTextIndex>()
   const contexts = new Map<string, ReturnType<typeof createCodeContext>>()
+  const reuseContexts = new Map<string, ReturnType<typeof createReuseContext>>()
   const watchers = new Map<string, { close(): Promise<void> }>()
   const watcherErrors = new Map<string, string>()
   const watcherPaused = new Set<string>()
@@ -947,6 +970,15 @@ async function createOwnedRuntime(
     if (!context) throw new SearchRuntimeError('OPERATION_FAILED')
     return context
   }
+  const getReuse = (id: string) => {
+    if (!providers.decisions) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+    let reuse = reuseContexts.get(id)
+    if (!reuse) {
+      reuse = createReuseContext({ index: getIndex(id), decisions: providers.decisions })
+      reuseContexts.set(id, reuse)
+    }
+    return reuse
+  }
   const getProjectTextIndex = (id: string): ProjectTextIndex => {
     if (!config.projectText) throw new SearchRuntimeError('CAPABILITY_DISABLED')
     let index = projectTextIndexes.get(id)
@@ -1027,12 +1059,16 @@ async function createOwnedRuntime(
       await Promise.allSettled(operationPromises)
       await Promise.allSettled(controlPromises)
       await Promise.allSettled(jobPromises)
-      const lifecycle = await Promise.allSettled([
+      const contextLifecycle = await Promise.allSettled([
+        ...[...reuseContexts.values()].map((context) => context.close()),
         ...[...contexts.values()].map((context) => context.close()),
+      ])
+      for (const result of contextLifecycle) if (result.status === 'rejected') failures.push(result.reason)
+      const indexLifecycle = await Promise.allSettled([
         ...[...indexes.values()].map((index) => index.close()),
         ...[...projectTextIndexes.values()].map((index) => index.close()),
       ])
-      for (const result of lifecycle) if (result.status === 'rejected') failures.push(result.reason)
+      for (const result of indexLifecycle) if (result.status === 'rejected') failures.push(result.reason)
       try {
         await database.close()
       } catch (error) {
@@ -1164,6 +1200,7 @@ async function createOwnedRuntime(
         webRead: Boolean(providers.web),
         webDiscovery: Boolean(config.web?.discovery && providers.web),
         classification: Boolean(providers.classifier),
+        reuseContext: Boolean(providers.decisions),
         visual: Boolean(providers.visualEmbedding),
         projectText: Boolean(config.projectText),
         projectTextIndexing: Boolean(config.projectText),
@@ -1522,6 +1559,20 @@ async function createOwnedRuntime(
           ...(request.limit === undefined ? {} : { limit: request.limit }),
           signal: operationSignal,
         } as CodeContextRequest)
+      })
+    },
+    async getReuseContext(input: { rootId: string; query: string; maxChars?: number; limit?: number; signal?: AbortSignal }) {
+      const { request, signal } = captureRequest(reuseContextRequest, input)
+      return execute(signal, async (operationSignal) => {
+        const root = await assertRoot(request.rootId)
+        if (!providers.decisions) throw new SearchRuntimeError('CAPABILITY_DISABLED')
+        return getReuse(request.rootId).getReuseContext({
+          root: root.path,
+          query: request.query,
+          ...(request.maxChars === undefined ? {} : { maxChars: request.maxChars }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+          signal: operationSignal,
+        })
       })
     },
     async searchWeb(input: {

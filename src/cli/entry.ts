@@ -22,6 +22,7 @@ import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
 import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadataUrl, remoteOAuthScopes, validateRemoteOAuthRoots } from "../daemon/remote-oauth.js";
 import { startSearchDaemon } from "../daemon/index.js";
 import { PACKAGE_VERSION } from "../package-version.js";
+import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
 
 const CLI_VERSION = PACKAGE_VERSION;
 const cliEntryPath = fileURLToPath(import.meta.url);
@@ -35,6 +36,7 @@ const help = `Zorya Search — локальный поиск по коду и и
   index          построить индекс настроенного корня (--background вернёт job id)
   search         искать в коде (--query ТЕКСТ)
   context        собрать контекст (--query ТЕКСТ)
+  reuse          выбрать контекст повторного использования с Jev (--query ТЕКСТ; opt-in через --jev-env при setup)
   text-status    показать статус отдельного индекса документов, правил и навыков
   text-index     явно обновить отдельный индекс документов, правил и навыков
   text-search    искать в документах, правилах и навыках (--query ТЕКСТ)
@@ -57,6 +59,8 @@ const help = `Zorya Search — локальный поиск по коду и и
 
 Для отдельного Voyage индекса документов, правил и навыков задайте --text-env ИМЯ_ENV.
 Без него конфигурация включает локальный lexical поиск этих источников.
+
+Для явной классификации Search задайте при setup --jev-env ИМЯ_ENV. Используется только ${JEV_DECISIONS_MODEL}; старые --classifier-model/--classifier-env принимают только этот ID.
 
 По умолчанию поиск lexical локален. Включение облачных embeddings отправляет выбранные
 фрагменты кода или текстовые документы при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
@@ -216,7 +220,11 @@ async function setup(opts: Record<string, string | boolean>) {
     "web-reranker-env",
     "WEB_RERANKER_MODEL_AND_ENV_REQUIRED",
   );
-  const classifier = pairedModel(
+  const jevEnv = typeof opts["jev-env"] === "string" ? opts["jev-env"] : undefined;
+  if (opts["jev-env"] !== undefined && typeof opts["jev-env"] !== "string") throw new Error("ENV_NAME_INVALID");
+  if (jevEnv !== undefined && (opts["classifier-model"] !== undefined || opts["classifier-env"] !== undefined))
+    throw new Error("CLASSIFIER_OPTIONS_CONFLICT");
+  const classifier = jevEnv ? undefined : pairedModel(
     "classifier-model",
     "classifier-env",
     "CLASSIFIER_MODEL_AND_ENV_REQUIRED",
@@ -322,6 +330,7 @@ async function setup(opts: Record<string, string | boolean>) {
     ...(webEmbedding ? { webEmbedding } : {}),
     ...(webReranker ? { webReranker } : {}),
     ...(classifier ? { classifier } : {}),
+    ...(jevEnv !== undefined ? { jevEnv } : {}),
     ...(customEmbedding ? { customEmbedding } : {}),
   });
   parseRuntimeConfig(config);
@@ -446,6 +455,7 @@ async function main() {
       "text-env",
       "classifier-model",
       "classifier-env",
+      "jev-env",
       "custom-embedding-profile",
       "custom-embedding-model",
       "custom-embedding-dimensions",
@@ -468,6 +478,7 @@ async function main() {
     index: ["config", "root-id", "background"],
     search: ["config", "root-id", "query", "mode"],
     context: ["config", "root-id", "query"],
+    reuse: ["config", "root-id", "query"],
   };
   if (!allowed[command]) throw new Error("COMMAND_UNKNOWN");
   const unknown = Object.keys(opts).find(
@@ -656,7 +667,7 @@ async function main() {
     );
     return;
   }
-  if (["index", "search", "context", "text-status", "text-index", "text-search", "text-read"].includes(command)) {
+  if (["index", "search", "context", "reuse", "text-status", "text-index", "text-search", "text-read"].includes(command)) {
     const result = await withClient(
       configPath,
       async (client, defaultRootId, jobTimeoutMs) => {
@@ -763,7 +774,7 @@ async function main() {
             },
           });
         return client.callTool({
-          name: "get_code_context",
+          name: command === "reuse" ? "get_reuse_context" : "get_code_context",
           arguments: { rootId, query: get(opts, "query") },
         });
       },

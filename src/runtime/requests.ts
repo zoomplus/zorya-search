@@ -140,6 +140,12 @@ export const contextRequest = z
   })
   .strict()
   .refine((value) => (value.relatedDepth === undefined && value.relatedMaxPaths === undefined) || value.includeRelated === true)
+export const reuseContextRequest = z.object({
+  rootId: idField,
+  query: z.string().min(1).max(2000),
+  maxChars: z.number().int().min(1000).max(48_000).optional(),
+  limit: z.number().int().min(1).max(40).optional(),
+}).strict()
 export const webSearchRequest = z
   .object({
     query: z.string().min(1).max(2000),

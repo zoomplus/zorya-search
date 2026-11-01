@@ -24,6 +24,15 @@ test('code duplicate request is bounded, strict, and defaults remain index-owned
   assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'app', unknown: true }).success, false)
 })
 
+test('runtime rejects non-Jev classifier configuration during parse before data ownership', async () => {
+  const f = await fixture()
+  try {
+    const config = { ...f.config, classifier: { model: 'other/model', secret: { kind: 'env', name: 'UNUSED_KEY' } } }
+    assert.throws(() => parseRuntimeConfig(config), (error: unknown) => error instanceof RuntimeConfigError && error.code === 'CONFIG_INVALID')
+    await assert.rejects(openSearchRuntime({ config }), (error: unknown) => error instanceof RuntimeConfigError && error.code === 'CONFIG_INVALID')
+  } finally { await rm(f.dir, { recursive: true, force: true }) }
+})
+
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'zorya-runtime-'))
   const a = join(dir, 'root-a'),
@@ -220,6 +229,78 @@ test('runtime forwards duplicate requests inside the granted root and rejects un
   }
 })
 
+test('reuse runtime shares the pinned decisions ledger and returns Jev-selected same-snapshot source evidence', async () => {
+  const f = await fixture()
+  const requestIds: string[] = []
+  let physicalDecisionCalls = 0
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    runtime = await openSearchRuntime({
+      config: { ...f.config, classifier: { model: 'typesafe/jev-1.14', secret: { kind: 'env', name: 'JEV_TEST_KEY' } } },
+      testDependencies: { env: { JEV_TEST_KEY: 'fixture' }, fetch: async (_url, init) => {
+        physicalDecisionCalls++
+        const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string; criteria: Record<string, string> }> }
+        const questions = Object.entries(body.questions)
+        requestIds.push(...questions.map(([id]) => id))
+        const answers = Object.fromEntries(questions.map(([id, question]) => {
+          if (id === 'taskIntent') return [id, { type: 'choice', choice: 'implement_change' }]
+          if (id === 'sourceScope') return [id, { type: 'choice', choice: 'implementation' }]
+          if (question.type === 'noul') return [id, { type: 'noul', noul: 0.9 }]
+          const symbolId = Object.keys(question.criteria).find((key) => key !== 'none') ?? 'none'
+          return [id, { type: 'choice', choice: symbolId }]
+        }))
+        return new Response(JSON.stringify({ id: 'reuse-fixture', model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe', answers, usage: { input_tokens: 5, output_tokens: 2 } }), { headers: { 'content-type': 'application/json' } })
+      } },
+    })
+    assert.equal(runtime.capabilities().reuseContext, true)
+    await runtime.indexRepository({ rootId: 'a' })
+    const result = await runtime.getReuseContext({ rootId: 'a', query: 'change alphaFeature implementation' })
+    assert.equal(result.query, 'change alphaFeature implementation')
+    assert.equal(result.identity.snapshotId, result.context.identity.snapshotId)
+    assert.equal(result.selection.selected.length, 1)
+    assert.equal(result.selection.selected[0]?.path, 'alpha.ts')
+    assert.ok(result.readCoverage.some((coverage) => coverage.path === 'alpha.ts' && /^[a-f0-9]{64}$/u.test(coverage.fileHash) && coverage.status === 'full'))
+    assert.ok(requestIds.includes('taskIntent') && requestIds.includes('sourceScope') && requestIds.includes('file_f0') && requestIds.includes('symbol_0'))
+    assert.equal(runtime.usage().classification?.calls, physicalDecisionCalls)
+  } finally { await runtime?.close(); await rm(f.dir, { recursive: true, force: true }) }
+})
+
+test('reuse close aborts and joins Jev work before releasing the owned index and database', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  let started!: () => void
+  let release!: (response: Response) => void
+  let requestSignal: AbortSignal | undefined
+  const startedPromise = new Promise<void>((resolve) => { started = resolve })
+  const heldResponse = new Promise<Response>((resolve) => { release = resolve })
+  try {
+    runtime = await openSearchRuntime({
+      config: { ...f.config, classifier: { model: 'typesafe/jev-1.14', secret: { kind: 'env', name: 'JEV_TEST_KEY' } } },
+      testDependencies: { env: { JEV_TEST_KEY: 'fixture' }, fetch: async (_url, init) => {
+        requestSignal = init?.signal ?? undefined
+        started()
+        return heldResponse
+      } },
+    })
+    await runtime.indexRepository({ rootId: 'a' })
+    const pending = runtime.getReuseContext({ rootId: 'a', query: 'explain alphaFeature' })
+    await startedPromise
+    let closeSettled = false
+    const closing = runtime.close().finally(() => { closeSettled = true })
+    assert.equal(requestSignal?.aborted, true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(closeSettled, false)
+    release(new Response(JSON.stringify({ model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers: {} }), { headers: { 'content-type': 'application/json' } }))
+    await assert.rejects(pending, isCode('RUNTIME_CLOSED'))
+    await closing
+    runtime = undefined
+  } finally {
+    release(new Response('{}', { headers: { 'content-type': 'application/json' } }))
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
+})
+
 test('offline PGlite runtime indexes isolated roots, preserves provenance, and reopens', async () => {
   const f = await fixture()
   let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
@@ -234,12 +315,14 @@ test('offline PGlite runtime indexes isolated roots, preserves provenance, and r
       webRead: false,
       webDiscovery: false,
       classification: false,
+      reuseContext: false,
       visual: false,
       projectText: false,
       projectTextIndexing: false,
       projectTextEmbedding: false,
       projectTextReranking: false,
     })
+    await assert.rejects(runtime.getReuseContext({ rootId: 'a', query: 'locate an existing implementation' }), isCode('CAPABILITY_DISABLED'))
     await assert.rejects(runtime.searchVisualReferences({ references: [{ id: 'provided', contentHash: 'a'.repeat(64), text: 'reference' }], queryText: 'anything' }), isCode('CAPABILITY_DISABLED'))
     await runtime.indexRepository({ rootId: 'a' })
     await runtime.indexRepository({ rootId: 'b' })
@@ -1573,7 +1656,7 @@ test('context and classifier preserve valid, pre-aborted and in-flight signals; 
     const url = String(input),
       body = JSON.parse(String(init?.body)) as {
         input?: string[]
-        messages?: Array<{ role: string; content: string }>
+        questions?: Record<string, { type?: string }>
       }
     if (url.endsWith('/embeddings')) {
       embeddingCalls++
@@ -1612,23 +1695,14 @@ test('context and classifier preserve valid, pre-aborted and in-flight signals; 
         status: failClassifierStatus,
         headers: { 'content-type': 'text/plain' },
       })
-    const user = body.messages?.find((message) => message.role === 'user')
-    const payload = user
-      ? (JSON.parse(user.content) as { labels: string[] })
-      : { labels: ['yes', 'no'] }
+    const questions = body.questions ?? {}
+    const answers = Object.fromEntries(Object.entries(questions).map(([id, question]) => [id,
+      question.type === 'noul' ? { type: 'noul', noul: 0.8 } : { type: 'choice', choice: 'option_0', confidence: 0.8 },
+    ]))
     return new Response(
       JSON.stringify({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                labels: [{ label: payload.labels[0], confidence: 0.8, evidence: ['fixture'] }],
-                abstained: false,
-                uncertainty: [],
-              }),
-            },
-          },
-        ],
+        id: 'fixture-decision', model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe', answers,
+        usage: { input_tokens: 4, output_tokens: 2, cost: 0.00001 },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     )
@@ -1646,7 +1720,7 @@ test('context and classifier preserve valid, pre-aborted and in-flight signals; 
     },
     classifier: {
       profileId: 'owner-classifier-profile',
-      model: 'fixture-classifier',
+      model: 'typesafe/jev-1.14',
       secret: { kind: 'env', name: 'CLASSIFY_KEY' },
     },
   }
@@ -1660,7 +1734,9 @@ test('context and classifier preserve valid, pre-aborted and in-flight signals; 
       },
     })
     assert.equal(runtime.profiles().embedding?.profileId, 'owner-embedding-profile')
-    assert.equal(runtime.profiles().classification?.provider, 'owner-classifier-profile')
+    assert.equal(runtime.profiles().classification?.provider, 'typesafe')
+    assert.equal(runtime.profiles().classification?.profileId, 'owner-classifier-profile')
+    assert.equal(runtime.capabilities().reuseContext, true)
     await runtime.indexRepository({ rootId: 'a' })
     const validContextController = new AbortController()
     const context = await runtime.getCodeContext({
@@ -1713,6 +1789,11 @@ test('context and classifier preserve valid, pre-aborted and in-flight signals; 
     const validClassify = await validClassifyPending
     assert.equal(validClassify.labels[0]?.label, 'yes')
     assert.equal(runtime.usage().classification?.calls, 1)
+    const reuse = await runtime.getReuseContext({ rootId: 'a', query: 'locate alphaFeature implementation' })
+    assert.equal(reuse.query, 'locate alphaFeature implementation')
+    assert.equal(reuse.identity.snapshotId, reuse.context.identity.snapshotId)
+    assert.ok(reuse.context.sections.some((section) => section.path === 'alpha.ts'))
+    assert.equal(runtime.usage().classification?.calls, classifierCalls)
     failClassifierStatus = 401
     await assert.rejects(
       runtime.classify({

@@ -15,7 +15,7 @@ import {
 import { NodeStreamableHTTPServerTransport, toNodeHandler } from '@modelcontextprotocol/node'
 import { openSearchRuntime, openSearchRuntimeFromFile } from '../runtime/index.js'
 import type { RuntimeOptions } from '../runtime/index.js'
-import { createSearchMcpServer, SEARCH_MCP_TOOL_OPERATIONS, type SearchMcpAccess } from '../mcp/server.js'
+import { createSearchMcpServer, requiredOperationsForTool, type SearchMcpAccess } from '../mcp/server.js'
 import { hostAllowed, originAllowed, parseBearer } from './http-policy.js'
 import { normalizeIncomingMessage, readWebRequest } from './http-request.js'
 
@@ -316,14 +316,15 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
           const body = parsedBody as { method?: unknown; params?: unknown }
           const params = body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params as Record<string, unknown> : undefined
           const toolName = typeof params?.name === 'string' ? params.name : undefined
-          const required = body.method === 'tools/call' && toolName ? SEARCH_MCP_TOOL_OPERATIONS[toolName] : undefined
-          if (required && !access.operations.includes(required) && permittedScopes.includes(`zorya:${required}`)) {
+          const required = body.method === 'tools/call' && toolName ? requiredOperationsForTool(toolName) : undefined
+          const missingRequired = required?.find((operation) => !access.operations.includes(operation) && permittedScopes.includes(`zorya:${operation}`))
+          if (missingRequired) {
             const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments as Record<string, unknown> : undefined
             if (args?.rootId !== undefined && (typeof args.rootId !== 'string' || !access.rootIds.includes(args.rootId))) {
               res.writeHead(404).end()
               return
             }
-            res.writeHead(403, { 'www-authenticate': `Bearer resource_metadata="${protectedResource.metadataUrl}", error="insufficient_scope", scope="zorya:${required}"` }).end()
+            res.writeHead(403, { 'www-authenticate': `Bearer resource_metadata="${protectedResource.metadataUrl}", error="insufficient_scope", scope="zorya:${missingRequired}"` }).end()
             return
           }
         }
