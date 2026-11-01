@@ -27,21 +27,50 @@ npx --yes @zorya/search setup --root "$PWD" --exclude 'docs/evidence/**' \
 
 По умолчанию используется lexical-поиск без сетевых вызовов. `--code-env NAME` включает принятый preset для кода: `voyageai/voyage-code-4` размерности 1024 и `voyageai/rerank-2.5-lite`, который rerank-ит до 30 результатов и возвращает до 8. Конфигурация хранит только `mechanism.code.secret: { kind: "env", name: "NAME" }`; модель выбирается через общий `MECHANISM_RETRIEVAL_PRESETS` runtime preset. `--embedding-env NAME` оставлен как совместимый alias для code preset, если `--code-env` не указан. Код и поисковые запросы отправляются провайдеру для включённых операций embeddings/reranking.
 
+### Web-поиск через Brave
+
+`--web-env BRAVE_SEARCH_API_KEY` настраивает ключ Brave Search API только для поиска ссылок. Search отдельно загружает найденные публичные страницы, чтобы извлечь текст; для чтения страницы ключ Brave не используется. Простой поиск по страницам не требует embedding-профиля: без отдельной текстовой модели поиск использует лексическое ранжирование.
+
+Частоту запросов discovery владелец может задать в `web.discovery.limits.maxRequestsPerSecond`: значение от 1 до 100, по умолчанию 1 запрос в секунду для discovery-провайдера в этом runtime. Brave может дополнительно ограничивать запросы согласно объявленной квоте и возвращать заголовки ограничений частоты; см. [официальное описание ограничений Brave](https://api-dashboard.search.brave.com/documentation/guides/rate-limiting). Настройка runtime не задаёт общий лимит для нескольких процессов.
+
+```sh
+zorya-search setup --root "$PWD" \
+  --code-env VOYAGE_CODE_KEY \
+  --web-env BRAVE_SEARCH_API_KEY
+```
+
+Кодовый профиль Voyage и поиск ссылок независимы. Если добавить текстовую модель web embedding, укажите собственные модель и размерность, поддерживаемые выбранной OpenRouter-моделью. Для примера ниже предварительно задайте `WEB_TEXT_MODEL` и `WEB_TEXT_DIMENSIONS` из конфигурации своего аккаунта; Search не выбирает модель автоматически:
+
+```sh
+: "${WEB_TEXT_MODEL:?Укажите OpenRouter-модель для текста страниц}"
+: "${WEB_TEXT_DIMENSIONS:?Укажите её размерность}"
+zorya-search setup --root "$PWD" \
+  --code-env VOYAGE_CODE_KEY \
+  --web-env BRAVE_SEARCH_API_KEY \
+  --web-embedding-model "$WEB_TEXT_MODEL" \
+  --web-embedding-dimensions "$WEB_TEXT_DIMENSIONS" \
+  --web-embedding-env OPENROUTER_API_KEY
+```
+
+Команды задают имена секретных env-переменных, а не их значения. Эти значения должны быть доступны процессу владельца; не передавайте ключи в argv. Текстовая web-модель применяется только к web-поиску и не заменяет кодовый профиль Voyage или отдельный visual profile. Для собственного OpenAI-compatible сервера вместе задайте `--web-embedding-endpoint HTTPS_URL` и `--web-embedding-profile PROFILE_ID`; неполная пара отклоняется. Переранжирование web-результатов независимо от web embedding и задаётся через `--web-reranker-model MODEL --web-reranker-env NAME`.
+
+Если нужно прочитать только заранее известный URL, поиск ссылок и ключ Brave не нужны. В owner JSON достаточно включить web reader (`"web": {}`); MCP-клиенту всё равно нужна операция `web`. `--web-env` нужен для `search_web`, которое находит ссылки через Brave.
+
 Watch включается только явным `--watch`; `--watch-interval-ms N` задаёт интервал 250–60000 ms и требует этот флаг. Служба начинает принимать клиентов после проверки конфигурации и хранилища: начальная индексация watch-корней выполняется как runtime-owned фоновая задача. Статус и поиск доступны во время работы; пока нет готового snapshot, ответы не изображают индекс как пустой успешный результат. После первого прохода watcher сверяет изменения, в том числе внесённые во время начальной индексации. При включённом облачном профиле фрагменты могут отправляться выбранному embedding-провайдеру. TTY-мастер отдельно спрашивает, включать ли автоматическую переиндексацию.
 
 Владелец службы начинает отвечать до завершения стартовой индексации watch-корней. `index --background` возвращает admission с `jobId`; обычный `index` ждёт этот job, печатает его состояние, номер попытки и фактические checkpoint/chunk counts в stderr и возвращает финальный статус. Polling ограничен настроенным `indexing.jobTimeoutMs` плюс небольшой сетевой запас; каждый запрос статуса привязан к точному `jobId`, поэтому новая задача того же корня не подменит наблюдаемую. При Ctrl-C/TERM CLI отменяет только job, который он сам создал; если admission переиспользовал уже существующий job, он оставляет его владельцу.
 
 Настройка `indexing` необязательна: `maxConcurrentRoots` по умолчанию 1 (диапазон 1–4), `maxAttempts` — 12 (1–32), `jobTimeoutMs` — 900000 (1000–3600000 ms), `retryDelayMs` — 300 (100–5000 ms). Обычный `limits.timeoutMs` задаёт верхнюю границу одной индексной попытки, максимум 120000 ms. Истёкшая попытка повторяется только после роста durable checkpoint count; для watch-корня допускается ограниченная повторная сверка, если изменились исходники. Timeout без нового checkpoint, ошибки auth/quota/malformed и остальные постоянные ошибки завершают job. Watcher временно приостанавливает периодические попытки после постоянной ошибки или трёх последовательных ошибок сверки; файловое событие или явный успешный job позволяет продолжить. `index_status` показывает и job, и последний опубликованный snapshot; job registry находится в памяти процесса, а новая admission после аварийного завершения продолжает от durable checkpoint базы.
 
-Визуальный preset независим и включается только явным `--visual-env NAME`: `voyageai/voyage-multimodal-3.5`, 1024 dimensions, top 5. Он сохраняется в `mechanism.visual.secret` и не влияет на кодовый профиль; TTY-мастер также предлагает visual-only режим. Generic OpenAI-compatible endpoint доступен только как явно заданный custom profile: `--custom-embedding-endpoint HTTPS_URL --custom-embedding-profile ID --custom-embedding-model MODEL --custom-embedding-dimensions N --custom-embedding-env NAME`. Такой профиль конфликтует с code preset, чтобы не смешивать отдельные embedding spaces.
+Визуальный preset независим и включается только явным `--visual-env NAME`: `voyageai/voyage-multimodal-3.5`, 1024 dimensions, top 5. Он сохраняется в `mechanism.visual.secret` и не влияет на кодовый профиль; TTY-мастер также предлагает visual-only режим. Для кода top-level OpenAI-compatible embedding доступен как явно заданный custom profile: `--custom-embedding-endpoint HTTPS_URL --custom-embedding-profile ID --custom-embedding-model MODEL --custom-embedding-dimensions N --custom-embedding-env NAME`. Он конфликтует с code preset, чтобы не смешивать embedding spaces. Web-профиль настраивается отдельно, как описано выше.
 
-Существующий top-level reranker можно задать отдельно для web retrieval через `--web-reranker-model MODEL --web-reranker-env NAME`; classifier — через `--classifier-model MODEL --classifier-env NAME`; web discovery key — `--web-env NAME`. Все они сохраняются как имена переменных окружения. Перед настройкой TTY-мастер сообщает, какие данные могут покинуть машину и что могут возникнуть расходы; сами ключи через prompt не принимаются. Исторический synthetic smoke через установленный Search и OpenRouter, описанный в журнале профилей, проверял только выбранные code и visual запросы. Для текущего живого MCP dogfood см. [сводку архитектуры](architecture.md#текущий-статус-доказательств--2026-11-01); эти два разных сценария нельзя складывать в оценку качества.
+Classifier задаётся через `--classifier-model MODEL --classifier-env NAME`. TTY-мастер сообщает о возможной отправке данных и расходах, отдельно предлагает включить поиск ссылок и спрашивает модель для текста страниц; ключи через prompt не принимаются. Исторический synthetic smoke через установленный Search и OpenRouter проверял только выбранные code и visual запросы. Он относится к baseline на 2026-11-01 и не квалифицирует последующие Brave изменения или качество web-поиска.
 
 Пути конфигурации и данных по умолчанию находятся в пользовательских каталогах ОС и вне индексируемого корня. Для явного профиля службы задайте `--config PATH`, `--root PATH` и при необходимости `--data PATH`. Перед записью конфигурация проверяется общей строгой runtime-схемой; CLI не поддерживает отдельную схему credentials. Если конфигурация уже существует, setup завершится явной ошибкой и не заменит её; выберите новый путь либо отредактируйте профиль отдельно. Повторная установка пакета не удаляет индекс.
 
 ## Команды
 
-- `setup` — создать конфигурацию; `--code-env NAME` задаёт переменную окружения code provider, `--visual-env NAME` опционально включает независимый visual profile. `--embedding-env NAME` — alias для code preset. `--watch [--watch-interval-ms N]` включает автоматическую повторную сверку. TTY-мастер предлагает lexical, code, visual и code+visual и спрашивает об opt-in watch.
+- `setup` — создать конфигурацию; `--code-env NAME` задаёт code preset, `--visual-env NAME` отдельно включает visual profile, `--web-env NAME` включает Brave discovery. По умолчанию поиск по страницам lexical. Web text embedding включается отдельно через `--web-embedding-model`, `--web-embedding-dimensions` и `--web-embedding-env`; для своего HTTPS endpoint дополнительно нужна парная опция `--web-embedding-profile`. `--embedding-env NAME` — совместимый alias для code preset. `--watch [--watch-interval-ms N]` включает автоматическую повторную сверку.
 - `doctor` — сообщить, существует ли конфигурация и отвечает ли подтверждённый локальный владелец. Проверка не вызывает внешние модели; поля провайдера остаются `not-run`.
 - `index [--background]` — начать или переиспользовать runtime job первого настроенного корня. По умолчанию команда ждёт финальный статус; `--background` сразу возвращает admission и `jobId`.
 - `search --query TEXT [--mode lexical|hybrid]` — выполнить поиск через MCP операцию Search.
