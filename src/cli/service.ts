@@ -220,57 +220,93 @@ export async function ensureOwner(configPath: string) {
     const tokenFile = `owner-${randomBytes(12).toString("hex")}.token`;
     const controlSecret = randomBytes(32).toString("base64url");
     const controlFile = `control-${randomBytes(12).toString("hex")}.token`;
-    await writePrivateFile(join(dir, tokenFile), token);
-    await writePrivateFile(join(dir, controlFile), controlSecret);
-    const child = spawn(
-      process.execPath,
-      [
-        entry,
-        "serve",
-        "--config",
-        resolve(configPath),
-        "--token-file",
-        join(dir, tokenFile),
-        "--control-file",
-        join(dir, controlFile),
-      ],
-      { detached: true, stdio: "ignore", windowsHide: true },
-    );
-    const childClosed = new Promise<void>((resolvePromise) =>
-      child.once("close", () => resolvePromise()),
-    );
-    if (!child.pid) throw new Error("OWNER_START_FAILED");
-    // Watch-enabled profiles index in the background after runtime validation.
-    // Readiness waits only for the authenticated MCP endpoint.
-    const deadline = Date.now() + (await ownerReadinessTimeoutMs(configPath));
-    while (Date.now() < deadline) {
-      const candidate = await ownerRecord(configPath);
-      if (
-        candidate &&
-        candidate.pid === child.pid &&
-        candidate.tokenFile === tokenFile &&
-        candidate.controlFile === controlFile &&
-        (await authenticated(candidate, configPath))
-      ) {
-        child.unref();
-        return { owner: candidate, token };
+    const tokenPath = join(dir, tokenFile);
+    const controlPath = join(dir, controlFile);
+    let keepCredentials = false;
+    let ownsTokenFile = false;
+    let ownsControlFile = false;
+    try {
+      await writePrivateFile(tokenPath, token);
+      ownsTokenFile = true;
+      await writePrivateFile(controlPath, controlSecret);
+      ownsControlFile = true;
+      let child;
+      try {
+        child = spawn(
+          process.execPath,
+          [
+            entry,
+            "serve",
+            "--config",
+            resolve(configPath),
+            "--token-file",
+            tokenPath,
+            "--control-file",
+            controlPath,
+          ],
+          { detached: true, stdio: "ignore", windowsHide: true },
+        );
+      } catch {
+        throw new Error("OWNER_START_FAILED");
       }
-      if (child.exitCode !== null) break;
-      await sleep(100);
+      let spawnError = false;
+      let childClosedResolve!: () => void;
+      const childClosed = new Promise<void>((resolvePromise) => {
+        childClosedResolve = resolvePromise;
+      });
+      child.once("error", () => {
+        spawnError = true;
+      });
+      child.once("close", childClosedResolve);
+      if (!child.pid) {
+        // Ошибка запуска приходит через `error`, затем процесс завершает `close`.
+        await childClosed;
+        throw new Error("OWNER_START_FAILED");
+      }
+      // Watch-enabled profiles index in the background after runtime validation.
+      // Readiness waits only for the authenticated MCP endpoint.
+      const deadline = Date.now() + (await ownerReadinessTimeoutMs(configPath));
+      let ready: Owner | undefined;
+      while (Date.now() < deadline) {
+        if (spawnError || child.exitCode !== null) break;
+        const candidate = await ownerRecord(configPath);
+        if (
+          candidate &&
+          candidate.pid === child.pid &&
+          candidate.tokenFile === tokenFile &&
+          candidate.controlFile === controlFile &&
+          (await authenticated(candidate, configPath))
+        ) {
+          ready = candidate;
+          break;
+        }
+        await sleep(100);
+      }
+      if (ready) {
+        keepCredentials = true;
+        child.unref();
+        return { owner: ready, token };
+      }
+      if (!spawnError && child.exitCode === null) {
+        child.kill("SIGTERM");
+        const closed = await Promise.race([
+          childClosed.then(() => true),
+          sleep(3000).then(() => false),
+        ]);
+        if (!closed) {
+          child.kill("SIGKILL");
+          await Promise.race([childClosed, sleep(2000)]);
+        }
+      }
+      await childClosed;
+      if (spawnError) throw new Error("OWNER_START_FAILED");
+      throw new Error("OWNER_NOT_READY");
+    } finally {
+      if (!keepCredentials && ownsTokenFile)
+        await unlink(tokenPath).catch(() => undefined);
+      if (!keepCredentials && ownsControlFile)
+        await unlink(controlPath).catch(() => undefined);
     }
-    child.kill("SIGTERM");
-    const closed = await Promise.race([
-      childClosed.then(() => true),
-      sleep(3000).then(() => false),
-    ]);
-    if (!closed) {
-      child.kill("SIGKILL");
-      await Promise.race([childClosed, sleep(2000)]);
-    }
-    await childClosed;
-    await unlink(join(dir, tokenFile)).catch(() => undefined);
-    await unlink(join(dir, controlFile)).catch(() => undefined);
-    throw new Error("OWNER_NOT_READY");
   } finally {
     await lock.close();
     const current = await lstat(lockPath).catch(() => undefined);
