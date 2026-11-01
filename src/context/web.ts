@@ -3,6 +3,7 @@ import { documentSchema, webDateRangeSchema, type WebDateRange, type WebSource }
 import { canonicalUrl } from '../core/retrieval.js'
 import { ProviderError, type ProviderErrorCode, type ProviderProfile } from '../providers/contracts.js'
 import { createLifecycle } from './lifecycle.js'
+import { mapConcurrentOrdered } from './ordered-pool.js'
 
 export interface WebContextModels {
   embed?: {
@@ -169,47 +170,72 @@ export function createWebSearch(options: {
             budget: { usedChars: 0, maxChars },
           }
         }
-        let retainedDocumentChars = 0
-        const documents = await mapLimit(urls, limits.maxConcurrency, signal, async (url) => {
-          try {
-            signal.throwIfAborted()
-            const raw = await web.fetchDocument(url, signal)
-            if (
-              isDocument(raw) &&
-              typeof raw.text === 'string' &&
-              raw.text.length > limits.maxDocumentChars
-            )
-              throw new Error('DOCUMENT_TOO_LARGE')
-            if (!boundedDocument(raw, limits.maxDocumentChars)) throw new Error('DOCUMENT_INVALID')
-            const doc = documentSchema.parse(raw)
-            if (retainedDocumentChars + doc.text.length > limits.maxTotalDocumentChars)
-              throw new Error('DOCUMENT_TOO_LARGE')
-            const canonical = canonicalUrl(doc.url)
-            const contentHash = createHash('sha256').update(doc.text).digest('hex')
-            retainedDocumentChars += doc.text.length
-            return {
-              doc,
-              url: canonical,
-              contentHash,
+        const preparedDocuments = mapConcurrentOrdered(
+          urls,
+          limits.maxConcurrency,
+          signal,
+          async (url, operationSignal) => {
+            try {
+              operationSignal.throwIfAborted()
+              const raw = await web.fetchDocument(url, operationSignal)
+              if (
+                isDocument(raw) &&
+                typeof raw.text === 'string' &&
+                raw.text.length > limits.maxDocumentChars
+              )
+                throw new Error('DOCUMENT_TOO_LARGE')
+              if (!boundedDocument(raw, limits.maxDocumentChars))
+                throw new Error('DOCUMENT_INVALID')
+              const doc = documentSchema.parse(raw)
+              const canonical = canonicalUrl(doc.url)
+              const contentHash = createHash('sha256').update(doc.text).digest('hex')
+              return {
+                ok: true as const,
+                document: { doc, url: canonical, requestedURL: url, contentHash },
+              }
+            } catch (error) {
+              operationSignal.throwIfAborted()
+              const provider = providerFailureContext(error)
+              return {
+                ok: false as const,
+                error: {
+                  stage: 'document' as const,
+                  url,
+                  code: documentErrorCode(error),
+                  ...(provider ? { provider } : {}),
+                },
+              }
             }
-          } catch (error) {
-            signal.throwIfAborted()
-            const provider = providerFailureContext(error)
+          },
+        )
+        let retainedDocumentChars = 0
+        const rows: Array<{
+          doc: ReturnType<typeof documentSchema.parse>
+          url: string
+          requestedURL: string
+          contentHash: string
+        }> = []
+        for await (const prepared of preparedDocuments) {
+          signal.throwIfAborted()
+          if (!prepared.ok) {
+            errors.push(prepared.error)
+            continue
+          }
+          if (
+            retainedDocumentChars + prepared.document.doc.text.length >
+            limits.maxTotalDocumentChars
+          ) {
             errors.push({
               stage: 'document',
-              url,
-              code: documentErrorCode(error),
-              ...(provider ? { provider } : {}),
+              url: prepared.document.requestedURL,
+              code: 'DOCUMENT_TOO_LARGE',
             })
-            return null
+            continue
           }
-        })
-        signal.throwIfAborted()
-        const rows: NonNullable<(typeof documents)[number]>[] = []
-        for (const item of documents) {
-          if (!item) continue
-          rows.push(item)
+          retainedDocumentChars += prepared.document.doc.text.length
+          rows.push(prepared.document)
         }
+        signal.throwIfAborted()
         const chunks: Array<{ row: (typeof rows)[number]; excerpt: string }> = []
         let chunkBudgetReached = false
         for (const row of rows) {
@@ -402,29 +428,6 @@ function validateLimits(l: WebSearchLimits) {
   )
     throw new TypeError('Web limits exceed hard caps')
 }
-async function mapLimit<T, R>(
-  items: T[],
-  n: number,
-  signal: AbortSignal,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out = new Array<R>(items.length)
-  let next = 0
-  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
-    while (true) {
-      signal.throwIfAborted()
-      const i = next++
-      if (i >= items.length) return
-      out[i] = await fn(items[i]!)
-    }
-  })
-  const settled = await Promise.allSettled(workers)
-  const failed = settled.find((result) => result.status === 'rejected')
-  if (failed?.status === 'rejected') throw failed.reason
-  signal.throwIfAborted()
-  return out
-}
-
 function validBaseProfile(profile: ProviderProfile) {
   return Boolean(
     profile.provider.trim() &&
