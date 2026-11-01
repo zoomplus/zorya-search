@@ -17,6 +17,7 @@ import {
   isVerifiedVoyageResponseModel,
   isVerifiedVoyageVisualResponseModel,
 } from './voyage.js'
+import { validCost, validCount } from "./usage-values.js";
 
 export interface OpenRouterModelConfig extends HttpConfig {
   model: string;
@@ -400,17 +401,6 @@ function multimodalResponseModelMatches(
     exactMatch ||
     visualAlias
   )
-}
-
-function validCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
-}
-function validCost(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
 }
 
 function makeProfile(

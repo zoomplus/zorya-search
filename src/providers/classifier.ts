@@ -19,6 +19,7 @@ import {
   validateClassificationInput,
   validateClassificationResult,
 } from "./classification-validation.js";
+import { validCost, validCount } from "./usage-values.js";
 
 export interface OpenRouterClassifierConfig extends HttpConfig {
   model: string;
@@ -169,16 +170,6 @@ export function createOpenRouterClassifier(
   };
 }
 
-function validCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
-}
-function validCost(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
