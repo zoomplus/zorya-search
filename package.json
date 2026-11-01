@@ -1,9 +1,12 @@
 {
   "name": "@zorya/search",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Portable search, retrieval, and indexing core for Zorya services",
   "type": "module",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist/**",
     "LICENSE",
