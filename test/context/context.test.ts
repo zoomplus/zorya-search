@@ -319,6 +319,24 @@ test('web search and readWebSource retain source whitespace in returned excerpts
   await context.close()
 })
 
+test('web search forwards a validated date range through the public context reader', async () => {
+  let options: { dateRange?: { from: string; through: string } } | undefined
+  const context = createWebSearch({
+    web: {
+      discover: async (_query, _target, _signal, received) => {
+        options = received
+        return []
+      },
+      fetchDocument: async () => { throw new Error('unused') },
+    },
+  })
+  const range = { from: '2025-01-01', through: '2025-01-31' }
+  await context.searchWeb({ query: 'release notes', dateRange: range })
+  assert.deepEqual(options, { dateRange: range })
+  assert.deepEqual(range, { from: '2025-01-01', through: '2025-01-31' })
+  await context.close()
+})
+
 test('web search marks malformed embedding and reranker responses as explicit partial failures', async () => {
   const web = createWebSearch({
     web: {

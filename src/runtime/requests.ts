@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { webDateRangeSchema } from '../core/contracts.js'
 
 const idField = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/)
 export const statusRequest = z.object({ rootId: idField }).strict()
@@ -60,6 +61,7 @@ export const webSearchRequest = z
     query: z.string().min(1).max(2000),
     limit: z.number().int().min(1).max(100).optional(),
     maxChars: z.number().int().min(1).max(100_000).optional(),
+    dateRange: webDateRangeSchema.optional(),
   })
   .strict()
 export const webReadRequest = z

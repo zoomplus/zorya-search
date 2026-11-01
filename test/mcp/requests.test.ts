@@ -7,6 +7,7 @@ import {
   readRequest,
   searchRequest,
   cancelIndexingRequest,
+  webSearchRequest,
 } from '../../src/runtime/requests.js'
 import { SEARCH_MCP_TOOL_CONTRACTS } from '../../src/mcp/server.js'
 
@@ -64,4 +65,15 @@ test('visual request accepts bounded caller-supplied bytes and rejects URL or pa
   assert.equal(visualSearchRequest.safeParse({ ...valid, queryImage: { mimeType: 'image/png', dataBase64: 'AQID' } }).success, false)
   assert.equal(visualSearchRequest.safeParse({ ...valid, references: [{ ...valid.references[0], image: undefined, text: 'save', url: 'https://example.test/image.png' }] }).success, false)
   assert.equal(visualSearchRequest.safeParse({ ...valid, queryText: undefined, queryImage: { mimeType: 'image/svg+xml', dataBase64: 'AQID' } }).success, false)
+})
+
+test('web search date range is strict and accepts only ordered real calendar dates', () => {
+  assert.equal(webSearchRequest.safeParse({ query: 'patch notes', dateRange: { from: '2024-02-29', through: '2024-03-01' } }).success, true)
+  for (const dateRange of [
+    { from: '2023-02-29', through: '2023-03-01' },
+    { from: '2024-03-02', through: '2024-03-01' },
+    { from: '2024-01-01', through: '2024-02-01', recent: true },
+  ]) {
+    assert.equal(webSearchRequest.safeParse({ query: 'patch notes', dateRange }).success, false)
+  }
 })

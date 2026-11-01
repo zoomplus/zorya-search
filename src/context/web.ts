@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { documentSchema, type WebSource } from '../core/contracts.js'
+import { documentSchema, webDateRangeSchema, type WebDateRange, type WebSource } from '../core/contracts.js'
 import { canonicalUrl } from '../core/retrieval.js'
 import type { ProviderProfile } from '../providers/contracts.js'
 import { createLifecycle } from './lifecycle.js'
@@ -105,6 +105,7 @@ export function createWebSearch(options: {
       query: string
       limit?: number
       maxChars?: number
+      dateRange?: WebDateRange
       signal?: AbortSignal
     }): Promise<WebSearchResult> {
       if (!input.query.trim() || input.query.length > limits.maxQueryChars)
@@ -120,6 +121,9 @@ export function createWebSearch(options: {
         maxChars > limits.maxChars
       )
         throw new TypeError('Web request exceeds configured limits')
+      const dateRange = input.dateRange === undefined
+        ? undefined
+        : webDateRangeSchema.parse(input.dateRange)
       const request = Object.freeze({ ...input })
       return lifecycle.run(request.signal, limits.timeoutMs, async (signal) => {
         const errors: WebSearchResult['errors'] = []
@@ -130,6 +134,7 @@ export function createWebSearch(options: {
             request.query,
             Math.min(limits.maxDocuments, limit * 2),
             signal,
+            dateRange ? { dateRange } : undefined,
           )
           if (!Array.isArray(discovered)) throw new Error('DISCOVERY_INVALID')
           const bounded = discovered.slice(0, limits.maxDocuments * 2)

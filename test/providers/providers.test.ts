@@ -17,6 +17,7 @@ import {
 } from "../../src/providers/brave.js";
 import { ProviderError } from "../../src/providers/contracts.js";
 import { Semaphore, limitsOf } from "../../src/providers/http.js";
+import { BraveQuota } from '../../src/providers/brave-quota.js'
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -749,6 +750,243 @@ test("Brave source deduplicates, caps discovery, parses documents, and blocks pr
     ProviderError,
   );
 });
+
+test('Brave discovery forwards validated date ranges and does not mutate caller values', async () => {
+  let requested: URL | undefined
+  const web = createBraveWebSource({
+    apiKey: 'fixture',
+    fetch: async (input) => {
+      requested = new URL(String(input))
+      return jsonResponse({ web: { results: [{ url: 'https://example.org/a' }] } })
+    },
+  })
+  const dateRange = { from: '2024-02-29', through: '2024-03-01' }
+  await web.discover('query', 1, new AbortController().signal, { dateRange })
+  assert.equal(requested?.searchParams.get('freshness'), '2024-02-29to2024-03-01')
+  assert.deepEqual(dateRange, { from: '2024-02-29', through: '2024-03-01' })
+  let invalidRangeCalls = 0
+  const unavailable = createBraveWebSource({
+    apiKey: 'fixture',
+    fetch: async () => {
+      invalidRangeCalls++
+      throw new Error('Invalid date range reached provider')
+    },
+  })
+  await assert.rejects(
+    unavailable.discover('query', 1, new AbortController().signal, {
+      dateRange: { from: '2024-02-30', through: '2024-03-01' },
+    }),
+  )
+  assert.equal(invalidRangeCalls, 0)
+})
+
+test('Brave quota observes owner limits and shares a bounded 429 cooldown', async () => {
+  const quota = new BraveQuota(20)
+  quota.observe(new Headers({
+    'x-ratelimit-policy': '1;w=1, 15000;w=2592000',
+    'x-ratelimit-limit': '1, 15000',
+    'x-ratelimit-remaining': '1, 14523',
+    'x-ratelimit-reset': '1, 1234567',
+  }), 200)
+  const started = Date.now()
+  await quota.acquire(started + 1500, new AbortController().signal)
+  await assert.rejects(quota.acquire(started + 500, new AbortController().signal), ProviderError)
+  quota.observe(new Headers({ 'retry-after': '0.05' }), 429)
+  const blockedAt = Date.now()
+  await quota.acquire(blockedAt + 1500, new AbortController().signal)
+  assert.ok(Date.now() - blockedAt >= 950)
+  const higherOwnerQuota = new BraveQuota(8)
+  higherOwnerQuota.observe(new Headers({
+    'x-ratelimit-policy': '6;w=1, 0;w=2592000',
+    'x-ratelimit-limit': '6, 0',
+    'x-ratelimit-remaining': '5, 0',
+    'x-ratelimit-reset': '1, 1234567',
+  }), 200)
+  const ownerStarted = Date.now()
+  await Promise.all(Array.from({ length: 6 }, () => higherOwnerQuota.acquire(ownerStarted + 1000, new AbortController().signal)))
+  assert.ok(Date.now() - ownerStarted < 500)
+})
+
+test('concurrent Brave discoveries share pacing and remember a final-attempt 429', async () => {
+  const starts: number[] = []
+  let calls = 0
+  const web = createBraveWebSource({
+    apiKey: 'fixture',
+    limits: { maxRequestsPerSecond: 2, attempts: 1 },
+    fetch: async () => {
+      starts.push(Date.now())
+      calls++
+      if (calls === 1) return new Response('', { status: 429, headers: { 'retry-after': '0.01' } })
+      return jsonResponse({ web: { results: [{ url: `https://example.org/${calls}` }] } })
+    },
+  })
+  await assert.rejects(web.discover('rate limit', 1, new AbortController().signal), ProviderError)
+  const afterRateLimit = Date.now()
+  await web.discover('next query', 1, new AbortController().signal)
+  assert.ok(Date.now() - afterRateLimit >= 900)
+  assert.equal(calls, 2)
+  starts.length = 0
+  await Promise.all([
+    web.discover('parallel one', 1, new AbortController().signal),
+    web.discover('parallel two', 1, new AbortController().signal),
+    web.discover('parallel three', 1, new AbortController().signal),
+  ])
+  assert.equal(starts.length, 3)
+  assert.ok(starts[2]! - starts[0]! >= 900)
+})
+
+test('Brave document validators are exact-path scoped and 304 preserves the parsed body', async () => {
+  const seen: Array<{ path: string; etag: string | undefined }> = []
+  let documentVersion = 1
+  let unsolicited304OnRedirect = false
+  let raceConditionals = 0
+  let cancelCacheRequests = 0
+  let releaseStale304!: () => void
+  let notifyStale304Started!: () => void
+  const stale304Gate = new Promise<void>((resolve) => { releaseStale304 = resolve })
+  const stale304Started = new Promise<void>((resolve) => { notifyStale304Started = resolve })
+  const server = createServer(async (request, response) => {
+    const path = request.url ?? '/'
+    const etag = request.headers['if-none-match']
+    seen.push({ path, etag })
+    if (path === '/race') {
+      if (!etag) {
+        response.writeHead(200, { 'content-type': 'text/plain', etag: '"race-v1"' })
+        response.end('race body v1')
+        return
+      }
+      raceConditionals++
+      if (raceConditionals === 1) {
+        notifyStale304Started()
+        await stale304Gate
+        response.writeHead(304, { etag: '"race-v1"' })
+        response.end()
+        return
+      }
+      if (raceConditionals === 2) {
+        response.writeHead(200, { 'content-type': 'text/plain', etag: '"race-v2"' })
+        response.end('race body v2')
+        return
+      }
+      response.writeHead(304, { etag: '"race-v2"' })
+      response.end()
+      return
+    }
+    if (path === '/cancel-cache') {
+      cancelCacheRequests++
+      response.writeHead(200, { 'content-type': 'text/plain', etag: '"cancelled"' })
+      if (cancelCacheRequests === 1) {
+        response.write('partial')
+        response.flushHeaders()
+      } else {
+        response.end('complete source')
+      }
+      return
+    }
+    if (path === '/unexpected') {
+      response.writeHead(304)
+      response.end()
+      return
+    }
+    if (path === '/private') {
+      response.writeHead(200, { 'content-type': 'text/plain', etag: '"private"', 'cache-control': 'private' })
+      response.end('private source')
+      return
+    }
+    if (path === '/redirect') {
+      response.writeHead(302, { location: '/document' })
+      response.end()
+      return
+    }
+    if (path === '/redirect-to-cached') {
+      response.writeHead(302, { location: '/document' })
+      response.end()
+      return
+    }
+    if (path === '/document' && unsolicited304OnRedirect && !etag) {
+      response.writeHead(304, { etag: '"v1"' })
+      response.end()
+      return
+    }
+    if (path === '/document' && etag === '"v1"' && documentVersion === 1) {
+      response.writeHead(304, { etag: '"v1"' })
+      response.end()
+      return
+    }
+    const etagValue = `"v${documentVersion}"`
+    response.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      etag: etagValue,
+      ...(documentVersion === 2 ? { 'cache-control': 'no-store' } : {}),
+    })
+    response.end(`document version ${documentVersion}`)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const origin = `http://fixture.invalid:${address.port}`
+  const web = createBraveWebSource({
+    allowPrivateForTests: true,
+    resolveForTests: async () => [{ address: '127.0.0.1', family: 4 }],
+    limits: { attempts: 1 },
+  })
+  try {
+    const first = await web.fetchDocument(`${origin}/document`, new AbortController().signal)
+    const second = await web.fetchDocument(`${origin}/document`, new AbortController().signal)
+    assert.equal(first.text, 'document version 1')
+    assert.equal(second.text, first.text)
+    assert.equal(second.publishedAt, first.publishedAt)
+    assert.notEqual(second.fetchedAt, first.fetchedAt)
+    assert.equal(seen[1]?.etag, '"v1"')
+    unsolicited304OnRedirect = true
+    await assert.rejects(
+      web.fetchDocument(`${origin}/redirect-to-cached`, new AbortController().signal),
+      (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+    )
+    unsolicited304OnRedirect = false
+    documentVersion = 2
+    const changed = await web.fetchDocument(`${origin}/document`, new AbortController().signal)
+    assert.equal(changed.text, 'document version 2')
+    assert.equal(seen.filter((item) => item.path === '/document')[3]?.etag, '"v1"')
+    await web.fetchDocument(`${origin}/document`, new AbortController().signal)
+    assert.equal(seen.filter((item) => item.path === '/document')[4]?.etag, undefined)
+    await web.fetchDocument(`${origin}/redirect`, new AbortController().signal)
+    const redirectHop = seen.at(-1)
+    assert.equal(redirectHop?.path, '/document')
+    assert.equal(redirectHop?.etag, undefined)
+    await web.fetchDocument(`${origin}/document?variant=one`, new AbortController().signal)
+    await web.fetchDocument(`${origin}/document?variant=two`, new AbortController().signal)
+    assert.equal(seen.at(-1)?.etag, undefined)
+    await assert.rejects(
+      web.fetchDocument(`${origin}/unexpected`, new AbortController().signal),
+      (error: unknown) => error instanceof ProviderError && error.code === 'malformed',
+    )
+    await web.fetchDocument(`${origin}/private`, new AbortController().signal)
+    await web.fetchDocument(`${origin}/private`, new AbortController().signal)
+    assert.equal(seen.at(-1)?.etag, undefined)
+    await web.fetchDocument(`${origin}/race`, new AbortController().signal)
+    const stale = web.fetchDocument(`${origin}/race`, new AbortController().signal)
+    await stale304Started
+    const latest = await web.fetchDocument(`${origin}/race`, new AbortController().signal)
+    assert.equal(latest.text, 'race body v2')
+    releaseStale304()
+    await assert.rejects(stale, (error: unknown) => error instanceof ProviderError && error.code === 'malformed')
+    const revalidated = await web.fetchDocument(`${origin}/race`, new AbortController().signal)
+    assert.equal(revalidated.text, 'race body v2')
+    const cancelled = new AbortController()
+    const cancelledRead = web.fetchDocument(`${origin}/cancel-cache`, cancelled.signal)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    cancelled.abort()
+    await assert.rejects(cancelledRead, (error: unknown) => error instanceof ProviderError && error.code === 'cancel')
+    const completedRead = await web.fetchDocument(`${origin}/cancel-cache`, new AbortController().signal)
+    assert.equal(completedRead.text, 'complete source')
+    assert.equal(seen.at(-1)?.etag, undefined)
+  } finally {
+    releaseStale304()
+    server.closeAllConnections()
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  }
+})
 
 test('Brave reader preserves literal formats, HTML code whitespace, and explicit source dates', async () => {
   const inputs = [

@@ -5,6 +5,7 @@ import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingHttpHeaders } from "node:http";
 import {
   documentSchema,
+  webDateRangeSchema,
   type SourceDocument,
   type WebSource,
 } from "../core/contracts.js";
@@ -21,6 +22,8 @@ import {
   Semaphore,
   type FetchLike,
 } from "./http.js";
+import { BraveQuota } from "./brave-quota.js";
+import { BraveDocumentCache } from "./brave-document-cache.js";
 
 export type WebLoader = (
   url: URL,
@@ -45,6 +48,7 @@ export interface BraveWebSourceConfig {
     timeoutMs?: number;
     attempts?: number;
     concurrency?: number;
+    maxRequestsPerSecond?: number;
   };
   allowPrivateForTests?: boolean;
   resolveForTests?: (
@@ -58,9 +62,10 @@ export interface BraveWebSourceConfig {
 export function createBraveWebSource(
   config: BraveWebSourceConfig = {},
 ): WebSource & { usage(): ProviderUsage } {
+  const { maxRequestsPerSecond = 1, ...providerLimits } = config.limits ?? {};
   const lim = limitsOf({
-    ...config.limits,
-    maxItems: config.limits?.maxItems ?? 20,
+    ...providerLimits,
+    maxItems: providerLimits.maxItems ?? 20,
   });
   const maxSearchRequests = config.maxSearchRequests ?? 10;
   if (
@@ -79,6 +84,10 @@ export function createBraveWebSource(
     maxSearchRequests,
   });
   const queue = new Semaphore(lim.concurrency);
+  if (!Number.isSafeInteger(maxRequestsPerSecond) || maxRequestsPerSecond < 1 || maxRequestsPerSecond > 100)
+    throw new RangeError("Некорректный предел частоты запросов Brave");
+  const quota = new BraveQuota(maxRequestsPerSecond);
+  const documentCache = new BraveDocumentCache(128, 16 * 1024 * 1024);
   const stats: ProviderUsage = {
     calls: 0,
     inputTokens: null,
@@ -89,7 +98,10 @@ export function createBraveWebSource(
   const fetcher = options.fetch ?? fetch;
   return {
     usage: () => ({ ...stats }),
-    async discover(query, target, signal) {
+    async discover(query, target, signal, discoverOptions) {
+      const dateRange = discoverOptions?.dateRange === undefined
+        ? undefined
+        : webDateRangeSchema.parse(discoverOptions.dateRange)
       if (
         !query.trim() ||
         Buffer.byteLength(query) > lim.maxInputBytes ||
@@ -127,6 +139,12 @@ export function createBraveWebSource(
             url.searchParams.set("q", query);
             url.searchParams.set("count", "20");
             url.searchParams.set("offset", String(page));
+            if (dateRange) {
+              url.searchParams.set(
+                "freshness",
+                `${dateRange.from}to${dateRange.through}`,
+              );
+            }
             if (options.locale)
               url.searchParams.set("search_lang", options.locale);
             let raw: unknown;
@@ -137,6 +155,7 @@ export function createBraveWebSource(
             ) {
               const remaining = deadline - Date.now();
               if (remaining <= 0) throw new ProviderError("timeout");
+              await quota.acquire(deadline, operationSignal);
               const controller = new AbortController();
               const abort = () => controller.abort(operationSignal.reason);
               operationSignal.addEventListener("abort", abort, { once: true });
@@ -157,6 +176,7 @@ export function createBraveWebSource(
                   redirect: "error",
                   signal: controller.signal,
                 });
+                quota.observe(response.headers, response.status);
                 if (operationSignal.aborted)
                   throw operationSignal.reason instanceof ProviderError
                     ? operationSignal.reason
@@ -252,87 +272,117 @@ export function createBraveWebSource(
         signal,
         async (operationSignal) => {
           const started = Date.now();
-          let fetched: Awaited<ReturnType<WebLoader>>;
-          if (options.loader) {
-            stats.calls++;
-            try {
-              fetched = await options.loader(
+          let fetched: Awaited<ReturnType<WebLoader>> & { validatorsSent?: boolean };
+          let cacheTicket: ReturnType<BraveDocumentCache["begin"]> | undefined;
+          try {
+            if (options.loader) {
+              stats.calls++;
+              try {
+                fetched = await options.loader(
+                  url,
+                  operationSignal,
+                  lim.maxResponseBytes,
+                );
+              } finally {
+                stats.latencyMs += Date.now() - started;
+              }
+            } else {
+              cacheTicket = documentCache.begin(url.href);
+              fetched = await loadPublicUrl(
                 url,
                 operationSignal,
                 lim.maxResponseBytes,
+                options.allowPrivateForTests === true,
+                lim.timeoutMs,
+                options.resolveForTests,
+                cacheTicket.validators,
+                (duration) => {
+                  stats.calls++;
+                  stats.latencyMs += duration;
+                },
               );
-            } finally {
-              stats.latencyMs += Date.now() - started;
+              if (fetched.status === 304) {
+                if (
+                  !cacheTicket.entry ||
+                  !cacheTicket.validators ||
+                  fetched.validatorsSent !== true ||
+                  fetched.url.href !== url.href
+                )
+                  throw new ProviderError("malformed", 304);
+                const responseEtag = header(fetched.headers, "etag");
+                if (responseEtag && cacheTicket.validators.etag && responseEtag !== cacheTicket.validators.etag)
+                  throw new ProviderError("malformed", 304);
+                const refreshed = documentCache.refresh(
+                  cacheTicket,
+                  fetched.headers,
+                  new Date().toISOString(),
+                );
+                if (!refreshed) throw new ProviderError("malformed", 304);
+                return refreshed;
+              }
             }
-          } else {
-            fetched = await loadPublicUrl(
-              url,
-              operationSignal,
-              lim.maxResponseBytes,
-              options.allowPrivateForTests === true,
-              lim.timeoutMs,
-              options.resolveForTests,
-              (duration) => {
-                stats.calls++;
-                stats.latencyMs += duration;
-              },
-            );
-          }
-          if (!Buffer.isBuffer(fetched.body) || fetched.body.byteLength > lim.maxResponseBytes)
-            throw new ProviderError("budget");
-          if (fetched.status < 200 || fetched.status >= 300)
-            throw statusError(fetched.status);
-          const contentType = header(fetched.headers, "content-type")
-            ?.split(";")[0]
-            ?.trim()
-            .toLowerCase();
-          const contentEncoding = header(
-            fetched.headers,
-            "content-encoding",
-          )?.toLowerCase();
-          if (contentEncoding && contentEncoding !== "identity")
-            throw new ProviderError("malformed");
-          const isPdf = contentType === "application/pdf";
-          if (!isPdf && !isSupportedWebType(contentType ?? ""))
-            throw new ProviderError("malformed", fetched.status);
-          let parsed: ParsedWebDocument;
-          if (isPdf) {
-            parsed = await parsePdfDocument(fetched.body, fetched.url.hostname, operationSignal);
-          } else {
-            const charset = /charset\s*=\s*([\w-]+)/i
-              .exec(header(fetched.headers, "content-type") ?? "")?.[1]
-              ?.toLowerCase();
-            if (
-              charset &&
-              !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
-            )
+            if (!Buffer.isBuffer(fetched.body) || fetched.body.byteLength > lim.maxResponseBytes)
+              throw new ProviderError("budget");
+            if (fetched.status < 200 || fetched.status >= 300)
+              throw statusError(fetched.status);
+            const contentType = header(fetched.headers, "content-type")
+              ?.split(";")[0]
+              ?.trim()
+              .toLowerCase();
+            const contentEncoding = header(
+              fetched.headers,
+              "content-encoding",
+            )?.toLowerCase();
+            if (contentEncoding && contentEncoding !== "identity")
               throw new ProviderError("malformed");
-            let raw: string;
+            const isPdf = contentType === "application/pdf";
+            if (!isPdf && !isSupportedWebType(contentType ?? ""))
+              throw new ProviderError("malformed", fetched.status);
+            let parsed: ParsedWebDocument;
+            if (isPdf) {
+              parsed = await parsePdfDocument(fetched.body, fetched.url.hostname, operationSignal);
+            } else {
+              const charset = /charset\s*=\s*([\w-]+)/i
+                .exec(header(fetched.headers, "content-type") ?? "")?.[1]
+                ?.toLowerCase();
+              if (
+                charset &&
+                !["utf-8", "utf8", "us-ascii", "ascii"].includes(charset)
+              )
+                throw new ProviderError("malformed");
+              let raw: string;
+              try {
+                raw = new TextDecoder("utf-8", { fatal: true }).decode(
+                  fetched.body,
+                );
+              } catch {
+                throw new ProviderError("malformed");
+              }
+              parsed = parseWebDocument(raw, contentType ?? "", fetched.url.hostname);
+            }
+            if (!parsed.sourceUpdatedAt && fetched.status !== 304) {
+              parsed.sourceUpdatedAt = lastModifiedDate(fetched.headers);
+            }
+            if (!parsed.text.trim()) throw new ProviderError("malformed");
+            const document = {
+              url: fetched.url.href,
+              title: parsed.title,
+              text: parsed.text,
+              fetchedAt: new Date().toISOString(),
+              publishedAt: parsed.publishedAt,
+              sourceUpdatedAt: parsed.sourceUpdatedAt,
+            };
             try {
-              raw = new TextDecoder("utf-8", { fatal: true }).decode(
-                fetched.body,
-              );
+              const parsedDocument = documentSchema.parse(document) as SourceDocument;
+              if (!options.loader && fetched.status === 200 && cacheTicket && fetched.url.href === url.href && !operationSignal.aborted) {
+                documentCache.store(cacheTicket, parsedDocument, fetched.headers);
+              }
+              return parsedDocument;
             } catch {
               throw new ProviderError("malformed");
             }
-            parsed = parseWebDocument(raw, contentType ?? "", fetched.url.hostname);
-          }
-          if (!parsed.sourceUpdatedAt) {
-            parsed.sourceUpdatedAt = lastModifiedDate(fetched.headers);
-          }
-          if (!parsed.text.trim()) throw new ProviderError("malformed");
-          const document = {
-            url: fetched.url.href,
-            title: parsed.title,
-            text: parsed.text,
-            fetchedAt: new Date().toISOString(),
-            publishedAt: parsed.publishedAt,
-            sourceUpdatedAt: parsed.sourceUpdatedAt,
-          };
-          try {
-            return documentSchema.parse(document) as SourceDocument;
-          } catch {
-            throw new ProviderError("malformed");
+          } finally {
+            if (cacheTicket) documentCache.release(cacheTicket);
           }
         },
         lim.timeoutMs,
@@ -369,12 +419,14 @@ async function loadPublicUrl(
   allowPrivate: boolean,
   timeoutMs: number,
   resolveForTests?: BraveWebSourceConfig["resolveForTests"],
+  conditionalHeaders?: { etag?: string; lastModified?: string },
   onRequestComplete?: (durationMs: number) => void,
 ): Promise<{
   status: number;
   headers: IncomingHttpHeaders;
   body: Buffer;
   url: URL;
+  validatorsSent: boolean;
 }> {
   let url = start;
   for (let redirects = 0; redirects <= 3; redirects++) {
@@ -401,7 +453,14 @@ async function loadPublicUrl(
     const requestStarted = Date.now();
     let response: Awaited<ReturnType<typeof requestPinned>>;
     try {
-      response = await requestPinned(url, pinned, signal, maxBytes, timeoutMs);
+      response = await requestPinned(
+        url,
+        pinned,
+        signal,
+        maxBytes,
+        timeoutMs,
+        redirects === 0 ? conditionalHeaders : undefined,
+      );
     } finally {
       onRequestComplete?.(Date.now() - requestStarted);
     }
@@ -412,7 +471,11 @@ async function loadPublicUrl(
       url = canonicalPublicUrl(new URL(location, url).href, allowPrivate);
       continue;
     }
-    return { ...response, url };
+    return {
+      ...response,
+      url,
+      validatorsSent: redirects === 0 && Boolean(conditionalHeaders && (conditionalHeaders.etag || conditionalHeaders.lastModified)),
+    };
   }
   throw new ProviderError("unavailable");
 }
@@ -479,6 +542,7 @@ function requestPinned(
   signal: AbortSignal,
   maxBytes: number,
   timeoutMs: number,
+  conditionalHeaders?: { etag?: string; lastModified?: string },
 ): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
   return new Promise((resolve, reject) => {
     if (signal.aborted)
@@ -494,29 +558,32 @@ function requestPinned(
         callback(null, [{ address: pin.address, family: pin.family }]);
       else callback(null, pin.address, pin.family);
     };
+    const requestHeaders = {
+      accept: [
+        "text/html",
+        "application/xhtml+xml",
+        "text/plain",
+        "text/markdown",
+        "application/json",
+        "application/ld+json",
+        "application/activity+json",
+        "application/feed+json",
+        "application/xml",
+        "text/xml",
+        "application/rss+xml",
+        "application/atom+xml",
+        "application/pdf",
+        "*/*;q=0.1",
+      ].join(", "),
+      "accept-encoding": "identity",
+      "user-agent": "ZoryaSearch/1.0",
+      ...(conditionalHeaders?.etag ? { "if-none-match": conditionalHeaders.etag } : {}),
+      ...(conditionalHeaders?.lastModified ? { "if-modified-since": conditionalHeaders.lastModified } : {}),
+    };
     const requestOptions = {
       agent: false as const,
       method: "GET",
-      headers: {
-        accept: [
-          "text/html",
-          "application/xhtml+xml",
-          "text/plain",
-          "text/markdown",
-          "application/json",
-          "application/ld+json",
-          "application/activity+json",
-          "application/feed+json",
-          "application/xml",
-          "text/xml",
-          "application/rss+xml",
-          "application/atom+xml",
-          "application/pdf",
-          "*/*;q=0.1",
-        ].join(", "),
-        "accept-encoding": "identity",
-        "user-agent": "ZoryaSearch/1.0",
-      },
+      headers: requestHeaders,
       lookup: lookupPinned,
       ...(isIP(host) ? {} : { servername: host }),
     };

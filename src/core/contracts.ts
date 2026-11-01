@@ -21,6 +21,23 @@ export const searchRequestSchema = z.object({
 })
 export type SearchRequest = z.infer<typeof searchRequestSchema>
 export type SearchInput = z.input<typeof searchRequestSchema>
+const calendarDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/u)
+  .refine(isRealCalendarDate)
+export const webDateRangeSchema = z
+  .object({ from: calendarDateSchema, through: calendarDateSchema })
+  .strict()
+  .refine((range) => range.from <= range.through)
+export type WebDateRange = z.infer<typeof webDateRangeSchema>
+
+function isRealCalendarDate(value: string): boolean {
+  const [year, month, day] = value.split('-').map(Number)
+  const leapYear = year! % 4 === 0 && (year! % 100 !== 0 || year! % 400 === 0)
+  const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return month! >= 1 && month! <= 12 && day! >= 1 && day! <= monthDays[month! - 1]!
+}
+
 export const documentSchema = z.object({
   url: z.string().url(),
   title: z.string(),
@@ -92,7 +109,12 @@ export interface KnowledgeRepository {
   collectTemporary?(input: { before: string; limit: number }, signal: AbortSignal): Promise<number>
 }
 export interface WebSource {
-  discover(query: string, target: number, signal: AbortSignal): Promise<string[]>
+  discover(
+    query: string,
+    target: number,
+    signal: AbortSignal,
+    options?: { dateRange?: WebDateRange },
+  ): Promise<string[]>
   fetchDocument(url: string, signal: AbortSignal): Promise<SourceDocument>
 }
 export type SearchStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
