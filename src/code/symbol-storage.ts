@@ -242,7 +242,14 @@ export async function loadSymbolAnalysis(
   database: QueryableDatabase,
   identity: CodeSymbolAnalysisStatus['identity'],
   worktreeId: string,
+  expectedLimits: SymbolAnalysisLimits = DEFAULT_SYMBOL_LIMITS,
 ): Promise<CodeSymbolAnalysisStatus> {
+  const capturedExpectedLimits: SymbolAnalysisLimits = Object.freeze({
+    maxFiles: expectedLimits.maxFiles,
+    maxSymbols: expectedLimits.maxSymbols,
+    maxReferences: expectedLimits.maxReferences,
+    tsconfigPath: expectedLimits.tsconfigPath,
+  })
   const selected = await database.query<{
     analysis_profile_id: string; extractor_version: string; typescript_version: string;
     compiler_options_hash: string; library_profile_id: string | null; limits_json: SymbolAnalysisLimits;
@@ -286,7 +293,7 @@ export async function loadSymbolAnalysis(
     row.typescript_version === ts.version && JSON.stringify({
       maxFiles: normalizedLimits.maxFiles, maxSymbols: normalizedLimits.maxSymbols,
       maxReferences: normalizedLimits.maxReferences, tsconfigPath: normalizedLimits.tsconfigPath,
-    }) === JSON.stringify(DEFAULT_SYMBOL_LIMITS)
+    }) === JSON.stringify(capturedExpectedLimits)
   if (!compatible) return { state: 'unavailable', unavailableReason: 'profile_outdated', identity, profile,
     complete: false, coverage, coverageTotalFiles: fullCoverage.length,
     coverageOmittedFiles: Math.max(0, fullCoverage.length - coverage.length),

@@ -8,7 +8,7 @@ import type {
   CodeCallTrace, CodeSymbolAnalysisStatus, FindCodeReferencesInput, FindCodeReferencesResult,
   FindCodeSymbolsInput, FindCodeSymbolsResult, TraceCodeCallsInput,
 } from './symbol-api.js'
-import { loadSymbolAnalysis, readStoredSymbol, type StoredReferenceRow, type StoredSymbolRow } from './symbol-storage.js'
+import { DEFAULT_SYMBOL_LIMITS, loadSymbolAnalysis, readStoredSymbol, type StoredReferenceRow, type StoredSymbolRow, type SymbolAnalysisLimits } from './symbol-storage.js'
 
 type Current = { identity: CodeSourceIdentity; snapshot: string; metadataGeneration: number | null; metadataProfile: string | null }
 type GetCurrent = (root: string, signal?: AbortSignal) => Promise<Current>
@@ -64,11 +64,21 @@ function languageValues(language: string): { values: string[]; insensitive: bool
   return { values: [normalized], insensitive: false }
 }
 
-export function createSymbolQueries(database: QueryableDatabase, getCurrent: GetCurrent) {
+export function createSymbolQueries(
+  database: QueryableDatabase,
+  getCurrent: GetCurrent,
+  expectedLimits: SymbolAnalysisLimits = DEFAULT_SYMBOL_LIMITS,
+) {
+  const capturedExpectedLimits: SymbolAnalysisLimits = Object.freeze({
+    maxFiles: expectedLimits.maxFiles,
+    maxSymbols: expectedLimits.maxSymbols,
+    maxReferences: expectedLimits.maxReferences,
+    tsconfigPath: expectedLimits.tsconfigPath,
+  })
   async function context(root: string, signal?: AbortSignal) {
     check(signal)
     const current = await getCurrent(root, signal)
-    const analysis = await loadSymbolAnalysis(database, current.identity, current.identity.worktreeId)
+    const analysis = await loadSymbolAnalysis(database, current.identity, current.identity.worktreeId, capturedExpectedLimits)
     check(signal)
     return { current, analysis }
   }
