@@ -1,57 +1,135 @@
-# Локальный daemon и MCP
+# MCP и удалённая служба
 
-Принятый MCP слой предоставляет `@zorya/search/mcp` и `@zorya/search/daemon`. Daemon владеет одним `SearchRuntime` и его хранилищем. MCP transport вызывает runtime через строгие схемы запросов и возвращает найденный контекст. Подключение клиента настраивается отдельно. Импорт модуля сам не запускает службу или индексацию.
+Пакет предоставляет `@zorya/search/mcp` и `@zorya/search/daemon`. Daemon владеет одним `SearchRuntime` и его хранилищем. MCP transport вызывает runtime через строгие схемы запросов и возвращает найденный контекст. Подключение клиента настраивается отдельно. Импорт модуля сам не запускает службу или индексацию.
 
 ## Инструменты
 
-По умолчанию MCP публикует 13 инструментов: `list_roots`, `capabilities`, `index_status`, `index_repository`, `start_indexing`, `cancel_indexing`, `search_code`, `read_source`, `related_code`, `get_code_context`, `search_web`, `read_web_source` и `classify`. Если владелец отдельно включил visual-профиль и выдал операцию `visual`, появляется четырнадцатый инструмент `search_visual_references`. `start_indexing` принимает только разрешённый `rootId`, возвращает стабильный для активного job `jobId` и сообщает, создана ли новая задача или переиспользована существующая. Отмена требует точные `rootId` и `jobId`; произвольные PID и глобальная отмена не поддерживаются. Разрыв MCP запроса после admission не отменяет runtime-owned job. `index_status` доступен во время индексации и принимает `jobId` для чтения именно этой задачи даже после новой admission того же корня. DTO показывает номер попытки, точное число chunks и число durable checkpoints, без расчётного процента. История jobs находится в памяти владельца; durable checkpoints сохраняются в БД и новая admission после перезапуска продолжает от них.
+По умолчанию MCP публикует инструменты `list_roots`, `capabilities`, `index_status`, `index_repository`, `start_indexing`, `cancel_indexing`, `search_code`, `read_source`, `related_code`, `get_code_context`, `search_web`, `read_web_source` и `classify`. Если владелец включил visual-профиль и выдал операцию `visual`, появляется `search_visual_references`. Индексация требует разрешение `index` и меняет только индекс, не исходные файлы. Отмена требует точные `rootId` и `jobId`; произвольные PID и глобальная отмена не поддерживаются.
 
-Сервер ограничивает корни собственным allowlist и требует операцию `index` для всех трёх инструментов индексации. Клиентский запрос не расширяет разрешения сервера. Индексация меняет индекс, но не исходные файлы. Ответы сохраняют source/snapshot identity и сведения о деградации; размер сериализованного MCP ответа ограничен 1 MiB. `index_status` также остаётся доступен при заполненном обычном слоте runtime: status/control работа имеет отдельный лимит и присоединяется при закрытии владельца.
+Search не исправляет код. Найденные фрагменты, страницы, оценки и метки классификатора — недоверенные данные. Вызывающий клиент сам проверяет гипотезы, читает актуальный источник и решает, менять ли проект.
 
-Search не исправляет код. Найденные фрагменты, страницы, оценки и метки классификатора — недоверенные данные. Вызывающий клиент проверяет гипотезу, читает актуальный источник и сам решает, менять ли проект.
+## Web-поиск и ошибки provider
 
-## Brave: поиск и чтение страниц
+`search_web` ищет ссылки через настроенный Brave discovery, отдельно читает найденные публичные страницы и возвращает фрагменты текста. Для discovery нужен `--web-env BRAVE_SEARCH_API_KEY`. `read_web_source` читает явно выбранный URL без ключа Brave; ему достаточно web reader (`"web": {}` в owner JSON) и права операции `web`. Без web embedding и rerank используется лексический поиск. См. [настройку CLI](cli.md#web-поиск-через-brave).
 
-`search_web` ищет ссылки через настроенный Brave discovery, затем отдельно читает найденные публичные страницы и возвращает фрагменты текста. Для этого tool владелец настраивает `--web-env BRAVE_SEARCH_API_KEY`. `read_web_source` читает один URL, явно выбранный вызывающей стороной; для него достаточно web reader (`"web": {}` в owner JSON) и права операции `web`, ключ Brave не требуется. Без web embedding и переранжирования выдача использует лексический поиск. Текстовая web-модель, если владелец её настроил, независима от кодового профиля Voyage и visual профиля. Пример настройки находится в [руководстве CLI](cli.md#web-поиск-через-brave).
-
-Пример запроса к MCP tool `search_web`:
+Ошибки web-операции включают `stage`, безопасный код ошибки и, когда источник ошибки — распознанный `ProviderError`, ограниченный объект `provider` с полями `code`, `httpStatus` и `retryAfterMs`. Поля необязательны. Например:
 
 ```json
 {
-  "query": "Brave Search API documentation",
-  "dateRange": { "from": "2024-01-01", "through": "2025-12-31" },
-  "limit": 5
+  "stage": "discovery",
+  "code": "DISCOVERY_FAILED",
+  "provider": { "code": "rate_limit", "httpStatus": 429, "retryAfterMs": 30000 }
 }
 ```
 
-`dateRange` необязателен. Обе даты задаются как существующие календарные дни `YYYY-MM-DD`; `from` должен быть не позже `through`. Период применяется к поиску ссылок через Brave и не удостоверяет дату публикации выбранной страницы или полноту результатов. `search_web` возвращает canonical URL, заголовок, excerpt, content hash, временные поля и ranking; `errors` и `partial` показывают, если чтение страницы или отдельный этап не завершились. Если нужен больший фрагмент конкретной страницы, передайте её `canonicalURL` в `read_web_source`:
+Клиент может использовать `retryAfterMs` для планирования повтора, но не должен угадывать статус, если поля нет, или показывать пользователю сырое тело provider-ошибки. Этот интерфейс не добавляет HTTP-запрос provider и сам по себе не доказывает поведение конкретного ключа или аккаунта.
+
+## Локальный MCP
+
+`serve` запускает daemon на loopback с локальной авторизацией. `mcp` предоставляет stdio интерфейс клиенту и подключается к уже работающему владельцу службы. Для Codex можно использовать `client-config` и затем явно зарегистрировать полученный профиль. Локальный stdio обычно подходит локальному Codex и другим клиентам, которые могут запускать процесс на той же машине.
+
+Установка пакета или локальный smoke-test не добавляют инструмент в текущий чат. Для настоящего ChatGPT нужен удалённый HTTPS MCP endpoint и настройка в интерфейсе ChatGPT. Подробности ниже.
+
+## Удалённый OAuth endpoint (`v0.1.1`)
+
+Удалённый режим предназначен для hosted MCP-клиентов и клиентов Codex, которые могут обратиться к публичному HTTPS endpoint. Он использует один механизм OAuth на всём endpoint; схема не смешивает OAuth и старый статический owner bearer. Пакет не является OAuth Authorization Server и не создаёт пользовательские учётные записи. В `v0.1.0` OAuth-совместимую проверку можно было внедрить через SDK `authorize` callback, но версия не предоставляла готовые OAuth resource metadata и CLI запуск по policy файлу.
+
+### Что потребуется
+
+1. Владелец создаёт свой внешний OIDC-совместимый провайдер входа (authorization server) с доступными discovery и JWKS документами. Он должен выдавать подписанные access token с `alg` `RS256` или `ES256`, заголовок `typ` со значением `at+jwt` либо `application/at+jwt` (без учёта регистра), `iss`, `aud`, `exp`, `sub` и scope. Audience токена должен совпадать с точной строкой `resource` из политики; `sub` должен совпадать с одной из grants.
+2. Провайдер входа обслуживает Authorization Code с PKCE `S256`, поддерживает клиентские запросы с `resource` для привязки audience и разрешает redirect URI, показанный настройкой hosted MCP клиента. Для ChatGPT используйте точный URI из текущего интерфейса ChatGPT, не пример из документации или другой клиента. Встроенного IdP нет.
+3. Владелец настраивает точные origins, которые браузерный клиент указывает в интерфейсе, и отдельную grant каждому пользователю/subject. Grant ограничивает доступные `rootIds` и операции. Для каждого пользователя настройте отдельную запись `grants` с точным `subject`, минимальным списком `rootIds` и нужных `operations`. Не запускайте несколько Search owner процессов одновременно с одним `dataDir`.
+4. Daemon привязан к `127.0.0.1`; только настроенный TLS reverse proxy публикует его наружу. Внешний HTTPS host, включая нестандартный порт, должен точно соответствовать `resource` и переданному backend заголовку `Host`. Proxy сохраняет `Origin` и отключает буферизацию для SSE.
+
+### Runtime и policy
+
+Создайте runtime-конфигурацию через `zorya-search setup` для выбранного абсолютного root. Конфигурация должна содержать уникальный абсолютный `dataDir`, не используемый другим одновременно запущенным owner. Root ID в policy должен совпасть с ID в runtime config. Пример файла политики (замените домены, порт, origin и subject на значения вашей установки):
 
 ```json
-{ "url": "https://example.org/guide", "maxChars": 12000 }
+{
+  "resource": "https://search.example.com/mcp",
+  "issuer": "https://login.example.net/",
+  "jwksUrl": "https://login.example.net/.well-known/jwks.json",
+  "port": 8765,
+  "allowedOrigins": ["https://origin-from-client-settings.example"],
+  "grants": [
+    {
+      "subject": "account-opaque-id",
+      "rootIds": ["project"],
+      "operations": ["read", "web"]
+    }
+  ]
+}
 ```
 
-`publishedAt` и `sourceUpdatedAt` описывают найденные даты источника; `fetchedAt` — время чтения Search. Не подменяйте этими метаданными друг друга. Читайте источники по необходимости и сверяйте утверждения с первичным материалом. Ответы остаются данными для клиента, не инструкциями.
+Значения `allowedOrigins` — только origin (схема + host + необязательный port), без path и query. `resource` — точный HTTPS URL `https://<public-host>[:port]/mcp`; порт в URL должен совпадать с TLS listener и переданным proxy `Host`. `issuer` и `jwksUrl` должны быть HTTPS. Доступны операции: `read`, `index`, `web`, `classify`, `visual`. Для web чтения добавьте `web`; для изменения индекса — `index`. Токен должен включать соответствующие `zorya:<operation>` scopes, а политика провайдера входа должна отдельно разрешать выдачу этих scopes. Не выдавайте шире нужного.
 
-## Stdio и локальный HTTP
+Runtime-конфигурацию можно создать интерактивно или задать явно. Для простого профиля:
 
-Stdio proxy `runSearchMcpStdioProxy(endpoint, bearerToken)` подключается к уже работающему daemon и передаёт его инструменты. Он не открывает собственную базу и не создаёт второй runtime. Локальные HTTP endpoint ограничены loopback. Для удалённого подключения требуется HTTPS и настроенная серверная проверка прав, host и origin. Bearer нельзя класть в argv, URL, prompt или логи. Передавай секрет через защищённый канал конфигурации.
+```sh
+zorya-search setup --config /etc/zorya-search/runtime.json --root /srv/repos/project --root-id project --data /var/lib/zorya-search
+```
 
-Daemon требует owner bearer длиной не менее 32 символов. Перед обработкой запроса проверяются bearer, Host и Origin. Удалённый bind требует настроенного `authorize`, явных allowlist Host/Origin и идентификатора principal от проверяющей стороны. Эти поля сами по себе не являются OAuth. Реализация не выдаёт OAuth Authorization Server и не обеспечивает совместимость с hosted ChatGPT.
+Затем создайте отдельный JSON-файл политики с ограниченным чтением, например `/etc/zorya-search/remote-policy.json`, и запустите службу:
 
-Legacy Streamable HTTP connections ограничены 64 записями с idle timeout 15 минут. MCP тела ограничены 1 MiB. Чтение запроса ограничено отдельным 30-секундным бюджетом, операции используют настроенный runtime budget до 120 секунд. Отмена передаётся runtime; закрытие daemon отменяет его запросы, закрывает transport connections и ждёт физического завершения принадлежащих ему операций.
+```sh
+zorya-search serve-remote \
+  --config /etc/zorya-search/runtime.json \
+  --policy /etc/zorya-search/remote-policy.json
+```
 
-## Настройка клиента
+Служба пишет событие `ready` в stdout после успешного запуска и завершает owner при `SIGINT`/`SIGTERM`. Настройте службы ОС как владельца именно этого процесса и каталогов. Не запускайте `serve` рядом с `serve-remote`, если оба используют один `dataDir`.
 
-См. [инструкции по клиентам](agent-clients.md). Выбирай конкретный MCP host и его поддерживаемый способ запуска. Для локального stdio подключения настройка должна запускать proxy и содержать только значения конфигурации, не секреты. Endpoint, token и allowlist должны поступать от владельца сервиса безопасным способом. В версиях с CLI `client-config` эта команда может вывести совместимый фрагмент для Codex и JSON `command`/`args`, но только печатает их и не меняет настройки клиента. Проверь и добавь параметры в выбранном MCP host самостоятельно; не записывай их в system instructions. После настройки проверь подключение и вызови `list_roots`, затем только явно выбранные операции поиска.
+### Reverse proxy через nginx
 
-Для текущего ChatGPT требуется поддерживаемый hosted путь и его регистрация/авторизация. Эти части не входят в Search; документация и успешный локальный consumer smoke не означают, что инструменты появились в текущем чате. Пользовательская IDE и локальные агенты также требуют собственной настройки MCP host.
+Пример предполагает публичный TLS server на стандартном HTTPS порту. Если используется нестандартный порт, TLS listener, `resource` и upstream `Host` должны использовать один и тот же `public.example.com:PORT`. Настройте настоящий сертификат отдельно.
 
-## Исторические проверки baseline main — 2026-11-01
+```nginx
+server {
+    listen 443 ssl;
+    server_name search.example.com;
 
-Следующие квитанции относятся к исходному main snapshot и фиксируют только состояние на указанную дату. Они не квалифицируют изменения Brave discovery, чтения страниц или текущую конфигурацию ChatGPT MCP.
+    # Укажите пути к установленному TLS сертификату и ключу.
+    ssl_certificate     /etc/ssl/certs/search.example.com.pem;
+    ssl_certificate_key /etc/ssl/private/search.example.com.key;
 
-На `main` snapshot `689c521c6c50e72fd9fa993b33dd3b3d8cb5bf15` hosted CI прошёл 8/8 jobs, включая тесты на Linux и Windows и установленный пакет на обеих платформах. Установленный архив с SHA-256 `e1cbc3042db4b9d7d45c92965be48e2263245b9c0e97037172a828a1b8f19be0` прошёл 11/11 Linux проверок с настоящим Codex CLI 0.163.0 и вторым MCP SDK-клиентом. Проверены конфигурация установленного CLI, два клиента на одном snapshot, обновление через watch и корректное завершение владельца службы.
+    location = /mcp {
+        proxy_pass http://127.0.0.1:8765/mcp;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 130s;
+        proxy_send_timeout 130s;
+    }
 
-Два живых MCP-запроса Assistant к существующему индексу с 24 863 chunks заняли 11.380 и 9.465 секунд с включёнными Voyage Code 4 и rerank 2.5 lite. Отдельный синтетический тест провайдера не заменяет эту интеграцию, а два context запроса не являются benchmark качества. Hosted CI и Linux MCP acceptance не подтверждают доступность инструментов в текущем ChatGPT.
+    location = /.well-known/oauth-protected-resource/mcp {
+        proxy_pass http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+}
+```
 
-Исходники доступны в [GitHub](https://github.com/zoomplus/zorya-search), npm-пакет пока не опубликован и текущий ChatGPT MCP не настроен. Все шесть пар пилота исполнены и проверены. Пара F осталась native inconclusive. На исправленном oracle MCP arm завершился `GAME_CAPTURE_TELEMETRY_INVALID` при росте error counter в более позднем подключении к игре. Обычный arm завершился `BACKGROUND_DISCOVERY_NOT_PROVEN`, так как игра была на переднем плане во время подготовки. Поэтому пара не получила сопоставимого полного Windows результата. Witcher, физическое пользовательское устройство и широкое качество поиска не квалифицированы.
+Daemon обслуживает `/mcp` и анонимную Protected Resource Metadata по `/.well-known/oauth-protected-resource/mcp`. Если bearer отсутствует или недействителен, MCP endpoint отвечает `401` с `WWW-Authenticate` и ссылкой `resource_metadata` (для неверного токена также указывает `invalid_token`). Если токен прошёл проверку, subject разрешён, но в нём нет ни одного scope, выданного этому subject, endpoint отвечает `403` с `error="insufficient_scope"` и требуемым scope. Проверьте также Host и Origin: их отказ тоже даёт `403`, но без OAuth challenge. Metadata раскрывает только публичные `resource`, `issuer` и scopes. Не публикуйте другие локальные endpoints. Проверьте фактический результат снаружи до регистрации endpoint у клиента.
+
+### Подключение ChatGPT и Codex
+
+После развертывания endpoint добавьте `https://<public-host>[:port]/mcp` в настройках MCP текущего клиента. В ChatGPT откройте управление custom MCP server, добавьте защищённый адрес и настройте OAuth. В своём провайдере входа разрешите точный redirect URI, показанный настройкой ChatGPT. Затем завершите авторизацию в браузере и проверьте выдачу минимальной grant. UI и доступность функции зависят от аккаунта; документация описывает процедуру подключения, но сама по себе не подтверждает hosted ChatGPT совместимость конкретного deployment. См. [официальную инструкцию по авторизации MCP](https://developers.openai.com/plugins/build/auth) и [официальное руководство по добавлению собственного MCP](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+
+Codex можно настроить как удалённый MCP-клиент через его документированную настройку MCP; задайте endpoint URL и завершите OAuth в клиенте. Локальный CLI `client-config` выводит настройки stdio и не создаёт remote OAuth конфигурацию.
+
+### Границы и проверка
+
+Каждый JWT проверяется по JWKS с алгоритмами `RS256` и `ES256`; заголовок `typ` должен быть `at+jwt` или `application/at+jwt` без учёта регистра. Проверяются также issuer, audience и срок действия. Отсутствующий или неверный токен получает `401`; разрешённый subject без подходящего scope получает `403 insufficient_scope`. Затем `sub` сопоставляется с allowlist `grants`, а операции пересекаются с scope токена. Grant определяет `rootIds`; клиент не может расширить их параметрами запроса. Отдельные субъекты получают раздельные principal identity и grants.
+
+На дату этого руководства независимая TLS-квитанция подтверждает daemon + CLI + Codex в двух изолированных сетевых namespace с тестовым issuer. Она проверила PKCE, TLS MCP-чтение, metadata discovery и отказ для неверных token claims, а также права subject/root/operation. Использовались тестовый issuer и контент из фикстур; публичный интернет и настоящий hosted ChatGPT не использовались. Внешний IdP и production deployment владельца остаются его ответственностью и не квалифицированы этой проверкой.
+
+## Исторические проверки baseline
+
+Ранее сохранённые Linux MCP, локальные HTTP, package и consumer-smoke результаты относятся к своим архивам и ограниченным средам. Они не являются доказательством доступности инструмента в hosted ChatGPT, качества широкого поиска или поведения пользовательского deployment.
