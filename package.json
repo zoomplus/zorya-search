@@ -46,6 +46,7 @@
     "docs/service-flows.md",
     "docs/jev-classification.md",
     "docs/mcp-result-presentation.md",
+    "docs/workspace-bridge.md",
     "src/**/README.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",
