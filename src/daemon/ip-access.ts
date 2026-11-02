@@ -20,7 +20,7 @@ const maxCidrs = 4096
 
 function fail(): never { throw new Error('DAEMON_IP_POLICY_INVALID') }
 
-function blockList(values: readonly string[], trusted: boolean): BlockList {
+function blockList(values: readonly string[]): BlockList {
   if (!Array.isArray(values) || values.length > maxCidrs) fail()
   const result = new BlockList()
   for (const value of values) {
@@ -30,7 +30,7 @@ function blockList(values: readonly string[], trusted: boolean): BlockList {
     const family = isIP(parts[0]!)
     const prefix = Number(parts[1])
     const max = family === 4 ? 32 : family === 6 ? 128 : -1
-    if (max < 0 || !Number.isSafeInteger(prefix) || prefix < 0 || prefix > max || trusted && prefix === 0) fail()
+    if (max < 0 || !Number.isSafeInteger(prefix) || prefix < 0 || prefix > max || prefix === 0) fail()
     try { result.addSubnet(parts[0]!, prefix, family === 4 ? 'ipv4' : 'ipv6') } catch { fail() }
   }
   return result
@@ -57,8 +57,8 @@ function allowedAddress(list: BlockList, address: string): boolean {
 }
 
 export function createSearchIpAccessPolicy(policy: SearchIpAccessPolicy) {
-  const allowed = blockList([...policy.allowedCidrs], false)
-  const trusted = blockList([...policy.trustedProxyCidrs], true)
+  const allowed = blockList([...policy.allowedCidrs])
+  const trusted = blockList([...policy.trustedProxyCidrs])
   const origins = Object.freeze([...policy.allowedOrigins])
   const resourceHost = new URL(policy.resource).host
   return Object.freeze({
@@ -101,8 +101,8 @@ export function parseSearchIpAccessPolicy(input: unknown, configuredRootIds: rea
   const grantedOperations = value.operations
   const allowedOrigins = value.allowedOrigins
   if (!Array.isArray(allowedCidrs) || allowedCidrs.length < 1 || !Array.isArray(trustedProxyCidrs) || !Array.isArray(rootIds) || !rootIds.length || !Array.isArray(grantedOperations) || !grantedOperations.length || !Array.isArray(allowedOrigins) || !allowedOrigins.length) fail()
-  blockList(allowedCidrs as string[], false)
-  blockList(trustedProxyCidrs as string[], true)
+  blockList(allowedCidrs as string[])
+  blockList(trustedProxyCidrs as string[])
   if (rootIds.length > 32 || rootIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id) || !configuredRootIds.includes(id)) || new Set(rootIds).size !== rootIds.length) throw new Error('REMOTE_GRANT_ROOT_UNKNOWN')
   if (grantedOperations.length > 5 || grantedOperations.some((operation) => typeof operation !== 'string' || !operations.has(operation as SearchIpOperation)) || new Set(grantedOperations).size !== grantedOperations.length) fail()
   if (allowedOrigins.length > 32 || allowedOrigins.some((origin) => {
