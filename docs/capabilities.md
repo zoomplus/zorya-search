@@ -1,6 +1,6 @@
 # Возможности и границы версий
 
-Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.10` и описывает функции `v0.1.11`. На дату публикации `v0.1.10`, 2026-11-02, npm dist-tag `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`; prerelease доступен [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Для установки проверяйте точную версию и asset на странице релиза и в registry.
+Матрица сохраняет подтверждённые исторические поверхности `v0.1.6`–`v0.1.10` и описывает local workspace MCP версии `0.1.11`. На дату публикации `v0.1.10`, 2026-11-02, npm dist-tag `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`; prerelease доступен [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Перед установкой `0.1.11` сверяй доступный release asset и checksum по [инструкции](install-local-agent.md).
 
 ## Возможности
 
@@ -20,10 +20,11 @@ Search предоставляет инструменты существующе�
 | SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation | Да |
 | Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` | Да |
 | Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля | Да |
-| IP/CIDR allowlist для удалённого MCP с явными Host/Origin и principal/root/operation grants | Нет | Нет | Нет | Да через `serve-remote-ip`; loopback daemon, optional trusted-proxy `X-Real-IP`; не комбинируется с bearer/OAuth |
-| Локальный Codex workspace bridge с явной передачей байтов и существующими MCP контрактами | Нет | Нет | Нет | Да; machine credential и client/CIDR policy для частного сервера |
+| Локальный MCP к каноническому текущему workspace; отдельный владелец и база вне проекта | Нет | Нет | Нет | Есть в незавершённом исходном кандидате; проверяйте выпуск и поддержку клиента отдельно |
+| IP/CIDR allowlist для удалённого MCP с явными Host/Origin и principal/root/operation grants | Нет | Нет | Нет | Исторический source candidate; не является подтверждением текущего релиза или доступности endpoint |
+| Workspace bridge с передачей байтов частному серверу | Нет | Нет | Нет | Исторический source candidate; не смешивать с локальным workspace MCP |
 
-Для установки `v0.1.11` проверьте точный tag и package version в [registry и release assets](../README.md#release-availability). Таблица описывает интерфейсы версии, а не состояние сервиса или поддержку конкретного hosted клиента. См. [changelog](../CHANGELOG.md) и [guide presentation](mcp-result-presentation.md).
+Таблица описывает архивы и исходные кандидаты, а не состояние сервиса или поддержку конкретного hosted клиента. Перед установкой сверяйте опубликованные version и asset; наличие локального source-кода не доказывает выпуск. См. [changelog](../CHANGELOG.md), [архитектуру](architecture.md) и [локальный workspace](local-workspace.md).
 
 ## Поиск по коду и структурные данные
 

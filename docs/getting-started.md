@@ -1,13 +1,13 @@
 # Начало работы с Zorya Search
 
-Это краткое руководство использует пакет `zorya-search@0.1.11`. Перед установкой проверьте точную версию и доступный asset на странице релиза и в npm registry. Для local Codex workspace bridge и конфигурации отдельного private server см. [workspace bridge guide](workspace-bridge.md).
+Это краткое руководство использует опубликованный пакет `zorya-search@0.1.10`. На дату публикации 2026-11-02 npm `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`. Версия `0.1.11` добавляет локальный workspace MCP; его установка описана в [гайде локального агента](install-local-agent.md), где перед установкой нужно проверить release asset и SHA-256.
 
 ## 1. Установи пакет preview
 
-Нужна Node.js `>=20.19.0`. После проверки версии `0.1.11` в registry установите пакет в проект, который будет владеть Search:
+Нужна Node.js `>=20.19.0`. Установите опубликованную версию `0.1.10` в проект, который будет владеть Search:
 
 ```sh
-npm install --save-exact zorya-search@0.1.11
+npm install --save-exact zorya-search@0.1.10
 npm ls zorya-search --depth=0
 ```
 
@@ -18,8 +18,8 @@ npm ls zorya-search --depth=0
 Для локального lexical поиска по коду и project-text выбери этот вариант первичного `setup`:
 
 ```sh
-npx --yes zorya-search@0.1.11 setup --root .
-npx --yes zorya-search@0.1.11 client-config
+npx --yes zorya-search@0.1.10 setup --root .
+npx --yes zorya-search@0.1.10 client-config
 ```
 
 Новый `setup` без provider flags создаёт `projectText: {}`: лексический поиск по коду и проектному тексту остаётся локальным, без моделей и облачных запросов. `client-config` только печатает варианты и не регистрирует клиента.
@@ -72,4 +72,4 @@ npm exec -- zorya-search client-config --result-presentation structured
 
 Brave discovery требует `--web-env`; чтение известного публичного URL использует отдельный web reader и `web` grant, без ключа Brave. `additionalQueries` выбирает вызывающая сторона, Search не генерирует их. Code, text, web, classifier и visual profiles независимы.
 
-Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации и локального владельца, не provider health. Удалённый MCP требует инфраструктуру владельца и HTTPS proxy; OAuth mode также требует внешний issuer, а IP/CIDR mode требует явную policy. Подробности: [MCP](mcp.md), [CLI](cli.md), [workspace bridge](workspace-bridge.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).
+Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации и локального владельца, не provider health. Исторические remote endpoint и transfer bridge source candidates не подтверждают развёрнутые службы. Подробности: [MCP](mcp.md), [CLI](cli.md), [локальный workspace](local-workspace.md), [локальная установка агента](install-local-agent.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).

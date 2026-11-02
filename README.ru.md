@@ -18,7 +18,7 @@ Zorya Search помогает существующему приложению и
 | Изучить структуру | Точный поиск символов, статические references и call trace, кандидаты дубликатов и opt-in logical context. Статические данные не доказывают runtime-поведение. |
 | Найти правила проекта | Отдельный opt-in индекс документации, правил и skills. Он не смешивает пространство индекса кода и knowledge storage. |
 | Найти внешние источники | Caller-selected запросы Brave и ограниченное чтение страниц, если владелец настроил provider. Search не формирует дополнительные запросы. |
-| Подключить клиента | Node.js SDK, локальный stdio/loopback MCP, публичный web-only MCP или частный local Codex workspace bridge. |
+| Подключить клиента | Node.js SDK, локальный stdio/loopback MCP или локальный MCP для текущего workspace. |
 
 Кодовый путь по умолчанию лексический. Необязательные профили: `voyageai/voyage-code-4` (1024 измерения) и `voyageai/rerank-2.5-lite` для кода, `voyageai/voyage-4-large` с разными ролями document/query для project text и независимый visual-профиль `voyageai/voyage-multimodal-3.5`. Это конфигурационные варианты, а не defaults. Rerank только переставляет кандидатов. Classification и reuse context используют закреплённую модель Jev `typesafe/jev-1.14`; неподдерживаемая модель classifier отклоняется, а не подменяется молча.
 
@@ -26,24 +26,22 @@ Zorya Search помогает существующему приложению и
 
 Версия **`0.1.10`** пакета `zorya-search` опубликована в npm 2026-11-02 и доступна как GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). На дату публикации 2026-11-02 npm dist-tag `next` указывал на `0.1.10`, а `latest` намеренно оставался на `0.1.9`. Релиз добавил доверенные подсказки MCP о доступности capability и команду `configure` с явным согласием владельца для семи независимых ролей. Агент может предложить настройку только нужной, ещё не настроенной capability; Search не включает её сам и не заменяет вызывающего агента. Чтение публичного URL и лексический project-text поиск не требуют ключа. Brave discovery использует ключ Brave Search; профили моделей Voyage и Jev — ключ OpenRouter. После изменения профиля переподключите MCP и обновите список tools и capabilities. Configure не проверяет провайдера; рестарт уже работающего watch-владельца может продолжить его существующую политику индексации. См. руководства [MCP](docs/mcp.md), [CLI](docs/cli.md) и [клиентских агентов](docs/agent-clients.md).
 
-Версия `v0.1.11` добавляет `serve-remote-ip` — удалённый MCP endpoint с явным IP/CIDR allowlist. Daemon остаётся на loopback; владелец настраивает HTTPS proxy, точные Host и Origin, CIDR доверенных proxy при необходимости и grants principal/root/operations. Режим отдельный от OAuth и отклоняет запросы, в которых также передан Authorization. Публичный target `https://startzorya.com/mcp/search` ограничен существующими public web-source tools, профилем `web:{}` и `web` grant; project files и project read/index grants ему не выдаются. Проверьте страницу релиза и registry для доступности версии, а доступность endpoint — у его владельца. См. руководства [MCP](docs/mcp.md) и [CLI](docs/cli.md).
+Версия `0.1.11` добавляет local workspace MCP. Он определяет проект по текущей рабочей папке процесса клиента, хранит индекс вне workspace и по умолчанию выполняет лексические операции локально. Центральный workspace server и передача ему файлов не используются; Search не редактирует проект. Перед установкой проверь release artifact и SHA-256 по [руководству локального агента](docs/install-local-agent.md). Исторические IP/CIDR и transfer-bridge описания не являются актуальным развёртыванием.
 
-Та же версия добавляет `zorya-search-bridge` — локальный stdio adapter Codex для явной передачи файлов workspace отдельно настроенному частному Search server по адресу `https://startzorya.com/mcp/search/workspace`. Он сохраняет существующие Search tools и не открывает файлы проекта обычному ChatGPT. Частный сервер требует machine credential и явные client/CIDR grants. См. [руководство workspace bridge](docs/workspace-bridge.md).
-
-Команды ниже закрепляют версию `0.1.11`; перед установкой проверьте её доступность в npm registry и на странице релиза. Требуется Node.js `>=20.19.0`; см. краткие руководства [на русском](docs/getting-started.md) и [на английском](docs/getting-started.en.md).
+Краткое руководство ниже использует `0.1.10` и требует Node.js `>=20.19.0`. Оно не устанавливает local workspace MCP версии `0.1.11`; для этого режима см. [инструкцию установки локального агента](docs/install-local-agent.md).
 
 Установите точную версию и создайте профиль:
 
 ```sh
-npm install --save-exact zorya-search@0.1.11
-npx --yes zorya-search@0.1.11 setup --root .
-npx --yes zorya-search@0.1.11 client-config
+npm install --save-exact zorya-search@0.1.10
+npx --yes zorya-search@0.1.10 setup --root .
+npx --yes zorya-search@0.1.10 client-config
 ```
 
 `client-config` печатает инструкции для регистрации MCP, но не устанавливает и не регистрирует сервер в клиенте. Владелец отдельно выбирает команду и выдаёт разрешения. Индексация запускается явно, если владелец не включил watch.
 ## Пример SDK
 
-Пример ниже в англоязычном [README](README.md#sdk-example) использует лексические SDK API пакета `zorya-search@0.1.11` для проверки исходника и кандидатов дубликатов. Используйте импорты `zorya-search` и его subpaths. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
+Пример ниже в англоязычном [README](README.md#sdk-example) использует лексические SDK API Zorya Search для проверки исходника и кандидатов дубликатов. Используйте импорты `zorya-search` и его subpaths, сверив их с установленной версией. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
 
 ## Документация
 
@@ -52,7 +50,7 @@ npx --yes zorya-search@0.1.11 client-config
 - [SDK](docs/sdk.md) · [CLI](docs/cli.md) · [MCP](docs/mcp.md)
 - [Текст проекта и web discovery](docs/project-text.md)
 - [Инструкции для клиентских агентов](docs/agent-clients.md)
-- [Локальный workspace bridge](docs/workspace-bridge.md)
+- [Локальный workspace MCP](docs/local-workspace.md) · [Установка локального агента](docs/install-local-agent.md)
 - [Архитектура](docs/architecture.md) · [Потоки сервисов](docs/service-flows.md)
 - [Jev classification и reuse](docs/jev-classification.md) · [Профили Voyage](docs/voyage-profiles.md)
 - [Представление результата MCP и нативные доказательства](docs/mcp-result-presentation.md)

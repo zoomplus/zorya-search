@@ -1,12 +1,12 @@
 # Changelog
 
-## 0.1.11
+## 0.1.11 — Local workspace MCP
 
-This release adds `zorya-search-bridge`, a separate local stdio MCP entry with explicit client/server configuration. It binds the current workspace and native per-call conversation identity, transfers changed source bytes only for explicit indexing or synchronization, and forwards existing Search MCP calls without changing their contracts. Reads do not trigger synchronization or indexing. Ordinary ChatGPT receives no local project-file access.
+This version adds `zorya-search-local` for an existing local MCP client. It binds the canonical current working directory, keeps the database in per-user state outside the project, and uses one local owner per workspace. Setup and MCP initialization do not scan files; source queries check snapshot freshness and use the existing incremental indexer when needed. `watch` is disabled. The keyless lexical default makes no provider or model calls. Existing MCP tools and result contracts remain in use; Search does not write or edit project files.
 
-The same version adds `serve-remote-ip --config PATH --policy PATH`, an explicit IP/CIDR-allowlisted MCP mode on the loopback daemon. The strict policy binds a canonical public HTTPS resource URL and exact Host, requires allowed origins, and grants a principal explicit roots and operations. Optional trusted proxy CIDRs enable a single `X-Real-IP` value; bearer/OAuth and IP mode cannot be combined. MCP tool metadata advertises `noauth` only in this explicit mode; server-side grants and root filtering remain active. No provider or capability is enabled automatically.
+The generated client configuration contains no static `cwd`, root, installation path, model, approval or sandbox setting. The adapter uses a private local owner descriptor and loopback bearer internally; these values are not user-facing. Job ownership is scoped to the originating conversation.
 
-The public web-only target is `https://startzorya.com/mcp/search`; its profile is limited to public web-source tools with `web:{}` and the `web` grant, without project files or project read/index grants. It uses an internal empty root required by the runtime. The separate private workspace target is `https://startzorya.com/mcp/search/workspace` and requires machine credentials and explicit client/CIDR policy. Check the release page and registry for version and asset availability, and verify endpoint availability with its operator. This changelog entry does not establish deployment, ChatGPT UI support, or production endpoint acceptance. See [workspace bridge guidance](docs/workspace-bridge.md).
+The local mode does not change the existing search algorithms or model profiles. Earlier IP/CIDR remote MCP and byte-transfer workspace bridge notes are historical source-candidate material; they do not describe this local path or establish deployed endpoints. Verify package and release-asset availability before installation.
 
 ## 0.1.10 — 2026-11-02
 
