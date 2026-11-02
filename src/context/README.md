@@ -2,7 +2,7 @@
 
 Context валидирует явный запрос и объединяет доступные материалы в ограниченный ответ. Источники, excerpts и classification — недоверенные evidence; вызывающий агент проверяет их и принимает решение.
 
-## Code context — source candidate
+## Code context — candidate `v0.1.7`
 
 ```mermaid
 flowchart TD
@@ -16,7 +16,7 @@ flowchart TD
  cg -->|"нет"| ci["Отказ по stale/currentness"]
 ```
 
-## Web context — source candidate
+## Web context — candidate `v0.1.7`
 
 Caller задаёт запросы; web-поиск не придумывает дополнительные темы.
 
@@ -63,7 +63,7 @@ flowchart TD
  xb --> xi["Общий ledger usage().classification"]
 ```
 
-## Переиспользование кода — исходное включение `0a584e6`, постраничный выбор `a85eb8c506c8`
+## Переиспользование кода — candidate `v0.1.7` (исторические шаги `0a584e6`, `a85eb8c506c8`)
 
 ```mermaid
 flowchart TD
@@ -113,6 +113,6 @@ flowchart TD
 
 Web — публичный HTTP acquisition, не browser automation. Logical symbol/reference связи статические и не являются runtime call truth. Исходники: [`index.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/context/index.ts), [`logical.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/context/logical.ts), [`web.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/context/web.ts), [`classify.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/context/classify.ts), [`lifecycle.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/context/lifecycle.ts).
 
-Кодовая опора reuse: [`reuse.ts` — orchestration и лимиты](reuse.ts#L13), [`reuse-symbol-selection.ts` — страницы и Jev Choice](reuse-symbol-selection.ts#L10), [`reuse-types.ts` — coverage DTO](reuse-types.ts#L53), [`reuse-selection.ts` — проверки ответов](reuse-selection.ts#L5), [`reuse-presentation.ts` — компактная MCP projection](../mcp/reuse-presentation.ts#L1), [`symbol-queries.ts` — пагинация каталога](../code/symbol-queries.ts#L92) и [`code-context.ts` — ограниченная сборка context](code-context.ts#L21).
+Кодовая опора reuse: [`reuse.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse.ts), [`reuse-symbol-selection.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-symbol-selection.ts), [`reuse-types.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-types.ts), [`reuse-selection.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-selection.ts), [`reuse-presentation.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/mcp/reuse-presentation.ts), [`symbol-queries.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/code/symbol-queries.ts) и [`code-context.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/code-context.ts).
 
-Jev не расширяет `additionalQueries`, не выбирает embedding/rerank модель и не меняет workflow агента. Проверенные полные или частичные диапазоны, source identity, evidence и omissions передаются клиенту; он решает, что проверить или изменить. GitHub archive `v0.1.6` не содержит этот source candidate.
+Jev не расширяет `additionalQueries`, не выбирает embedding/rerank модель и не меняет workflow агента. Проверенные полные или частичные диапазоны, source identity, evidence и omissions передаются клиенту; он решает, что проверить или изменить. GitHub archive `v0.1.6` не содержит эту capability; она входит в candidate `v0.1.7`.

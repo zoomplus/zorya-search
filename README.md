@@ -1,6 +1,6 @@
 # Zorya Search
 
-**Repository code search and retrieval for SDK and MCP clients, with optional code embeddings, semantic search, and reranking.**
+**Local-first code and project-text retrieval for existing SDK and MCP clients, with optional embeddings, static symbol evidence, and caller-controlled web discovery.**
 
 **[Читать по-русски](README.ru.md)**
 
@@ -8,24 +8,25 @@
 [![MIT License](https://img.shields.io/github/license/zoomplus/zorya-search)](LICENSE)
 [![Node.js >=20.19](https://img.shields.io/badge/Node.js-%3E%3D20.19-339933?logo=node.js&logoColor=white)](package.json)
 
-Zorya Search gives an existing app or agent a fast way to search an approved repository, inspect the current source behind a result, and gather related evidence. Use the SDK from a Node.js service or expose the same capabilities to a client through MCP. Search returns bounded source-backed results; the caller decides when to search, what to trust, and what to do next.
+Zorya Search lets an existing application or agent search an approved repository, inspect current source behind a result, and gather bounded related evidence. Use its Node.js SDK or expose the same operations through MCP. Search returns candidates with source identity and known limits; the caller decides when to search, what to trust, and what to do next. It does not create agents, edit files, or automatically repair a project.
 
-It is useful for questions such as “where is this initiative trigger handled?”, checking callers and tests around a known symbol, or finding repeated code bodies worth reviewing. It can also find and read public web sources when the owner enables web access. It does not replace the agent, edit files, or automatically repair a project.
+## What it provides
 
-## What it can do
-
-| Need | Search provides |
+| Need | Capability |
 | --- | --- |
-| Find code and verify it | Lexical or configured embedding-backed retrieval, current source reads, bounded context, paths, line ranges, and snapshot identity. |
-| Explore code structure | Duplicate candidates in release `v0.1.6`; current-main source adds exact symbol lookup, static references/call tracing, and opt-in logical context. |
-| Retrieve other sources | Optional Brave web discovery and page reading; classification (pinned Jev in current source candidate) and caller-provided visual references. |
-| Connect an existing client | Node.js SDK, local stdio/loopback MCP, or owner-hosted remote MCP with separately configured OAuth. |
+| Find and verify code | Lexical search by default; optional embedding retrieval; bounded source reads and context tied to repository, worktree, and snapshot. |
+| Inspect structure | Exact symbol lookup, static references and call tracing, duplicate candidates, and opt-in logical context. Static evidence does not establish runtime behavior. |
+| Search project guidance | A separate, opt-in project-text index for documentation, rules, and skills. It does not share the code or knowledge namespace. |
+| Find public sources | Caller-selected Brave discovery queries and bounded page reading, when configured. Search does not generate extra queries. |
+| Integrate with a client | Node.js SDK, local stdio/loopback MCP, or an owner-hosted remote MCP endpoint with separately configured OAuth. |
 
-The default code path is lexical and makes no model-provider call. Optional code embeddings and reranking use the code-specialized `voyageai/voyage-code-4` and `voyageai/rerank-2.5-lite` preset. Current source candidate `0a584e6` adds the shared Jev Decisions port, `getReuseContext` SDK and `get_reuse_context` MCP tool, plus the large symbol-limit correction. These additions, like the separate project-text index and caller-selected multi-query web discovery, are not in archive `v0.1.6`; npm publication is pending. See the [Jev and reuse guide](docs/jev-classification.md) for migration and limits. MCP exposes tools to a client; it does not impose a workflow or make Search autonomous.
+The code path is lexical unless the owner enables an embedding profile. Optional presets include code `voyageai/voyage-code-4` (1024 dimensions) with `voyageai/rerank-2.5-lite`, project text `voyageai/voyage-4-large` with separate document/query roles, and independent visual `voyageai/voyage-multimodal-3.5`. These are opt-in configurations, not defaults. Reranking only reorders candidates. Classification and reuse context use the pinned Jev model `typesafe/jev-1.14`; unsupported classifier models are rejected rather than silently substituted.
 
-## Install the available release
+## Release availability
 
-Node.js `>=20.19.0` is required. The currently available artifact is the GitHub release archive `v0.1.6`:
+The public GitHub archive remains **`v0.1.6`**. This repository state is a **`v0.1.7` release candidate** at source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d); it has not been published to GitHub Releases or npm. The candidate contains the separate project-text index, exact symbol/reference/static-call tools, opt-in logical context and Jev-backed reuse, caller-selected multi-query web discovery, and typed source-read recovery. Do not use candidate documentation as evidence that a future release URL or registry version is available.
+
+For the currently available archive, use Node.js `>=20.19.0`:
 
 ```sh
 npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
@@ -33,94 +34,47 @@ npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
-`client-config` prints connection examples; you register one with your chosen client, grant only the required access, and start indexing explicitly with `npm exec -- zorya-search index`. Installation alone does not connect a client or start indexing. See the [English quickstart](docs/getting-started.en.md) or [Russian quickstart](docs/getting-started.md).
+`client-config` prints examples; an owner separately registers one in the chosen client and grants access. Indexing is explicit unless the owner selected watch. See the [English quickstart](docs/getting-started.en.md), [Russian quickstart](docs/getting-started.md), and [capability matrix](docs/capabilities.md).
 
 ## SDK example
 
-This runnable example uses the public `v0.1.6` SDK, lexical search, current-source verification, and duplicate candidates. Install the archive above and save this as `search.mjs` in that Node.js project:
+This example uses the public `v0.1.6` SDK with local lexical search, source verification, and duplicate candidates. Keep the database outside the indexed repository.
 
 ```js
-import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { openEmbeddedDatabase } from '@zorya/search'
 import { createCodeIndex } from '@zorya/search/code'
 
-const rootInput = process.env.ZORYA_SEARCH_ROOT
-const dataInput = process.env.ZORYA_SEARCH_DATA_DIR
-if (!rootInput || !dataInput || !isAbsolute(rootInput) || !isAbsolute(dataInput)) {
-  throw new Error('Set absolute ZORYA_SEARCH_ROOT and ZORYA_SEARCH_DATA_DIR paths')
-}
-
-const root = resolve(rootInput)
-const dataDir = resolve(dataInput)
-const dataFromRoot = relative(root, dataDir)
-if (dataFromRoot === '' || (!dataFromRoot.startsWith(`..${sep}`) && dataFromRoot !== '..' && !isAbsolute(dataFromRoot))) {
-  throw new Error('ZORYA_SEARCH_DATA_DIR must be outside the indexed repository')
-}
-
-const database = await openEmbeddedDatabase(dataDir)
+const root = '/absolute/path/to/repository'
+const database = await openEmbeddedDatabase('/absolute/path/to/private/search-data')
 const index = createCodeIndex({ database })
 try {
   await index.indexRepository({ root })
-  const result = await index.searchCode({
-    root,
-    query: 'initiative trigger',
-    mode: 'lexical',
-    limit: 5,
-  })
+  const result = await index.searchCode({ root, query: 'initiative trigger', mode: 'lexical', limit: 5 })
   const hit = result.hits[0]
-  const source = hit
-    ? await index.readSource({
-        root,
-        path: hit.path,
-        lineStart: hit.lineStart,
-        lineEnd: hit.lineEnd,
-        snapshotId: hit.snapshotId,
-      })
-    : undefined
-  const duplicates = await index.findCodeDuplicates?.({ root, limit: 5 })
-  console.log({ hits: result.hits, source: source?.text, duplicates: duplicates?.groups })
+  const source = hit && await index.readSource({
+    root, path: hit.path, lineStart: hit.lineStart, lineEnd: hit.lineEnd, snapshotId: hit.snapshotId,
+  })
+  const duplicates = await index.findCodeDuplicates({ root, limit: 5 })
+  console.log({ hits: result.hits, source: source?.text, duplicates: duplicates.groups })
 } finally {
-  try {
-    await index.close()
-  } finally {
-    await database.close()
-  }
+  try { await index.close() } finally { await database.close() }
 }
 ```
 
-Run it with absolute paths; keep the database outside the repository:
-
-```sh
-ZORYA_SEARCH_ROOT=/absolute/path/to/repository \
-ZORYA_SEARCH_DATA_DIR=/absolute/path/to/private/search-data \
-node search.mjs
-```
-
-The sample is read-only with respect to source files and does not call an embedding provider. Index creation and database use are explicit. The caller can inspect duplicate groups and decide whether any are worth reviewing; Search does not merge or change them. It uses the default index limits; for a large repository, set suitable validated limits for your project as described in the [CLI guide](docs/cli.md) or [SDK reference](docs/sdk.md).
-
-## Which version has which features?
-
-The GitHub archive `v0.1.6` includes code search/source reading/context, duplicate candidates, indexing/status, and optional web and classification capabilities. Current source adds exact symbol/reference queries, bounded static call tracing, `includeLogical`, and opt-in Jev-backed reuse context. `includeLogical` is off by default and independent of `includeRelated`; its coverage and omissions are explicit, and it does not claim complete runtime calls or dynamic dispatch. These additions are source-only and are not in archive `v0.1.6`.
-
-Archive `v0.1.6` does not contain the project-text index. Current source has a separate capability for documentation, rules, and skills in supported text formats including `.md`, `.mdc`, `.txt`, `AGENTS.md`, and `SKILL.md`. See the [project text and web discovery guide](docs/project-text.md) for SDK, CLI, and MCP examples, and the [capability guide](docs/capabilities.md) for version availability.
+The lexical example makes no embedding-provider call. Search returns candidates; verify the source and decide whether any duplicate is relevant. See the [SDK reference](docs/sdk.md) for optional capabilities and ownership details.
 
 ## Guides
 
 - [Getting started (English)](docs/getting-started.en.md) · [Начало работы (русский)](docs/getting-started.md)
-- [Capabilities and version boundaries (Russian)](docs/capabilities.md)
-- [SDK reference (Russian)](docs/sdk.md)
-- [Project text and caller-controlled web discovery (Russian, current source)](docs/project-text.md)
-- [MCP, local service, and remote OAuth (Russian)](docs/mcp.md)
-- [CLI setup and operation (Russian)](docs/cli.md)
-- [Connect agent clients (Russian)](docs/agent-clients.md)
-- [Architecture (Russian)](docs/architecture.md)
-- [Changelog](CHANGELOG.md)
-- [Code retrieval skill (Russian)](skills/code-retrieval/SKILL.md)
-- [Web-source retrieval skill (Russian)](skills/web-source-retrieval/SKILL.md)
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [Capabilities and release boundaries](docs/capabilities.md)
+- [SDK](docs/sdk.md) · [CLI](docs/cli.md) · [MCP](docs/mcp.md)
+- [Project text and web discovery](docs/project-text.md)
+- [Agent client guidance](docs/agent-clients.md)
+- [Architecture](docs/architecture.md) · [Service flows](docs/service-flows.md)
+- [Jev classification and reuse](docs/jev-classification.md) · [Voyage profiles](docs/voyage-profiles.md)
+- [MCP comparison evidence and limits](docs/mcp-comparison.md)
+- [Changelog](CHANGELOG.md) · [Code retrieval skill](skills/code-retrieval/SKILL.md) · [Web retrieval skill](skills/web-source-retrieval/SKILL.md)
 
-## Project status
-
-The historical main snapshot passed its recorded source and package checks. The new Jev/reuse candidate has its own scoped evidence and remaining gates; neither statement claims hosted ChatGPT, user-device/game, paired agent quality, or full-program acceptance. The public GitHub artifact remains `v0.1.6`; npm publication has not happened. Use Search when its repository index, current-source identity, or configured retrieval capabilities help. Ordinary search and file-reading tools may be all a task needs.
+**Status:** package and current-source checks do not establish broad end-answer quality, hosted-client support, a Windows/game/device integration, live-provider behavior, or full-program acceptance. The negative controlled MCP quality comparison is published with its scope and limitations in [the comparison guide](docs/mcp-comparison.md). Ordinary search and file-reading tools may be sufficient for a task.
 
 MIT License. See [LICENSE](LICENSE).

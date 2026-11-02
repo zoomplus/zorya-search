@@ -1,16 +1,21 @@
 # Changelog
 
-This changelog records selected public-facing capability changes. It does not imply that an unreleased source change is present in a published archive.
+## 0.1.7 candidate — 2026-11-02
 
-## Unreleased on current main
+This is a review candidate at source `3be35fdbe69357a4bb0daf6203d9472b5c5a184d`. It has **not** been published to npm or GitHub Releases. The publicly available archive remains `v0.1.6`; do not treat these notes as an install link.
 
-- Added optional SDK/MCP symbol lookup, reference lookup, and bounded static call tracing. Symbol queries support exact `symbolId` and full-range `enclosing` filters; source readers report optional `fileLineCount`.
-- Added opt-in logical context for SDK `getCodeContext` and MCP `get_code_context`. It can include statically proven contracts, callees, callers, and test owners, with explicit block coverage, limits, and omissions. It does not claim complete runtime-call coverage. The existing default response and independent `includeRelated` option remain unchanged.
+- Add a separate opt-in project-text index for documentation, rules, and skills.
+- Add exact symbol and reference queries, bounded static call tracing, and opt-in logical code context.
+- Add opt-in Jev-backed classification and reuse context with shared classifier port and explicit grants.
+- Add caller-selected multi-query Brave discovery; Search does not generate the additional queries.
+- Add typed, snapshot-bound source-read recovery guidance for bounded EOF reads.
+- Keep lexical code search as the default; preserve separate code, project-text, web, and visual model spaces.
+- Update SDK, CLI, MCP, setup, and client skill guidance to describe actual capability and release boundaries.
 
-These are current-source features and are not included in the available GitHub archive `v0.1.6`.
+No claim is made that these changes improve general answer quality. The controlled MCP comparison did not meet its predeclared quality requirements; see [the comparison report](docs/mcp-comparison.md). Archive installation, npm publication, user-device acceptance, and full-program acceptance remain separate checks.
 
-## GitHub archive `v0.1.6`
+## 0.1.6 — public GitHub archive
 
-- Added code duplicate candidates with exact matching and a renamed mode limited to local/parameter symbols recognized by the TypeScript checker. The capability was not present in archive `v0.1.5`; see the [SDK reference](docs/sdk.md) for its limits and result fields.
+The available archive includes lexical and optional embedding-backed code search, source reading, bounded context, duplicate candidates, SDK/CLI/MCP interfaces, and the then-published optional web, classification, and visual capabilities. It does not include the project-text index, exact symbol/reference tools, static call tracing, logical context, multi-query web discovery, or source-read recovery added in the current candidate.
 
-The GitHub archive is the available release artifact. The npm registry package has not been published.
+See the [capability matrix](docs/capabilities.md) for version-specific details and limitations.

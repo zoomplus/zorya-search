@@ -1,6 +1,6 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Source candidate `0a584e6` добавляет opt-in команду `reuse` и настройку Jev; GitHub archive `v0.1.6` этого не содержит, npm package пока не опубликован. Параметры и миграция описаны в [руководстве Jev](jev-classification.md).
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Candidate `v0.1.7` добавляет opt-in команду `reuse` и настройку Jev; GitHub archive `v0.1.6` этого не содержит, candidate не опубликован. Параметры и миграция описаны в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
@@ -14,9 +14,9 @@ npm exec -- zorya-search client-config
 
 `client-config` печатает готовые варианты, включая `installedCodex`; владелец отдельно регистрирует нужный вариант в существующем клиенте. После регистрации отдельно выдаются разрешения, запускается `index`, а доступ к моделям включается только при отдельной настройке профиля и ключа. Установка в workspace не использует глобальную команду и не меняет конфигурацию клиента.
 
-## Индекс документации, правил и навыков — текущие исходники
+## Индекс документации, правил и навыков — candidate `v0.1.7`
 
-Команды `text-status`, `text-index`, `text-search` и `text-read`, а также `setup --text-env NAME`, описаны в [руководстве по тексту проекта](project-text.md#cli-и-mcp). Они ещё не входят в публичный архив `v0.1.6` и не доступны из установленной версии. `--text-env` включает отдельный Voyage preset для project text; без него `projectText: {}` использует локальный lexical поиск. У нового `setup` этот локальный capability включён по умолчанию. Для существующей конфигурации команды требуют явного `projectText`; отсутствие настройки даёт `CAPABILITY_DISABLED` и не переписывает файл.
+Команды `text-status`, `text-index`, `text-search` и `text-read`, а также `setup --text-env NAME`, описаны в [руководстве по тексту проекта](project-text.md#cli-и-mcp). Они не входят в публичный архив `v0.1.6` и не доступны из установленной версии. `--text-env` включает отдельный Voyage preset для project text; без него `projectText: {}` использует локальный lexical поиск. У нового `setup` этот локальный capability включён по умолчанию. Для существующей конфигурации команды требуют явного `projectText`; отсутствие настройки даёт `CAPABILITY_DISABLED` и не переписывает файл.
 
 `setup` создаёт файл конфигурации один раз и завершится `CONFIG_ALREADY_EXISTS`, если путь уже занят. Команды `setup` ниже показывают **альтернативные варианты первоначальной настройки**, а не последовательные обновления одной конфигурации. Выполните только одну подходящую команду для нового профиля. Для существующей конфигурации остановите владельца (`zorya-search service --stop --config PATH`), сохраните копию и отредактируйте текущий файл явно; не создавайте второй профиль через новый путь, если хотели изменить существующий. После правки перезапустите того же владельца и передавайте прежний `--config PATH` последующим командам.
 
@@ -76,7 +76,7 @@ Watch включается только явным `--watch`; `--watch-interval-
 
 Визуальный preset независим и включается только явным `--visual-env NAME`: `voyageai/voyage-multimodal-3.5`, 1024 dimensions, top 5. Он сохраняется в `mechanism.visual.secret` и не влияет на кодовый профиль; TTY-мастер также предлагает visual-only режим. Для кода top-level OpenAI-compatible embedding доступен как явно заданный custom profile: `--custom-embedding-endpoint HTTPS_URL --custom-embedding-profile ID --custom-embedding-model MODEL --custom-embedding-dimensions N --custom-embedding-env NAME`. Он конфликтует с code preset, чтобы не смешивать embedding spaces. Web-профиль настраивается отдельно, как описано выше.
 
-Jev classification и reuse включаются при создании профиля через `--jev-env NAME`; runtime использует только `typesafe/jev-1.14`. Совместимые `--classifier-model MODEL --classifier-env NAME` принимают только этот model ID и несовместимы с `--jev-env`. Search хранит имя environment variable, не значение ключа. Чтобы выполнить reuse для уже разрешённого root, source candidate принимает `reuse --config PATH --root-id ID --query TEXT`; вызов и limits описаны в [руководстве Jev](jev-classification.md). Эта команда отсутствует в archive `v0.1.6`.
+Jev classification и reuse включаются при создании профиля через `--jev-env NAME`; runtime использует только `typesafe/jev-1.14`. Совместимые `--classifier-model MODEL --classifier-env NAME` принимают только этот model ID и несовместимы с `--jev-env`. Search хранит имя environment variable, не значение ключа. Чтобы выполнить reuse для уже разрешённого root, candidate CLI принимает `reuse --config PATH --root-id ID --query TEXT`; вызов и limits описаны в [руководстве Jev](jev-classification.md). Эта команда отсутствует в archive `v0.1.6`.
 
 Пути конфигурации и данных по умолчанию находятся в пользовательских каталогах ОС и вне индексируемого корня. Для явного профиля службы задайте `--config PATH`, `--root PATH` и при необходимости `--data PATH`. Перед записью конфигурация проверяется общей строгой runtime-схемой; CLI не поддерживает отдельную схему credentials. Если конфигурация уже существует, setup завершится явной ошибкой и не заменит её; выберите новый путь либо отредактируйте профиль отдельно. Повторная установка пакета не удаляет индекс.
 
@@ -87,7 +87,7 @@ Jev classification и reuse включаются при создании про�
 - `index [--background]` — начать или переиспользовать runtime job первого настроенного корня. По умолчанию команда ждёт финальный статус; `--background` сразу возвращает admission и `jobId`.
 - `search --query TEXT [--mode lexical|hybrid]` — выполнить поиск через MCP операцию Search.
 - `context --query TEXT` — запросить ограниченный контекст через ту же операцию Search.
-- `reuse --config PATH --root-id ID --query TEXT` — в source candidate вызвать `get_reuse_context`; требуется Jev capability и grant `read` плюс `classify`. Не входит в archive `v0.1.6`.
+- `reuse --config PATH --root-id ID --query TEXT` — в candidate вызвать `get_reuse_context`; требуется Jev capability и grant `read` плюс `classify`. Не входит в archive `v0.1.6`.
 - `root-add --root-id ID --root PATH [--watch] [--watch-interval-ms N]` — добавить корень. Watch вступает в силу при следующем запуске службы; конфигурация не перезаписывается при активном владельце.
 - `serve` — запустить локальную службу на loopback в foreground. При ручном запуске CLI сам создаёт приватные owner и control секреты; внутренние параметры секретных файлов используются только launcher-ом. На Node 24 для этого ограниченного workaround можно запустить entry как `node --wasm-wrapper-tiering-budget=1000000000 <entry> serve --config <path>`; обычная команда `zorya-search serve` сохраняет стандартные настройки Node. Команды, автоматически создающие владельца службы, применяют флаг к собственному Node 24 daemon.
 - `mcp` — предоставить MCP stdio и подключиться к общей локальной службе. Данные протокола идут только в stdout; диагностика — в stderr.

@@ -1,12 +1,14 @@
 # Правила работы с репозиторием Zorya Search
 
-## Текущая точка входа — повышение качества поиска (2026-11-01)
+## Текущая точка входа — candidate `v0.1.7` (2026-11-02)
 
-Принятый дополнительный scope и восемь dependency-ordered волн описаны в [плане качества Search](https://github.com/zoomplus/zorya-search/blob/main/docs/search-quality-plan-2026-11-01.md). Это продолжение полной цели, не её замена: исходные package, SDK/CLI/MCP, cloud setup, публикация, Assistant и user-device acceptance остаются открытыми там, где нет собственных квитанций; `fullPlanAcceptance=false`. Публикация плана не означает, что его технические волны исполнены или приняты.
+Кандидат release metadata/documentation на source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) включает отдельный project-text index, exact symbol/reference/static call tools, opt-in logical context, Jev-backed reuse, caller-selected multi-query Brave discovery и typed source-read recovery. Это candidate, не опубликованный package: публичный GitHub archive остаётся `v0.1.6`, npm package и tag `v0.1.7` отсутствуют. Отрицательное контролируемое сравнение и его границы описаны в [сравнении MCP](docs/mcp-comparison.md); новые source checks не являются новым end-answer rerun. Полная цель и все consumer/device gates остаются отдельными; не делайте вывод о full-plan acceptance по этой фазе.
+
+Принятый дополнительный scope и восемь dependency-ordered волн описаны в [плане качества Search](https://github.com/zoomplus/zorya-search/blob/main/docs/search-quality-plan-2026-11-01.md). Это продолжение полной цели, не её замена. Публикация плана не означает, что все технические и потребительские волны исполнены или приняты.
 
 Zorya Search — отдельный пакет `@zorya/search` для поиска по коду и источникам. Следуй намерению пользователя и правилам его агента; эти локальные инструкции описывают только границы самого Search и не заменяют инструкции клиента.
 
-Source candidate `0a584e6` добавляет Jev-backed reuse context, связанный с общим classification port. Контракт и ограничения описаны в [руководстве Jev](docs/jev-classification.md); функция отсутствует в GitHub archive `v0.1.6`, npm-пакет ещё не опубликован.
+Исторически Jev-backed reuse впервые добавлен source candidate `0a584e6`; текущий release candidate закреплён на `3be35fd`. Контракт и ограничения описаны в [руководстве Jev](docs/jev-classification.md); эта функция отсутствует в GitHub archive `v0.1.6`.
 
 ## Границы продукта
 
@@ -29,7 +31,7 @@ Source candidate `0a584e6` добавляет Jev-backed reuse context, связ
 - Дополнительные экспорты и тяжёлые локальные зависимости должны оставаться в соответствующих optional subpaths; лёгкий корневой импорт не должен случайно загружать индекс кода или необязательные базы.
 - Не считай документацию или тесты с заглушками доказательством реального обращения к провайдеру, MCP-клиенту, Windows или установленному приложению.
 - Используй [README](README.md) для первого запуска, [архитектурный обзор](docs/architecture.md), [SDK](docs/sdk.md), [MCP](docs/mcp.md) и [инструкции клиентским агентам](docs/agent-clients.md) для деталей. Версионные команды CLI и профили моделей должны соответствовать принятым интерфейсам, а не незавершённым веткам.
-- [Руководство по тексту проекта и web discovery](docs/project-text.md) описывает текущие исходники и не означает, что эти функции входят в публичный архив `v0.1.6`.
+- [Руководство по тексту проекта и web discovery](docs/project-text.md) описывает candidate `v0.1.7`, который не входит в публичный архив `v0.1.6`.
 - Для Mechanism сверены независимые optional профили `voyageai/voyage-code-4` 1024d, `voyageai/rerank-2.5-lite` и visual `voyageai/voyage-multimodal-3.5` 1024d. Это клиентская конфигурация, не встроенные defaults. Visual поиск вызывается отдельно и только для предоставленных клиентом references.
 
 ## Текущий статус и границы приёмки — 2026-11-01

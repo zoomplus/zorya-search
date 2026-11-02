@@ -1,6 +1,6 @@
 # Профили Voyage для Zorya Search
 
-Project-text preset — отдельная конфигурация для документации, правил и навыков, не профиль Mechanism code или visual. Текущие исходники включают его через `--text-env NAME`; пример и ограничения — в [руководстве по тексту проекта](project-text.md). Он не доступен в публичном архиве `v0.1.6`.
+Project-text preset — отдельная конфигурация candidate `v0.1.7` для документации, правил и навыков, не профиль code или visual. CLI включает text embedding через `--text-env NAME`; локальный lexical project-text доступен и без него. Пример и ограничения — в [руководстве по тексту проекта](project-text.md). Этот capability отсутствует в публичном архиве `v0.1.6`.
 
 `@zorya/search/providers` экспортирует замороженный `MECHANISM_RETRIEVAL_PRESETS`. Он описывает два независимых пространства векторов, сверенных с конфигурацией retrieval в Mechanism:
 

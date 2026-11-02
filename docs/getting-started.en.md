@@ -1,28 +1,25 @@
 # Getting started with Zorya Search
 
-This guide installs the available GitHub archive `v0.1.6`. Jev classification and reuse context exist only in source candidate `0a584e6`, not in that archive. The npm registry package has not been published. For a source checkout, read the [Jev and reuse guide](jev-classification.md); the archive commands below do not install the candidate API.
+The public archive is still `v0.1.6`. Candidate `v0.1.7` is at source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) and has not been published. The install command below installs `v0.1.6`, which does not include candidate project-text, symbol/reference, multi-query web, or typed source-read recovery features. There is no public npm install or future release URL for `v0.1.7` yet.
 
-## 1. Install the release archive
+## 1. Install the available archive
 
-Use Node.js `>=20.19.0`. Install the pinned archive in the project that will own Search:
+Use Node.js `>=20.19.0`. Install the package in the project that will own Search:
 
 ```sh
 npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
 ```
 
-## 2. Create one configuration
+## 2. Create a runtime config for archive `v0.1.6`
 
-Choose **one** first-setup option. Both create a configuration in the default user directory and leave client registration to you.
-
-### Local lexical search only
+For local lexical search and MCP:
 
 ```sh
 npm exec -- zorya-search setup --root .
+npm exec -- zorya-search client-config
 ```
 
-### Code profile and web discovery
-
-If you want embeddings/reranking for code and Brave link discovery, set both profiles when creating that same configuration:
+`setup` creates a config once; `client-config` only prints examples and does not register a client. The `v0.1.6` archive supports optional code retrieval and Brave discovery, for example:
 
 ```sh
 npm exec -- zorya-search setup --root . \
@@ -30,48 +27,40 @@ npm exec -- zorya-search setup --root . \
   --web-env BRAVE_SEARCH_API_KEY
 ```
 
-These are alternatives; do not run both. The options contain environment-variable names only. The values must be available to the service owner process and stay out of command arguments, client JSON, and the repository. When enabled, the code profile may send source chunks and queries to the configured provider. Without it, code search remains local and lexical. Web discovery and web text embeddings are separate settings.
+This command and the short setup command above are **alternative initial config choices**; choose one and do not run them in sequence for the same config. `--code-env` names the OpenRouter environment variable; `--web-env` names the Brave Search API variable. Use credentials already configured for those providers. Do not put key values in argv or client JSON. Archive `v0.1.6` does not support `--text-env`, `--jev-env`, or project-text.
 
-For a non-default config location, pass the same `--config` path to setup and every later CLI command:
+These flags are for initial config creation. `setup` refuses to overwrite an existing file. Preserve its `dataDir`, roots, and other settings when editing an existing runtime JSON; stop the service first and edit the current file explicitly. Pass the same `--config PATH` to setup/client-config/index/service. Keep the config and data directory outside the indexed root.
 
-```sh
-npm exec -- zorya-search setup --config /absolute/path/runtime.json --root /absolute/path/repository
-npm exec -- zorya-search client-config --config /absolute/path/runtime.json
-npm exec -- zorya-search index --config /absolute/path/runtime.json
-```
+## 3. Connect the client and index the root
 
-Replace the example paths with your own absolute paths. Keep the config and data directory outside the indexed repository. More profile and limit options are in the [CLI guide](cli.md).
-
-### If you already have a configuration
-
-`setup` refuses to overwrite an existing config. Do not run it again with the same path. If the service is running, stop it first with `npm exec -- zorya-search service --stop --config /absolute/path/runtime.json` (omit `--config` for the default path). Back up and edit the existing runtime JSON according to the [CLI schema and profile guidance](cli.md), preserving its `dataDir`, roots, and other settings. Then restart that same service using its usual launch method. Keep using the same `--config` path for `client-config`, `index`, and `service`. Choosing another setup path creates a separate profile; it does not update the existing service.
-
-## 3. Connect your client and index
-
-After creating the config, print connection examples:
-
-```sh
-npm exec -- zorya-search client-config
-```
-
-The command only prints options such as stdio; it does not register MCP in Codex or an editor, or connect Search to a chat. Add the selected config to your existing client and grant only the access it needs. Then start the initial index explicitly:
+The owner separately registers a suitable `client-config` example with an existing client and grants the required access. Then start initial indexing explicitly:
 
 ```sh
 npm exec -- zorya-search index
 ```
 
-For a non-default config, pass the same `--config /absolute/path/runtime.json` to `client-config` and `index`. Indexing updates the local database and does not edit source files. Use `root-add` for additional approved repositories. Do not run a second service owner against the same database directory.
+Indexing does not edit source files. Watch runs only when the owner enables it in config. Do not run a second service owner against the same database directory.
 
-For a text lookup, start with `search_code` and `read_source`; `get_code_context` gathers bounded sections. For example, search for an initiative trigger and verify the current source and tests yourself. Duplicate candidate discovery is a separate optional query. Current-main symbol/reference tools and `includeLogical` are not in archive `v0.1.6`; no tool defines a mandatory workflow.
+For code, start with `search_code` and verify the returned range with `read_source`; bounded `get_code_context` and duplicate candidates are separate requests. Candidate `v0.1.7` adds a separate project-text index, exact symbol/reference/static-call tools, `includeLogical`, reuse, and caller-selected `additionalQueries`. Use only APIs present in the installed version. See the [capability matrix](capabilities.md), [SDK](sdk.md), [CLI](cli.md), and [MCP](mcp.md) guides.
 
-For a Node.js application, use the SDK instead of MCP. The [README SDK example](../README.md#sdk-example) runs against the public `v0.1.6` archive, indexes a local repository, verifies the current snapshot before reading source, and prints duplicate candidates.
+## Review the candidate locally
 
-## Web and other optional profiles
+To review `v0.1.7`, first install the specific locally prepared candidate tarball or source checkout provided separately by its owner. There is no public install command yet; do not invent a future release URL. After installation, check the package version, exports, and actual SDK/MCP schema.
 
-Archive `v0.1.6` can search links through Brave, read a known URL when the web reader and client permission are enabled, classify supplied text, and search caller-provided visual references when the owner enables that profile. These are independent capabilities, not required steps for code search. Search does not capture the desktop or fetch images by URL. See the [CLI guide](cli.md) for setup and the [MCP guide](mcp.md) for permissions.
+With candidate `v0.1.7` installed, use this command **instead of** the `v0.1.6` initial setup above:
 
-Remote MCP requires infrastructure you operate: the daemon stays on loopback, your HTTPS reverse proxy publishes the endpoint, and an external OIDC/OAuth provider authenticates users. This is not a hosted service. Local checks do not establish hosted ChatGPT support or qualify an arbitrary production identity provider. See the [remote MCP guide](mcp.md).
+```sh
+npm exec -- zorya-search setup --root . \
+  --code-env OPENROUTER_API_KEY \
+  --text-env OPENROUTER_API_KEY \
+  --jev-env OPENROUTER_API_KEY \
+  --web-env BRAVE_SEARCH_API_KEY
+```
 
-## Indexed files and current-source features
+Here `--code-env`, `--text-env`, and `--jev-env` refer to an existing OpenRouter environment variable; they do not take direct Voyage or TypeSafe keys. `--web-env` separately refers to the Brave Search API variable. The options store variable names, not values. The TTY wizard does not offer a Jev setup question; pass `--jev-env` explicitly to enable Jev. Candidate setup creates `projectText: {}` and enables lexical project-text search even without `--text-env`; this default does not apply to installed `v0.1.6`. Choose exactly one initial `setup` command; do not run them sequentially on the same config. `setup` refuses to overwrite an existing file; edit an existing runtime config separately while preserving its roots and `dataDir`.
 
-Archive `v0.1.6` does not include a separate documentation, rules, and skills index. Current source adds a project-text capability for supported text formats including `.md`, `.mdc`, `.txt`, `AGENTS.md`, and `SKILL.md`, separate from the code index. Caller-selected multi-query web discovery is also source-only. See the [project text guide](project-text.md) and [capability matrix](capabilities.md).
+## Web and limits
+
+Brave discovery requires `--web-env`; reading a known public URL uses the separate web reader and `web` grant, not the Brave key. `additionalQueries` is supplied by the caller; Search does not generate it. Code, project-text, web, classifier, and visual profiles are independent.
+
+Doctor reports `providerProbed: false` and `providerProbe: 'not-run'`: it checks configuration/local owner status, not provider health. Remote MCP requires infrastructure you operate, an HTTPS proxy, and an OAuth issuer; Search is not a hosted service. See [MCP](mcp.md), [project text and web discovery](project-text.md), [Jev](jev-classification.md), and [Voyage profiles](voyage-profiles.md) for details.
