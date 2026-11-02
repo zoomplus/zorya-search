@@ -8,7 +8,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
-const consumer = mkdtempSync(join(tmpdir(), 'zorya-search-installed-storage-'))
+const consumer = realpathSync(mkdtempSync(join(tmpdir(), 'zorya-search-installed-storage-')))
 const buildOutput = join(repository, 'dist')
 const requiredStoragePackages = {
   '@electric-sql/pglite': '0.5.14',
@@ -19,6 +19,9 @@ let ownerMayBeRunning = false
 let localOwnerMayBeRunning = false
 let buildOutputOwned = false
 let preserveConsumer = false
+let primaryFailure
+const originalTmpdir = process.env.TMPDIR
+let shortControlTemp
 
 function findNpmCli() {
   const candidates = [process.env.npm_execpath]
@@ -211,6 +214,12 @@ try {
   runCli(entry, ['setup', '--root', root, '--data', data, '--config', config])
 
   const exerciseInstalledStorage = () => {
+    if (process.platform === 'darwin') {
+      if (!shortControlTemp) shortControlTemp = mkdtempSync(join(realpathSync('/tmp'), 'zsm-'))
+      process.env.TMPDIR = shortControlTemp
+      const socketPathBytes = Buffer.byteLength(join(realpathSync(shortControlTemp), `zorya-search-${'0'.repeat(32)}.sock`))
+      assert.ok(socketPathBytes < 80, 'macOS fixture control socket path must remain comfortably short')
+    }
     ownerMayBeRunning = true
     runCli(entry, ['index', '--config', config])
     const output = runCli(entry, [
@@ -305,6 +314,9 @@ try {
   }
   runCli(localEntry, ['stop', '--config', localConfig], localRoot)
   localOwnerMayBeRunning = false
+} catch (error) {
+  primaryFailure = error
+  throw error
 } finally {
   if (localOwnerMayBeRunning) {
     const localEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'local', 'entry.js')
@@ -314,7 +326,7 @@ try {
     } catch (error) {
       preserveConsumer = true
       console.error(`Smoke local owner shutdown was not confirmed; retaining ${consumer}`)
-      throw new Error(`SMOKE_LOCAL_OWNER_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
+      if (!primaryFailure) throw new Error(`SMOKE_LOCAL_OWNER_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
     }
   }
   if (ownerMayBeRunning) {
@@ -322,13 +334,17 @@ try {
     try {
       stopOwnedService(installedEntry, join(consumer, 'runtime.json'))
     } catch (error) {
+      preserveConsumer = true
       console.error(`Smoke service shutdown was not confirmed; retaining ${consumer}`)
       if (buildOutputOwned)
         rmSync(buildOutput, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-      throw new Error(`SMOKE_SERVICE_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
+      if (!primaryFailure) throw new Error(`SMOKE_SERVICE_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
     }
   }
   if (!preserveConsumer) rmSync(consumer, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  if (shortControlTemp && !preserveConsumer) rmSync(shortControlTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  if (originalTmpdir === undefined) delete process.env.TMPDIR
+  else process.env.TMPDIR = originalTmpdir
   if (buildOutputOwned)
     rmSync(buildOutput, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }
