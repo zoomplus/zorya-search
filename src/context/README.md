@@ -2,7 +2,7 @@
 
 Context валидирует явный запрос и объединяет доступные материалы в ограниченный ответ. Источники, excerpts и classification — недоверенные evidence; вызывающий агент проверяет их и принимает решение.
 
-## Code context — candidate `v0.1.7`
+## Code context — preview `v0.1.7`
 
 ```mermaid
 flowchart TD
@@ -16,7 +16,7 @@ flowchart TD
  cg -->|"нет"| ci["Отказ по stale/currentness"]
 ```
 
-## Web context — candidate `v0.1.7`
+## Web context — preview `v0.1.7`
 
 Caller задаёт запросы; web-поиск не придумывает дополнительные темы.
 
@@ -63,7 +63,7 @@ flowchart TD
  xb --> xi["Общий ledger usage().classification"]
 ```
 
-## Переиспользование кода — candidate `v0.1.7` (исторические шаги `0a584e6`, `a85eb8c506c8`)
+## Переиспользование кода — preview `v0.1.7` (исторические шаги `0a584e6`, `a85eb8c506c8`)
 
 ```mermaid
 flowchart TD
@@ -115,4 +115,4 @@ Web — публичный HTTP acquisition, не browser automation. Logical sy
 
 Кодовая опора reuse: [`reuse.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse.ts), [`reuse-symbol-selection.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-symbol-selection.ts), [`reuse-types.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-types.ts), [`reuse-selection.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/reuse-selection.ts), [`reuse-presentation.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/mcp/reuse-presentation.ts), [`symbol-queries.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/code/symbol-queries.ts) и [`code-context.ts`](https://github.com/zoomplus/zorya-search/blob/3be35fdbe69357a4bb0daf6203d9472b5c5a184d/src/context/code-context.ts).
 
-Jev не расширяет `additionalQueries`, не выбирает embedding/rerank модель и не меняет workflow агента. Проверенные полные или частичные диапазоны, source identity, evidence и omissions передаются клиенту; он решает, что проверить или изменить. GitHub archive `v0.1.6` не содержит эту capability; она входит в candidate `v0.1.7`.
+Jev не расширяет `additionalQueries`, не выбирает embedding/rerank модель и не меняет workflow агента. Проверенные полные или частичные диапазоны, source identity, evidence и omissions передаются клиенту; он решает, что проверить или изменить. GitHub archive `v0.1.6` не содержит эту capability; она входит в preview `v0.1.7`.

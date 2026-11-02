@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.7 candidate — 2026-11-02
+## 0.1.7 preview — 2026-11-02
 
-This is a review candidate at source `3be35fdbe69357a4bb0daf6203d9472b5c5a184d`. It has **not** been published to npm or GitHub Releases. The publicly available archive remains `v0.1.6`; do not treat these notes as an install link.
+Runtime behavior in this preview is based on source `3be35fdbe69357a4bb0daf6203d9472b5c5a184d`. The prepared `v0.1.7` package metadata/documentation snapshot is `ee82077827bc0e099ae63fd2e44c5c512c9f2ba7`; compiled runtime files are unchanged. Check the [v0.1.7 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) for actual asset availability; use a listed asset and verify its installed version before relying on these capabilities. The [historical v0.1.6 release](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) provides a separate archive with the earlier capability set.
 
 - Add a separate opt-in project-text index for documentation, rules, and skills.
 - Add exact symbol and reference queries, bounded static call tracing, and opt-in logical code context.
@@ -12,10 +12,10 @@ This is a review candidate at source `3be35fdbe69357a4bb0daf6203d9472b5c5a184d`.
 - Keep lexical code search as the default; preserve separate code, project-text, web, and visual model spaces.
 - Update SDK, CLI, MCP, setup, and client skill guidance to describe actual capability and release boundaries.
 
-No claim is made that these changes improve general answer quality. The controlled MCP comparison did not meet its predeclared quality requirements; see [the comparison report](docs/mcp-comparison.md). Archive installation, npm publication, user-device acceptance, and full-program acceptance remain separate checks.
+No claim is made that these changes improve general answer quality. The controlled MCP comparison did not meet its predeclared quality requirements; see [the comparison report](docs/mcp-comparison.md). Actual asset availability, npm registry availability, user-device acceptance, and full-program acceptance are separate checks.
 
 ## 0.1.6 — public GitHub archive
 
-The available archive includes lexical and optional embedding-backed code search, source reading, bounded context, duplicate candidates, SDK/CLI/MCP interfaces, and the then-published optional web, classification, and visual capabilities. It does not include the project-text index, exact symbol/reference tools, static call tracing, logical context, multi-query web discovery, or source-read recovery added in the current candidate.
+The historical archive includes lexical and optional embedding-backed code search, source reading, bounded context, duplicate candidates, SDK/CLI/MCP interfaces, and the then-published optional web, classification, and visual capabilities. It does not include the project-text index, exact symbol/reference tools, static call tracing, logical context, multi-query web discovery, or source-read recovery in the current preview.
 
 See the [capability matrix](docs/capabilities.md) for version-specific details and limitations.

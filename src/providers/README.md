@@ -1,6 +1,6 @@
 # Providers: модели, web и решения Jev
 
-Provider получает явные данные и конфигурацию от вызывающего слоя. Он возвращает ограниченный типизированный ответ или ошибку; provider не выбирает, что клиент должен искать или менять. В candidate `v0.1.7` (source `3be35fd`) runtime создаёт один pinned Jev Decisions port, который разделяют classification и reuse. Embedding и rerank остаются отдельными retrieval-портами.
+Provider получает явные данные и конфигурацию от вызывающего слоя. Он возвращает ограниченный типизированный ответ или ошибку; provider не выбирает, что клиент должен искать или менять. В preview `v0.1.7` (source `3be35fd`) runtime создаёт один pinned Jev Decisions port, который разделяют classification и reuse. Embedding и rerank остаются отдельными retrieval-портами.
 
 ## Provider-потоки source candidate
 

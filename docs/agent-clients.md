@@ -2,7 +2,7 @@
 
 Search вызывается существующим клиентом и не меняет его prompt, модель, память, инструкции, настройки или workflow. Установка и `client-config` не регистрируют MCP автоматически. Следуй указаниям пользователя и правилам того репозитория, где выполняется задача.
 
-Публичный архив — `v0.1.6`; этот репозиторий описывает candidate `v0.1.7` source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d), который пока не опубликован. Сверяй фактическую SDK/MCP schema и grants подключённой версии.
+Этот репозиторий описывает preview `v0.1.7` source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d); исторический archive `v0.1.6` имеет более узкую поверхность. Проверь [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset, а затем сверяй SDK/MCP schema и grants установленной версии.
 
 ## Подключение MCP
 

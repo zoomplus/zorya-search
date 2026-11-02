@@ -2,7 +2,7 @@
 
 Runtime валидирует config/request, выбирает включённые capabilities и владеет root, jobs, watchers и активными operations. SDK/CLI/MCP вызывают runtime; библиотека не управляет агентами клиента.
 
-В candidate `v0.1.7` (source `3be35fd`) runtime при включённом Jev создаёт один Decisions port для classification и reuse. Этот candidate не входит в GitHub archive `v0.1.6`; npm package ещё не опубликован. Подробности — в [руководстве Jev](../../docs/jev-classification.md).
+В preview `v0.1.7` (source `3be35fd`) runtime при включённом Jev создаёт один Decisions port для classification и reuse. Эта возможность отсутствует в историческом GitHub archive `v0.1.6`; проверяй фактическую доступность asset на [странице релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7). Подробности — в [руководстве Jev](../../docs/jev-classification.md).
 
 ```mermaid
 flowchart TD

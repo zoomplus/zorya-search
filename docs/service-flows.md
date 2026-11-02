@@ -8,7 +8,7 @@
 | Storage | [Владение и repository](../src/storage/README.md) | Owned embedded DB и заимствованные adapters. |
 | Code | [Индекс, retrieval и freshness](../src/code/README.md) | Snapshot chunks, BM25/dense, RRF, rerank, source verification. |
 | Project Text | [Docs, rules, skills](../src/project-text/README.md) | Отдельный namespace и explicit capability/profile. |
-| Providers | [Models, Brave и Jev Decisions](../src/providers/README.md) | В candidate `v0.1.7` (source `3be35fd`) classification закреплён на Jev Decisions; runtime разделяет этот port с reuse context. |
+| Providers | [Models, Brave и Jev Decisions](../src/providers/README.md) | В preview `v0.1.7` (source `3be35fd`) classification закреплён на Jev Decisions; runtime разделяет этот port с reuse context. |
 | Context | [Code/web/reuse context](../src/context/README.md) | Чтение snapshot, запросы клиента, Jev-оценка файлов и symbols, совместные чтения и явное partial coverage. |
 | Runtime | [Config, roots, lifecycle](../src/runtime/README.md) | Strict schema, capabilities, jobs и graceful drain. |
 | MCP | [Tools и grants](../src/mcp/README.md) | Existing client → grant → schema → runtime. |
@@ -34,7 +34,7 @@
 
 | Обозначение | Смысл |
 | --- | --- |
-| `CANDIDATE v0.1.7` | Source candidate на `3be35fd`: Jev Decisions, classification, reuse, project-text и связанные возможности. Публичный archive остаётся `v0.1.6`; npm/release публикации candidate пока нет. Это не полная приёмка. |
+| `PREVIEW v0.1.7` | Source preview на `3be35fd`: Jev Decisions, classification, reuse, project-text и связанные возможности. Исторический archive `v0.1.6` содержит более раннюю поверхность. Проверь [страницу релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset. Это не полная приёмка. |
 | `planned` / пунктир | Предлагаемая будущая связь без доступного интегрированного API. |
 
 - Сплошные стрелки внутри рамки описывают статус этой рамки, включая отказные и error paths; пунктирные стрелки зарезервированы для явно обозначенных planned-схем.
@@ -42,7 +42,7 @@
 - В code/core provider HTTP failure остаётся ошибкой; web-context может вернуть lexical passages как partial result, сохранив embedding/rerank stage error. Отсутствие/несовместимость профиля — отдельная ветка.
 - Excerpts, scores и classification — недоверенные evidence. Вызывающий агент проверяет источник и сам принимает решение; автоматического изменения кода нет.
 - Web — публичный HTTP acquisition, не browser automation; дополнительные запросы выбирает вызывающая сторона.
-- Candidate `v0.1.7` подключает Jev к runtime classification и opt-in reuse context. Code index embeddings и reranking остаются отдельным необязательным путём; Jev не выбирает embedding/rerank профиль и не создаёт запросы клиента. Смотрите [руководство Jev](jev-classification.md), [Providers](../src/providers/README.md), [Context](../src/context/README.md) и [Code](../src/code/README.md).
-- Project-text, symbol tools, multi-query web и source-read recovery описаны для candidate `v0.1.7`; доступный GitHub archive `v0.1.6` их не содержит.
+- Preview `v0.1.7` подключает Jev к runtime classification и opt-in reuse context. Code index embeddings и reranking остаются отдельным необязательным путём; Jev не выбирает embedding/rerank профиль и не создаёт запросы клиента. Смотрите [руководство Jev](jev-classification.md), [Providers](../src/providers/README.md), [Context](../src/context/README.md) и [Code](../src/code/README.md).
+- Project-text, symbol tools, multi-query web и source-read recovery описаны для preview `v0.1.7`; доступный GitHub archive `v0.1.6` их не содержит.
 
 При изменении поведения, контракта, ownership или error branch обновляйте соответствующую диаграмму и таблицу решений. Не копируйте сюда устаревающие status tables: эта страница только маршрутизирует к модульным картам.

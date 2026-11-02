@@ -1,12 +1,12 @@
 # Возможности и границы версий
 
-Этот документ различает публичный архив `v0.1.6` и исходный кандидат `v0.1.7` на commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Публичного архива или npm-пакета `0.1.7` пока нет. Для candidate возможностей нужен именно соответствующий source build; проверь фактическую схему установленного клиента.
+Эта матрица сравнивает preview `v0.1.7` на commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) с историческим архивом `v0.1.6`. Фактическую доступность preview asset проверяй на [странице релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7); устанавливай перечисленный asset и сверяй версию установленного клиента.
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Доступный архив `v0.1.6` | Candidate `v0.1.7` |
+| Capability | Исторический архив `v0.1.6` | Preview `v0.1.7` |
 | --- | --- | --- |
 | Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да |
 | Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата |
@@ -19,7 +19,7 @@ Search предоставляет инструменты существующе�
 | Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса |
 | SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца |
 
-Кандидат доступен для локальной проверки из закреплённого source/tarball. Будущие release URL и registry install не опубликованы. См. [README](../README.md#release-availability) и [changelog](../CHANGELOG.md).
+Для preview setup используй [release availability instructions](../README.md#release-availability): GitHub — основной канал, а npm `next` допустим только после того, как registry действительно покажет соответствующий version/tag. Установи только перечисленный asset и проверь версию. См. также [changelog](../CHANGELOG.md).
 
 ## Поиск по коду и структурные данные
 
@@ -27,7 +27,7 @@ Search предоставляет инструменты существующе�
 
 Duplicate groups — эвристические кандидаты на точные или переименованные тела. Они есть в архиве `v0.1.6`; наличие кандидата не доказывает поведенческую эквивалентность.
 
-`includeLogical` включается только caller-ом, независимо от `includeRelated`. Caps, omissions и continuation остаются в ответе. Для candidate API и ограничения recovery см. [SDK](sdk.md), [MCP](mcp.md) и [гид по Jev/reuse](jev-classification.md).
+`includeLogical` включается только caller-ом, независимо от `includeRelated`. Caps, omissions и continuation остаются в ответе. Для preview API и ограничения recovery см. [SDK](sdk.md), [MCP](mcp.md) и [гид по Jev/reuse](jev-classification.md).
 
 ## Отдельный project-text индекс
 
@@ -47,4 +47,4 @@ Lexical mode не вызывает embedding/rerank. Hybrid может пере�
 
 ## Установка и доказательства
 
-Устанавливаемый GitHub archive: `v0.1.6`. npm registry package и tag/release `v0.1.7` пока отсутствуют. Source checks, CI, fixtures, SDK/MCP tests, provider credentials, установленный клиент, Windows package и реальные устройства — разные уровни доказательств. Отрицательное сравнение MCP и его исходные ограничения зафиксированы в [mcp-comparison.md](mcp-comparison.md). Ни одно из этих локальных source-доказательств не устанавливает end-answer superiority или full-plan acceptance.
+Source checks, CI, fixtures, SDK/MCP tests, provider credentials, установленный клиент, Windows package и реальные устройства — разные уровни доказательств. Отрицательное сравнение MCP и его исходные ограничения зафиксированы в [mcp-comparison.md](mcp-comparison.md). Ни одно из этих локальных source-доказательств не устанавливает end-answer superiority или full-plan acceptance.

@@ -14,7 +14,7 @@
 | `@zorya/search/context` | `createCodeContext` и его DTO |
 | `@zorya/search/context/web` | `createWebSearch` и DTO web-контекста |
 | `@zorya/search/context/classify` | `createClassificationTool` и его limits/profile |
-| `@zorya/search/providers` | OpenRouter/OpenAI-compatible retrieval adapters, Brave web source и classifier (Jev в candidate `v0.1.7`) |
+| `@zorya/search/providers` | OpenRouter/OpenAI-compatible retrieval adapters, Brave web source и classifier (Jev в preview `v0.1.7`) |
 | `@zorya/search/visual` | opt-in `createVisualSearch` и visual DTO |
 | `@zorya/search/runtime` | runtime factory и конфигурация разрешённых roots |
 | `@zorya/search/mcp` | MCP server, tool contracts и stdio proxy |
@@ -24,11 +24,11 @@
 
 Для большинства библиотечных потребителей начни с `@zorya/search` и нужных subpaths. Для локального MCP сценария используй daemon, который единолично владеет каталогом embedded database, и `@zorya/search/mcp` как transport adapter. Не запускай второй владелец того же data directory. Настройка конкретного клиента и CLI описана отдельно в [руководстве MCP](mcp.md) и [руководстве CLI](cli.md).
 
-### Jev и контекст повторного использования — candidate `v0.1.7`
+### Jev и контекст повторного использования — preview `v0.1.7`
 
-В candidate `v0.1.7` (source `3be35fd`) `@zorya/search/providers` экспортирует `createJevDecisions` и `createJevClassifier`, а `@zorya/search/context` — `createReuseContext`. Runtime разделяет один Decisions port между classification и reuse. `getReuseContext({ root, query, maxChars?, limit?, signal? })` возвращает bounded source context, Jev-оценку релевантности файлов/символов и явные coverage/omissions; вызывающая сторона проверяет evidence. Значения по умолчанию, hard limits, лимит calls и migration со старого классификатора собраны в [руководстве Jev](jev-classification.md).
+В preview `v0.1.7` (source `3be35fd`) `@zorya/search/providers` экспортирует `createJevDecisions` и `createJevClassifier`, а `@zorya/search/context` — `createReuseContext`. Runtime разделяет один Decisions port между classification и reuse. `getReuseContext({ root, query, maxChars?, limit?, signal? })` возвращает bounded source context, Jev-оценку релевантности файлов/символов и явные coverage/omissions; вызывающая сторона проверяет evidence. Значения по умолчанию, hard limits, лимит calls и migration со старого классификатора собраны в [руководстве Jev](jev-classification.md).
 
-Эти функции доступны в candidate `v0.1.7`, но отсутствуют в GitHub archive `v0.1.6`; npm package candidate пока не опубликован. Пример импорта из незапакетованного candidate нельзя выполнять через `npx` или считать доступным для версии из архива.
+Эти функции входят в preview `v0.1.7`, но отсутствуют в историческом GitHub archive `v0.1.6`. Перед использованием установи соответствующий version-specific asset только если он указан на [странице релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7), затем проверь версию пакета и его exports. `npx` не является способом получить отсутствующий version-specific build.
 
 ## Индекс кода и контекст
 
@@ -36,7 +36,7 @@
 
 ### Source candidate: статические символы и связи
 
-Описанные ниже методы и `includeLogical` входят в candidate `v0.1.7` на source `3be35fd`; GitHub archive `v0.1.6` этих изменений не содержит, а candidate не опубликован. Проверяйте capability по типам установленной версии: методы symbol metadata в `CodeIndex` необязательны, поэтому старые пользовательские adapters остаются совместимыми.
+Описанные ниже методы и `includeLogical` входят в preview `v0.1.7` на source `3be35fd`; исторический GitHub archive `v0.1.6` этих изменений не содержит. Проверяйте capability по типам установленной версии: методы symbol metadata в `CodeIndex` необязательны, поэтому старые пользовательские adapters остаются совместимыми.
 
 `indexRepository` штатного индекса уже публикует символы и статические связи вместе с текущим индексом. Отдельный `indexCodeSymbols({ root, signal? })` нужен для явного заполнения или обновления metadata у уже существующего актуального snapshot. Он требует текущий базовый индекс и те же root, конфигурацию исключений и лимиты; не заменяет embedding-профиль, chunks, векторы или существующие поисковые данные и не вызывает embedding/rerank-модели. Чтение metadata ничего не индексирует автоматически.
 
@@ -166,7 +166,7 @@ try {
 ### Методы `CodeIndex`
 
 - `indexRepository({ root, signal? })` индексирует разрешённое дерево и возвращает `CodeIndexStatus`. Идентичность результата включает `repoId`, `worktreeId`, `snapshotId` и `contentHash`.
-- В candidate `v0.1.7` методы `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences` и `traceCodeCalls` являются необязательными портами; подробности, profile/cursor provenance и лимиты приведены в разделе выше. Типы `CodeSymbol`, `CodeSymbolReference`, `CodeSymbolAnalysisStatus` и result DTO экспортируются из `@zorya/search/code` этого candidate.
+- В preview `v0.1.7` методы `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences` и `traceCodeCalls` являются необязательными портами; подробности, profile/cursor provenance и лимиты приведены в разделе выше. Типы `CodeSymbol`, `CodeSymbolReference`, `CodeSymbolAnalysisStatus` и result DTO экспортируются из `@zorya/search/code` этого candidate.
 - `indexStatus(root, signal?)` возвращает текущий статус или пустую identity, если usable snapshot отсутствует. `denseAvailable` и `denseDisabledReason` показывают состояние vector-пути.
 - `searchCode({ root, query, paths?, language?, sourceKind?, limit?, mode?, signal? })` возвращает `{ hits, identity, degraded, degradedReason }`. `language` принимает точный сохранённый идентификатор расширения либо распространённое имя (`typescript`, `javascript`, `python`, `markdown`); имя сопоставляется с сохранёнными вариантами расширений и не меняет `CodeHit.language`. `sourceKind` — `implementation`, `tests`, `documentation` или `all`; пропуск сохраняет полный прежний поиск. Классификация основана на соглашениях о путях: тестовые каталоги и `.test`/`.spec` файлы относятся к тестам, документационные каталоги и текстовые форматы — к документации, остальные индексированные файлы — к реализации. При необходимости ищите во всех категориях. Каждый hit несёт путь, строки, `snapshotId`, хеш chunk и сведения lexical/dense/rerank ранжирования. По умолчанию limit `10`; без моделей режим по умолчанию lexical. Явный `mode: 'lexical'` не вызывает embedding/rerank.
 
@@ -218,7 +218,7 @@ Lexical индекс не требует provider и работает офлай
 
 ## Документы, правила и навыки проекта
 
-Candidate `v0.1.7` экспортирует `createProjectTextIndex` из `@zorya/search/project-text`; пример SDK, конфигурация, лимиты и identity описаны в [едином руководстве](project-text.md#отдельный-индекс-документов-правил-и-навыков). Этот отдельный индекс привязан к тому же borrowed `QueryableDatabase`, но владеет собственным пространством `zorya_project_text_*`. `close()` закрывает операции индекса, не базу. Экспорт и capability отсутствуют в публичном архиве `v0.1.6`.
+Preview `v0.1.7` экспортирует `createProjectTextIndex` из `@zorya/search/project-text`; пример SDK, конфигурация, лимиты и identity описаны в [едином руководстве](project-text.md#отдельный-индекс-документов-правил-и-навыков). Этот отдельный индекс привязан к тому же borrowed `QueryableDatabase`, но владеет собственным пространством `zorya_project_text_*`. `close()` закрывает операции индекса, не базу. Экспорт и capability отсутствуют в публичном архиве `v0.1.6`.
 
 ## Поиск в web и чтение источников
 

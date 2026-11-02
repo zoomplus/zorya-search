@@ -1,14 +1,14 @@
 # Правила работы с репозиторием Zorya Search
 
-## Текущая точка входа — candidate `v0.1.7` (2026-11-02)
+## Текущая точка входа — preview `v0.1.7` (2026-11-02)
 
-Кандидат release metadata/documentation на source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) включает отдельный project-text index, exact symbol/reference/static call tools, opt-in logical context, Jev-backed reuse, caller-selected multi-query Brave discovery и typed source-read recovery. Это candidate, не опубликованный package: публичный GitHub archive остаётся `v0.1.6`, npm package и tag `v0.1.7` отсутствуют. Отрицательное контролируемое сравнение и его границы описаны в [сравнении MCP](docs/mcp-comparison.md); новые source checks не являются новым end-answer rerun. Полная цель и все consumer/device gates остаются отдельными; не делайте вывод о full-plan acceptance по этой фазе.
+Runtime/source behavior preview `v0.1.7` закреплён на [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d); подготовленный package metadata/documentation snapshot — `ee82077827bc0e099ae63fd2e44c5c512c9f2ba7` и не меняет compiled runtime. Preview включает отдельный project-text index, exact symbol/reference/static call tools, opt-in logical context, Jev-backed reuse, caller-selected multi-query Brave discovery и typed source-read recovery. Фактическую доступность asset `v0.1.7` и npm registry version проверяй по [странице релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) и registry; исторический archive `v0.1.6` остаётся отдельной версионной базой. Отрицательное контролируемое сравнение и его границы описаны в [сравнении MCP](docs/mcp-comparison.md); новые source checks не являются новым end-answer rerun. Полная цель и все consumer/device gates остаются отдельными; не делайте вывод о full-plan acceptance по этой фазе.
 
 Принятый дополнительный scope и восемь dependency-ordered волн описаны в [плане качества Search](https://github.com/zoomplus/zorya-search/blob/main/docs/search-quality-plan-2026-11-01.md). Это продолжение полной цели, не её замена. Публикация плана не означает, что все технические и потребительские волны исполнены или приняты.
 
 Zorya Search — отдельный пакет `@zorya/search` для поиска по коду и источникам. Следуй намерению пользователя и правилам его агента; эти локальные инструкции описывают только границы самого Search и не заменяют инструкции клиента.
 
-Исторически Jev-backed reuse впервые добавлен source candidate `0a584e6`; текущий release candidate закреплён на `3be35fd`. Контракт и ограничения описаны в [руководстве Jev](docs/jev-classification.md); эта функция отсутствует в GitHub archive `v0.1.6`.
+Исторически Jev-backed reuse впервые добавлен в source change set `0a584e6`; preview `v0.1.7` закреплён на `3be35fd`. Контракт и ограничения описаны в [руководстве Jev](docs/jev-classification.md); эта функция отсутствует в GitHub archive `v0.1.6`.
 
 ## Границы продукта
 
@@ -31,14 +31,14 @@ Zorya Search — отдельный пакет `@zorya/search` для поиск
 - Дополнительные экспорты и тяжёлые локальные зависимости должны оставаться в соответствующих optional subpaths; лёгкий корневой импорт не должен случайно загружать индекс кода или необязательные базы.
 - Не считай документацию или тесты с заглушками доказательством реального обращения к провайдеру, MCP-клиенту, Windows или установленному приложению.
 - Используй [README](README.md) для первого запуска, [архитектурный обзор](docs/architecture.md), [SDK](docs/sdk.md), [MCP](docs/mcp.md) и [инструкции клиентским агентам](docs/agent-clients.md) для деталей. Версионные команды CLI и профили моделей должны соответствовать принятым интерфейсам, а не незавершённым веткам.
-- [Руководство по тексту проекта и web discovery](docs/project-text.md) описывает candidate `v0.1.7`, который не входит в публичный архив `v0.1.6`.
+- [Руководство по тексту проекта и web discovery](docs/project-text.md) описывает preview `v0.1.7`, который не входит в публичный архив `v0.1.6`.
 - Для Mechanism сверены независимые optional профили `voyageai/voyage-code-4` 1024d, `voyageai/rerank-2.5-lite` и visual `voyageai/voyage-multimodal-3.5` 1024d. Это клиентская конфигурация, не встроенные defaults. Visual поиск вызывается отдельно и только для предоставленных клиентом references.
 
 ## Текущий статус и границы приёмки — 2026-11-01
 
 Исторический baseline `main` на snapshot `689c521c6c50e72fd9fa993b33dd3b3d8cb5bf15` прошёл package gates 206/206 тестов, hosted CI 8/8 jobs, а установленный CLI — 11/11 локальных проверок. Эти числа не относятся к v0.1.0 или v0.1.1; см. [версионные сведения и текущие ограничения](docs/architecture.md).
 
-Шесть пар пилота исполнены и проверены. Пара F получила native статус inconclusive, победитель не определён. Удалённый OAuth MCP `v0.1.1` прошёл ограниченную TLS-проверку с тестовым issuer и Codex; hosted ChatGPT, внешний IdP и пользовательский deployment не квалифицированы. npm package пока не опубликован; пользовательский Windows host, Witcher, физические игровые/аудио устройства и широкая ground-truth оценка остаются непроверенными; `fullPlanAcceptance=false`.
+Шесть пар пилота исполнены и проверены. Пара F получила native статус inconclusive, победитель не определён. Удалённый OAuth MCP `v0.1.1` прошёл ограниченную TLS-проверку с тестовым issuer и Codex; hosted ChatGPT, внешний IdP и пользовательский deployment не квалифицированы. Установка, перечисленные assets и npm registry availability проверяются по фактической release/registry странице; пользовательский Windows host, Witcher, физические игровые/аудио устройства и широкая ground-truth оценка остаются непроверенными; `fullPlanAcceptance=false`.
 
 ## Перед работой
 

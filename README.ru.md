@@ -24,21 +24,24 @@ Zorya Search помогает существующему приложению и
 
 ## Доступность релиза
 
-Публичный архив GitHub по-прежнему **`v0.1.6`**. Состояние этого репозитория — **кандидат релиза `v0.1.7`** на исходном коммите [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d); он ещё не опубликован в GitHub Releases или npm. Кандидат включает отдельный project-text индекс, точные инструменты символов/references/статических вызовов, opt-in logical context и Jev-backed reuse, caller-selected web discovery по нескольким запросам и типизированное восстановление запроса чтения исходника. Описание кандидата не означает, что будущая ссылка или версия registry уже доступны.
+Это руководство описывает **preview `v0.1.7`** на исходном коммите [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). В него входят отдельный project-text индекс, точные инструменты символов/references/статических вызовов, opt-in logical context и Jev-backed reuse, caller-selected web discovery по нескольким запросам и типизированное восстановление запроса чтения исходника. Фактическую доступность asset проверяй на [странице релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7): устанавливай перечисленный там asset и перед использованием возможностей preview проверь, что установленная версия — `0.1.7`.
 
-Для доступного архива нужна Node.js `>=20.19.0`:
+Если на странице релиза перечислен `zorya-search-0.1.7.tgz`, установить его можно при Node.js `>=20.19.0`:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.7/zorya-search-0.1.7.tgz
+npm ls @zorya/search --depth=0
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
-`client-config` только печатает примеры; владелец отдельно регистрирует один из них в выбранном клиенте и выдаёт разрешения. Индексация запускается явно, если владелец не включил watch. См. [краткое руководство на русском](docs/getting-started.md), [английское руководство](docs/getting-started.en.md) и [матрицу возможностей](docs/capabilities.md).
+Эта команда установки предназначена для указанного asset и не подтверждает, что он перечислен. Для npm сначала проверь, что registry показывает `0.1.7` под тегом `next`; затем можно использовать `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.7` только если версия действительно отображается в registry. Не используй неприкреплённый `latest` или `npx` для загрузки отсутствующей сборки. Установка с GitHub не требует npm-аккаунта.
+
+Исторический архив [`v0.1.6`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) остаётся отдельным вариантом установки, но в нём нет возможностей preview `v0.1.7`. `client-config` только печатает примеры; владелец отдельно регистрирует один из них в выбранном клиенте и выдаёт разрешения. Индексация запускается явно, если владелец не включил watch. См. [краткое руководство на русском](docs/getting-started.md), [английское руководство](docs/getting-started.en.md) и [матрицу возможностей](docs/capabilities.md).
 
 ## Пример SDK
 
-Пример ниже в англоязычном [README](README.md#sdk-example) использует публичный SDK `v0.1.6`: локальный лексический поиск, проверку исходника и кандидатов дубликатов. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
+Пример ниже в англоязычном [README](README.md#sdk-example) использует лексические SDK API, общие для `v0.1.6` и preview `v0.1.7`: проверку исходника и кандидатов дубликатов. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
 
 ## Документация
 
