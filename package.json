@@ -1,6 +1,6 @@
 {
-  "name": "@zorya/search",
-  "version": "0.1.8",
+  "name": "zorya-search",
+  "version": "0.1.9",
   "description": "Local-first code and project-text retrieval, source-backed symbol analysis, caller-controlled web discovery, and MCP for SDK clients",
   "keywords": [
     "code-search",

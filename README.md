@@ -24,28 +24,28 @@ The code path is lexical unless the owner enables an embedding profile. Optional
 
 ## Release availability
 
-This documentation describes source candidate **`v0.1.8`** at [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). It retains the previously published `v0.1.7` capabilities and adds an opt-in structured presentation for local MCP stdio. `legacy` remains the default. Check the [v0.1.8 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) for a listed asset and verify the installed version before using this feature; check npm version/tag availability separately for registry installs. Details and native caller evidence are in the [result-presentation guide](docs/mcp-result-presentation.md).
+The current source/package version is **`v0.1.9`** with the unscoped npm name `zorya-search`. This changes package identity and packaging only; it retains the `v0.1.8` runtime, public APIs, CLI behavior, and defaults. Structured MCP stdio presentation remains opt-in and `legacy` remains the default. Before installing, verify that the release page and npm registry list the exact `v0.1.9` tag and `zorya-search@0.1.9` version, then check the installed name and version. The previous `v0.1.8` release record and native caller evidence remain in the [result-presentation guide](docs/mcp-result-presentation.md).
 
-When the release page lists `zorya-search-0.1.8.tgz`, install that asset with Node.js `>=20.19.0`:
+After the registry lists exact version `zorya-search@0.1.9` and the `v0.1.9` release/tag is verified, install with Node.js `>=20.19.0`:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
-npm ls @zorya/search --depth=0
-npm exec -- zorya-search setup --root .
-npm exec -- zorya-search client-config
+npm install --save-exact zorya-search@0.1.9
+npm ls zorya-search --depth=0
+npx --yes zorya-search@0.1.9 setup --root .
+npx --yes zorya-search@0.1.9 client-config
 ```
 
-The install command is a recipe for the named asset, not confirmation that the asset is listed. If you choose npm instead, first confirm the registry lists `0.1.8` under `next`, then use `npm install --save-exact @zorya/search@next`; use `@zorya/search@0.1.8` only when that exact version is listed. Do not use unqualified `latest` or `npx` to fetch an unlisted build. GitHub installation does not require npm account access.
+Run these version-pinned commands only after verifying the exact GitHub tag and registry version. The historical `v0.1.8` archive retains its original package identity and release facts; see [the changelog](CHANGELOG.md).
 
-The published [`v0.1.7` release](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) is the prior capability baseline; it does not include structured stdio presentation. The historical [`v0.1.6` GitHub archive](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) remains a still earlier, separate installation option. `client-config` prints examples; an owner separately registers one in the chosen client and grants access. Indexing is explicit unless the owner selected watch. See the [English quickstart](docs/getting-started.en.md), [Russian quickstart](docs/getting-started.md), and [capability matrix](docs/capabilities.md).
+The previously published [`v0.1.7` release](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) is the prior capability baseline; it does not include structured stdio presentation. The historical [`v0.1.6` GitHub archive](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) remains a still earlier, separate installation option. Those releases used the scoped package name recorded in their historical instructions. `client-config` prints examples; an owner separately registers one in the chosen client and grants access. Indexing is explicit unless the owner selected watch. See the [English quickstart](docs/getting-started.en.md), [Russian quickstart](docs/getting-started.md), and [capability matrix](docs/capabilities.md).
 
 ## SDK example
 
-This example uses lexical SDK APIs shared by published `v0.1.6`, `v0.1.7`, and candidate `v0.1.8`, with source verification and duplicate candidates. Keep the database outside the indexed repository.
+This example uses lexical SDK APIs retained through candidate `v0.1.9`, with source verification and duplicate candidates. Import from `zorya-search` and its subpaths. Keep the database outside the indexed repository.
 
 ```js
-import { openEmbeddedDatabase } from '@zorya/search'
-import { createCodeIndex } from '@zorya/search/code'
+import { openEmbeddedDatabase } from 'zorya-search'
+import { createCodeIndex } from 'zorya-search/code'
 
 const root = '/absolute/path/to/repository'
 const database = await openEmbeddedDatabase('/absolute/path/to/private/search-data')

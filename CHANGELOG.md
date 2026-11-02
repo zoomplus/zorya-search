@@ -1,8 +1,18 @@
 # Changelog
 
+## 0.1.9 — 2026-11-02
+
+This source changes the npm package identity from the historical scoped name `@zorya/search` to `zorya-search` and updates package metadata and installed-consumer instructions. Before installing, verify that the release page and npm registry list the exact `v0.1.9` tag and `zorya-search@0.1.9` version.
+
+- Preserve all `0.1.8` runtime features and public APIs; this is an identity and packaging migration only.
+- Keep `--result-presentation structured` opt-in for `mcp` and `client-config`; `legacy` remains the default.
+- Do not reinterpret historical `v0.1.8` assets, scoped package metadata, release evidence, or URLs as `v0.1.9` publication evidence.
+
+No runtime or search-quality behavior changes are included. The earlier controlled 40-task negative quality study remains unchanged, and this packaging work does not establish full-plan acceptance.
+
 ## 0.1.8 preview — 2026-11-02
 
-Candidate source behavior is based on [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Check the [v0.1.8 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) for a listed asset and verify npm version/tag availability separately before installing. This candidate retains the previously published `0.1.7` capabilities.
+Historical source behavior is based on [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). The `v0.1.8` release/package retained the historical scoped name `@zorya/search`; check that release's own page and registry separately. These facts do not establish `v0.1.9` availability. This candidate retained the previously published `0.1.7` capabilities.
 
 - Add an opt-in `--result-presentation structured` mode to the local stdio proxy and generated client configuration. `legacy` remains the default.
 - In structured mode, replace only an exact duplicate JSON text block with `See structuredContent.`; keep structured fields, source identity, independent content, and metadata intact.

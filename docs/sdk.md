@@ -8,25 +8,25 @@
 
 | Путь | Назначение |
 | --- | --- |
-| `@zorya/search` | Core API, `openEmbeddedDatabase`, PostgreSQL adapters и shared-типы |
-| `@zorya/search/code` | `createCodeIndex` и типы code index |
-| `@zorya/search/project-text` | `createProjectTextIndex` и индекс документации, правил, навыков |
-| `@zorya/search/context` | `createCodeContext` и его DTO |
-| `@zorya/search/context/web` | `createWebSearch` и DTO web-контекста |
-| `@zorya/search/context/classify` | `createClassificationTool` и его limits/profile |
-| `@zorya/search/providers` | OpenRouter/OpenAI-compatible retrieval adapters, Brave web source и classifier (Jev в preview `v0.1.7`) |
-| `@zorya/search/visual` | opt-in `createVisualSearch` и visual DTO |
-| `@zorya/search/runtime` | runtime factory и конфигурация разрешённых roots |
-| `@zorya/search/mcp` | MCP server, tool contracts и stdio proxy |
-| `@zorya/search/daemon` | локальный HTTP daemon, владеющий runtime и transport |
+| `zorya-search` | Core API, `openEmbeddedDatabase`, PostgreSQL adapters и shared-типы |
+| `zorya-search/code` | `createCodeIndex` и типы code index |
+| `zorya-search/project-text` | `createProjectTextIndex` и индекс документации, правил, навыков |
+| `zorya-search/context` | `createCodeContext` и его DTO |
+| `zorya-search/context/web` | `createWebSearch` и DTO web-контекста |
+| `zorya-search/context/classify` | `createClassificationTool` и его limits/profile |
+| `zorya-search/providers` | OpenRouter/OpenAI-compatible retrieval adapters, Brave web source и classifier (Jev в preview `v0.1.7`) |
+| `zorya-search/visual` | opt-in `createVisualSearch` и visual DTO |
+| `zorya-search/runtime` | runtime factory и конфигурация разрешённых roots |
+| `zorya-search/mcp` | MCP server, tool contracts и stdio proxy |
+| `zorya-search/daemon` | локальный HTTP daemon, владеющий runtime и transport |
 
 Корневой entry не импортирует runtime-модули этих специализированных поверхностей за потребителя. Текущий `package.json` задаёт ESM exports и требует Node.js `>=20.19.0`.
 
-Для большинства библиотечных потребителей начни с `@zorya/search` и нужных subpaths. Для локального MCP сценария используй daemon, который единолично владеет каталогом embedded database, и `@zorya/search/mcp` как transport adapter. Не запускай второй владелец того же data directory. Настройка конкретного клиента и CLI описана отдельно в [руководстве MCP](mcp.md) и [руководстве CLI](cli.md).
+Для большинства библиотечных потребителей начни с `zorya-search` и нужных subpaths. Для локального MCP сценария используй daemon, который единолично владеет каталогом embedded database, и `zorya-search/mcp` как transport adapter. Не запускай второй владелец того же data directory. Настройка конкретного клиента и CLI описана отдельно в [руководстве MCP](mcp.md) и [руководстве CLI](cli.md).
 
 ### Jev и контекст повторного использования — preview `v0.1.7`
 
-В preview `v0.1.7` (source `3be35fd`) `@zorya/search/providers` экспортирует `createJevDecisions` и `createJevClassifier`, а `@zorya/search/context` — `createReuseContext`. Runtime разделяет один Decisions port между classification и reuse. `getReuseContext({ root, query, maxChars?, limit?, signal? })` возвращает bounded source context, Jev-оценку релевантности файлов/символов и явные coverage/omissions; вызывающая сторона проверяет evidence. Значения по умолчанию, hard limits, лимит calls и migration со старого классификатора собраны в [руководстве Jev](jev-classification.md).
+В preview `v0.1.7` (source `3be35fd`) `zorya-search/providers` экспортирует `createJevDecisions` и `createJevClassifier`, а `zorya-search/context` — `createReuseContext`. Runtime разделяет один Decisions port между classification и reuse. `getReuseContext({ root, query, maxChars?, limit?, signal? })` возвращает bounded source context, Jev-оценку релевантности файлов/символов и явные coverage/omissions; вызывающая сторона проверяет evidence. Значения по умолчанию, hard limits, лимит calls и migration со старого классификатора собраны в [руководстве Jev](jev-classification.md).
 
 Эти функции входят в preview `v0.1.7`, но отсутствуют в историческом GitHub archive `v0.1.6`. Перед использованием установи соответствующий version-specific asset только если он указан на [странице релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7), затем проверь версию пакета и его exports. `npx` не является способом получить отсутствующий version-specific build.
 
@@ -51,7 +51,7 @@
 Ниже показан read-only lookup для уже существующего current base index. Функция получает настроенный владельцем `CodeIndex` и не создаёт его с новыми exclusions, limits или embedding profile. Передайте действующий экземпляр и разрешённый root из вызывающей стороны; владелец закрывает индекс и принадлежащую ему database после завершения всех операций. Для нового или изменившегося дерева сначала используйте `indexRepository`; этот read helper не запускает индексацию или metadata refresh.
 
 ```ts
-import type { CodeIndex } from '@zorya/search/code'
+import type { CodeIndex } from 'zorya-search/code'
 
 async function lookupSymbol(index: CodeIndex, root: string, name: string) {
   const base = await index.indexStatus(root)
@@ -89,9 +89,9 @@ async function lookupSymbol(index: CodeIndex, root: string, name: string) {
 
 ```ts
 import { isAbsolute, relative, resolve, sep } from 'node:path'
-import { openEmbeddedDatabase } from '@zorya/search'
-import { createCodeIndex } from '@zorya/search/code'
-import { createCodeContext, CodeContextError } from '@zorya/search/context'
+import { openEmbeddedDatabase } from 'zorya-search'
+import { createCodeIndex } from 'zorya-search/code'
+import { createCodeContext, CodeContextError } from 'zorya-search/context'
 
 const root = process.env.ZORYA_SEARCH_SOURCE_ROOT
 const dataDir = process.env.ZORYA_SEARCH_DATA_DIR
@@ -166,7 +166,7 @@ try {
 ### Методы `CodeIndex`
 
 - `indexRepository({ root, signal? })` индексирует разрешённое дерево и возвращает `CodeIndexStatus`. Идентичность результата включает `repoId`, `worktreeId`, `snapshotId` и `contentHash`.
-- В preview `v0.1.7` методы `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences` и `traceCodeCalls` являются необязательными портами; подробности, profile/cursor provenance и лимиты приведены в разделе выше. Типы `CodeSymbol`, `CodeSymbolReference`, `CodeSymbolAnalysisStatus` и result DTO экспортируются из `@zorya/search/code` этого candidate.
+- В preview `v0.1.7` методы `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences` и `traceCodeCalls` являются необязательными портами; подробности, profile/cursor provenance и лимиты приведены в разделе выше. Типы `CodeSymbol`, `CodeSymbolReference`, `CodeSymbolAnalysisStatus` и result DTO экспортируются из `zorya-search/code` этого candidate.
 - `indexStatus(root, signal?)` возвращает текущий статус или пустую identity, если usable snapshot отсутствует. `denseAvailable` и `denseDisabledReason` показывают состояние vector-пути.
 - `searchCode({ root, query, paths?, language?, sourceKind?, limit?, mode?, signal? })` возвращает `{ hits, identity, degraded, degradedReason }`. `language` принимает точный сохранённый идентификатор расширения либо распространённое имя (`typescript`, `javascript`, `python`, `markdown`); имя сопоставляется с сохранёнными вариантами расширений и не меняет `CodeHit.language`. `sourceKind` — `implementation`, `tests`, `documentation` или `all`; пропуск сохраняет полный прежний поиск. Классификация основана на соглашениях о путях: тестовые каталоги и `.test`/`.spec` файлы относятся к тестам, документационные каталоги и текстовые форматы — к документации, остальные индексированные файлы — к реализации. При необходимости ищите во всех категориях. Каждый hit несёт путь, строки, `snapshotId`, хеш chunk и сведения lexical/dense/rerank ранжирования. По умолчанию limit `10`; без моделей режим по умолчанию lexical. Явный `mode: 'lexical'` не вызывает embedding/rerank.
 
@@ -181,7 +181,7 @@ try {
 `createCodeContext({ index, limits? })` создаёт адаптер над уже открытым индексом. Его метод:
 
 ```ts
-import type { CodeContextRequest, CodeContextResult } from '@zorya/search/context'
+import type { CodeContextRequest, CodeContextResult } from 'zorya-search/context'
 
 type GetCodeContext = (input: CodeContextRequest) => Promise<CodeContextResult>
 ```
@@ -194,7 +194,7 @@ type GetCodeContext = (input: CodeContextRequest) => Promise<CodeContextResult>
 
 Секции и чтения логического контекста ограничены 200 строками. Они делят общий `maxChars` с остальными секциями запроса: бюджет по умолчанию — 24 000 символов; в SDK `CodeContextLimits.maxChars` можно явно увеличить до 100 000. Схема MCP сохраняет собственный предел 24 000. В пределах одной операции действуют caps: 8 seeds, 24 блока, 50 references на seed, 120 source reads и 80 записей omission; `limits`, `omissionsOmitted` и `omissionsTruncated` показывают усечение. Поэтому `partial` и отсутствие кандидата не доказывают отсутствие реализации. Continuation omission содержит `path`, `lineStart`, `lineEnd`, `snapshotId`; передайте его в `readSource` вместе с прежними `root` и `snapshotId`. Чтение должно отказать при несовпадении или устаревании источника; не назначайте старый snapshot заново и не запускайте backfill при чтении. Логический поиск идёт в пределах одной snapshot scope, а перед возвратом сверяется полная identity источника.
 
-Типы `LogicalContextResult`, `LogicalContextBlock`, `LogicalContextOmission`, `LogicalRange` и `LogicalContinuation` экспортируются из `@zorya/search/context`. DTO сохраняет точные поля: result — `state`, `profileId`, `analysisComplete`, `coverage`, `blocks`, `omissions`, `omissionsOmitted`, `omissionsTruncated`, `limits`, `relationCoverage`, `runtimeCallCoverage`; coverage — `totalFiles`, `omittedFiles`, `counts` (`parsed`, `parseError`, `unsupported`, `truncated`, `error`), `unresolvedReferences`, `unresolvedCalls`, `truncation` (`symbols`, `references`, `files`). Block — `symbolId`, `name`, `kind`, `role`, `source`, `complete`, `includedRanges`, `relationFrom`, `relationKind`, `depth`, `wholeFile`. Omission — `symbolId`, `role`, `range`, `reason`, `continuation`; reason принимает `no_enclosing_symbol`, `source_filter`, `budget`, `read_limit`, `block_limit`, `symbol_limit`, `reference_limit`, `external`, `unresolved`, `ambiguous`, `missing_target`. `LogicalRange` имеет только `path`, `lineStart`, `lineEnd`; `LogicalContinuation` добавляет `snapshotId`. `relationCoverage` — `static_and_bounded`, `no_proven_relation` или `unavailable`; `runtimeCallCoverage` — только `not_claimed`. `relationKind` — `seed`, `reference`, `call`, `construct`, `test_reference` или `test_call`. `limits` возвращает `maxSeeds`, `seedsInspected`, `seedsTruncated`, `maxReferencesPerSeed`, `referencesInspected`, `maxBlocks`, `blocksSelected`, `maxSourceReads`, `sourceReads`, `maxRangeLines`, `referencesTruncated`, `symbolsTruncated`, `blocksTruncated`, `readsTruncated`.
+Типы `LogicalContextResult`, `LogicalContextBlock`, `LogicalContextOmission`, `LogicalRange` и `LogicalContinuation` экспортируются из `zorya-search/context`. DTO сохраняет точные поля: result — `state`, `profileId`, `analysisComplete`, `coverage`, `blocks`, `omissions`, `omissionsOmitted`, `omissionsTruncated`, `limits`, `relationCoverage`, `runtimeCallCoverage`; coverage — `totalFiles`, `omittedFiles`, `counts` (`parsed`, `parseError`, `unsupported`, `truncated`, `error`), `unresolvedReferences`, `unresolvedCalls`, `truncation` (`symbols`, `references`, `files`). Block — `symbolId`, `name`, `kind`, `role`, `source`, `complete`, `includedRanges`, `relationFrom`, `relationKind`, `depth`, `wholeFile`. Omission — `symbolId`, `role`, `range`, `reason`, `continuation`; reason принимает `no_enclosing_symbol`, `source_filter`, `budget`, `read_limit`, `block_limit`, `symbol_limit`, `reference_limit`, `external`, `unresolved`, `ambiguous`, `missing_target`. `LogicalRange` имеет только `path`, `lineStart`, `lineEnd`; `LogicalContinuation` добавляет `snapshotId`. `relationCoverage` — `static_and_bounded`, `no_proven_relation` или `unavailable`; `runtimeCallCoverage` — только `not_claimed`. `relationKind` — `seed`, `reference`, `call`, `construct`, `test_reference` или `test_call`. `limits` возвращает `maxSeeds`, `seedsInspected`, `seedsTruncated`, `maxReferencesPerSeed`, `referencesInspected`, `maxBlocks`, `blocksSelected`, `maxSourceReads`, `sourceReads`, `maxRangeLines`, `referencesTruncated`, `symbolsTruncated`, `blocksTruncated`, `readsTruncated`.
 
 Поля запроса определены в `CodeContextRequest`: `root`, `query`, `featureQueries`, `mustInclude`, `includeRelated`, `includeLogical`, `relatedDepth`, `relatedMaxPaths`, `language`, `sourceKind`, `maxChars`, `limit`, `signal`. Пути в `mustInclude` задаёт вызывающая сторона. Запись только `{ path }` означает ограниченный excerpt, а не полный файл: при пустых границах `readSource` начинает с первой строки и читает не более 200 строк; секция возвращает фактические `lineStart`/`lineEnd`. Поле `truncated` отражает срез необязательных candidate sections, если адаптер ограничил их через `maxRangeLines`. Обязательный `mustInclude` диапазон длиннее этого лимита завершается ошибкой `LIMIT`, а отсутствие границ оставляет `truncated: false` даже при скрытых последующих строках файла. Для получения определённого участка укажите обе границы; не считайте path-only секцию полным содержимым файла. При нехватке символьного бюджета обязательный диапазон не замалчивается: `CodeContextError('MANDATORY_BUDGET')` сообщает о нехватке `maxChars`. `getCodeContext` сам не добавляет результат в prompt.
 
@@ -212,13 +212,13 @@ type GetCodeContext = (input: CodeContextRequest) => Promise<CodeContextResult>
 
 Lexical индекс не требует provider и работает офлайн. Dense-векторный путь задаётся совместными `models` и `profile`: профиль включает provider, space, model, dimensions, `inputType: 'text'` и текущий `chunkerVersion`. Вызов `searchCode({ mode: 'hybrid' })` без настроенных `models` явно деградирует к lexical; при несовпадении профиля или snapshot текущего индекса он также возвращает lexical результат с причиной деградации. Передача `models` без валидного `profile` завершается ошибкой при создании индекса; передача одного `profile` без `models` тоже недопустима. Не повторно используйте векторы с несовпадающим профилем/snapshot. Ошибка самого вызова embedding/rerank пробрасывается и не превращается автоматически в lexical fallback.
 
-`createCodeIndex` ожидает `models.embed({ texts, signal })` и optional `models.rerank({ query, documents, signal })`. Provider adapter из `@zorya/search/providers` имеет собственный `profile`; для code profile нужны те же provider/space/model/dimensions, `inputType: 'text'` и текущий `chunkerVersion: CODE_CHUNKER_VERSION` из `@zorya/search/code`. Например, создайте provider методом `createOpenRouterEmbedding({ baseUrl, model, dimensions, apiKeyEnv })`, явно передайте его method как `models.embed`, а конфигурацию профиля согласуйте с provider profile и chunker version. Такой вызов может отправить chunks выбранному провайдеру; пример здесь описан, но в рамках подготовки документации не выполнялся.
+`createCodeIndex` ожидает `models.embed({ texts, signal })` и optional `models.rerank({ query, documents, signal })`. Provider adapter из `zorya-search/providers` имеет собственный `profile`; для code profile нужны те же provider/space/model/dimensions, `inputType: 'text'` и текущий `chunkerVersion: CODE_CHUNKER_VERSION` из `zorya-search/code`. Например, создайте provider методом `createOpenRouterEmbedding({ baseUrl, model, dimensions, apiKeyEnv })`, явно передайте его method как `models.embed`, а конфигурацию профиля согласуйте с provider profile и chunker version. Такой вызов может отправить chunks выбранному провайдеру; пример здесь описан, но в рамках подготовки документации не выполнялся.
 
 Интегрированный preset для кода использует `voyageai/voyage-code-4` размерности 1024 и отдельный reranker `voyageai/rerank-2.5-lite`. Это выбор владельца при настройке, а не обязательный профиль любого SDK-потребителя. При включении индексируемый код и запрос могут уйти в OpenRouter. В историческом smoke через установленный runtime два code embedding запроса и один code rerank проверили на десяти синтетических файлах; ожидаемый файл оказался первым. Вместе с visual вызовами в том smoke выполнено восемь успешных OpenRouter вызовов общей известной стоимостью $0.00011708. Это подтверждает только выбранный синтетический сценарий; широкое качество, задержки и стоимость на реальном репозитории не установлены. Подробности — в [руководстве профилей](voyage-profiles.md).
 
 ## Документы, правила и навыки проекта
 
-Preview `v0.1.7` экспортирует `createProjectTextIndex` из `@zorya/search/project-text`; пример SDK, конфигурация, лимиты и identity описаны в [едином руководстве](project-text.md#отдельный-индекс-документов-правил-и-навыков). Этот отдельный индекс привязан к тому же borrowed `QueryableDatabase`, но владеет собственным пространством `zorya_project_text_*`. `close()` закрывает операции индекса, не базу. Экспорт и capability отсутствуют в публичном архиве `v0.1.6`.
+Preview `v0.1.7` экспортирует `createProjectTextIndex` из `zorya-search/project-text`; пример SDK, конфигурация, лимиты и identity описаны в [едином руководстве](project-text.md#отдельный-индекс-документов-правил-и-навыков). Этот отдельный индекс привязан к тому же borrowed `QueryableDatabase`, но владеет собственным пространством `zorya_project_text_*`. `close()` закрывает операции индекса, не базу. Экспорт и capability отсутствуют в публичном архиве `v0.1.6`.
 
 ## Поиск в web и чтение источников
 
@@ -231,8 +231,8 @@ Web-поиск выполняет два независимых шага: `WebSo
 Пример SDK для поиска руководства по алхимии в The Witcher 3 с датами discovery:
 
 ```ts
-import { createBraveWebSource } from '@zorya/search/providers'
-import { createWebSearch } from '@zorya/search/context/web'
+import { createBraveWebSource } from 'zorya-search/providers'
+import { createWebSearch } from 'zorya-search/context/web'
 
 const web = createBraveWebSource({ apiKeyEnv: 'BRAVE_SEARCH_API_KEY' })
 const search = createWebSearch({ web }) // лексический поиск без embedding и переранжирования
@@ -256,14 +256,14 @@ try {
 ```ts
 // В главном потоке:
 import { Worker } from 'node:worker_threads'
-import { createBraveQuotaState } from '@zorya/search/providers'
+import { createBraveQuotaState } from 'zorya-search/providers'
 
 const quota = createBraveQuotaState()
 new Worker(new URL('./search-worker.js', import.meta.url), { workerData: { quota } })
 
 // В search-worker.js:
 import { workerData } from 'node:worker_threads'
-import { createBraveWebSource } from '@zorya/search/providers'
+import { createBraveWebSource } from 'zorya-search/providers'
 
 const web = createBraveWebSource({
   apiKeyEnv: 'BRAVE_SEARCH_API_KEY',

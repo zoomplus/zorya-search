@@ -2,7 +2,7 @@
 
 Search вызывается существующим клиентом и не меняет его prompt, модель, память, инструкции, настройки или workflow. Установка и `client-config` не регистрируют MCP автоматически. Следуй указаниям пользователя и правилам того репозитория, где выполняется задача.
 
-Этот документ описывает кандидата `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Он сохраняет ранее опубликованную поверхность `v0.1.7` и добавляет opt-in выбор stdio result presentation. Проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) и npm registry для фактической доступности, затем сверяй SDK/MCP schema и grants установленной версии.
+Текущая source/package version `v0.1.9` использует npm identity `zorya-search` и меняет только package metadata/упаковку; runtime, API, CLI behavior и defaults сохраняются. Перед установкой проверь точный GitHub tag и npm version в соответствующих источниках. Далее описанное поведение structured stdio относится к исторической версии `v0.1.8` и сохраняется без изменений.
 
 ## Подключение MCP
 
@@ -10,11 +10,11 @@ Search вызывается существующим клиентом и не м
 
 Для локального процесса используй stdio/loopback по [руководству MCP](mcp.md#локальный-mcp). Hosted или удалённый клиент требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Локальная проверка не доказывает поддержку hosted ChatGPT или production IdP.
 
-В candidate `v0.1.8` владелец может выбрать `client-config --result-presentation structured`, чтобы сгенерированный локальный stdio profile добавлял флаг прокси. Ручная команда использует `mcp --result-presentation structured`. Режим меняет только точный повтор JSON внутри `content`; полный JSON остаётся в `structuredContent`, другие блоки и source identity сохраняются. Оставь `legacy`, если клиент читает только text content, или если поведение конкретного клиента не проверено. Нативная проверка проведена только с Codex CLI 0.163.0 на Linux; это не подтверждает hosted ChatGPT, Cursor либо другие клиенты. См. [полное руководство и run-by-run результаты](mcp-result-presentation.md).
+Исторический candidate `v0.1.8` добавил `client-config --result-presentation structured`, чтобы сгенерированный локальный stdio profile включал флаг прокси. Ручная команда использует `mcp --result-presentation structured`. Режим меняет только точный повтор JSON внутри `content`; полный JSON остаётся в `structuredContent`, другие блоки и source identity сохраняются. Оставь `legacy`, если клиент читает только text content, или если поведение конкретного клиента не проверено. Нативная проверка проведена только с Codex CLI 0.163.0 на Linux; это не подтверждает hosted ChatGPT, Cursor либо другие клиенты. См. [полное руководство и run-by-run результаты](mcp-result-presentation.md).
 
 ## Skills для локального клиента
 
-В установленном пакете файлы находятся в `node_modules/@zorya/search/skills/code-retrieval/SKILL.md` и `node_modules/@zorya/search/skills/web-source-retrieval/SKILL.md`. При необходимости скопируй skill в документированный каталог своего клиента. Не переписывай автоматически глобальные инструкции клиента. Сохраняй собственные правила, выбор модели/reasoning, память и настройки.
+В установленном пакете файлы находятся в `node_modules/zorya-search/skills/code-retrieval/SKILL.md` и `node_modules/zorya-search/skills/web-source-retrieval/SKILL.md`. При необходимости скопируй skill в документированный каталог своего клиента. Не переписывай автоматически глобальные инструкции клиента. Сохраняй собственные правила, выбор модели/reasoning, память и настройки.
 
 ## Поиск в задаче разработки
 

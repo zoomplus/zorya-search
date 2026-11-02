@@ -1,12 +1,12 @@
 # Возможности и границы версий
 
-Матрица фиксирует опубликованный архив `v0.1.6`, последующую поверхность `v0.1.7` и candidate `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Candidate сохраняет прежние возможности и добавляет только опциональное представление MCP stdio. Перед установкой проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag сверяй отдельно в registry.
+Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.8` и описывает версию исходников `v0.1.9` как migration package identity only: runtime/API/CLI behavior и defaults не меняются. Имя пакета — `zorya-search`; наличие точного GitHub tag и npm version `0.1.9` нужно проверить отдельно перед установкой.
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Исторический архив `v0.1.6` | Публикация `v0.1.7` | Candidate `v0.1.8` |
+| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Candidate `v0.1.9` (runtime сохраняет candidate `v0.1.8`) |
 | --- | --- | --- | --- |
 | Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да |
 | Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата | Да |
@@ -20,11 +20,11 @@ Search предоставляет инструменты существующе�
 | SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation |
 | Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
 
-Для candidate setup используй [release availability instructions](../README.md#release-availability): устанавливай asset `v0.1.8`, только если он перечислен, а npm `next` — только после подтверждения version/tag в registry. См. [changelog](../CHANGELOG.md) и [гайд presentation](mcp-result-presentation.md).
+Для установки candidate `v0.1.9` сначала подтверди точный GitHub tag и registry version `zorya-search@0.1.9`; conditional examples находятся в [README](../README.md#release-availability). Это не подтверждение публикации. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 
-Кодовый поиск по умолчанию лексический. Embeddings и reranking требуют явной конфигурации. Candidate добавляет точные symbol/reference queries и ограниченную трассировку статических `call`/`construct` связей. Они не индексируют или не чинят отсутствующие symbol metadata при чтении; отдельный backfill — явная операция с `index` grant. Статический анализ не гарантирует dynamic dispatch, dependency injection, framework wiring или полноту runtime-вызовов. `complete` ограничен объявленной поддерживаемой областью анализа.
+Кодовый поиск по умолчанию лексический. Embeddings и reranking требуют явной конфигурации. Текущая поверхность включает точные symbol/reference queries и ограниченную трассировку статических `call`/`construct` связей. Они не индексируют или не чинят отсутствующие symbol metadata при чтении; отдельный backfill — явная операция с `index` grant. Статический анализ не гарантирует dynamic dispatch, dependency injection, framework wiring или полноту runtime-вызовов. `complete` ограничен объявленной поддерживаемой областью анализа.
 
 Duplicate groups — эвристические кандидаты на точные или переименованные тела. Они есть в архиве `v0.1.6`; наличие кандидата не доказывает поведенческую эквивалентность.
 

@@ -4,7 +4,7 @@
 
 ## Отдельный индекс документов, правил и навыков
 
-`@zorya/search/project-text` экспортирует `createProjectTextIndex`. Индекс ищет Markdown, `.mdc`, `.txt` и другие поддержанные текстовые файлы категорий `documentation`, `rules` и `skills`, включая `AGENTS.md` и `SKILL.md`. Он применяет общие фильтры разрешённого корня, ignore-файлов, размера и безопасности. Это отдельное пространство данных `zorya_project_text_*` в переданной базе: оно не сбрасывает и не заменяет индекс кода или knowledge storage.
+`zorya-search/project-text` экспортирует `createProjectTextIndex`. Индекс ищет Markdown, `.mdc`, `.txt` и другие поддержанные текстовые файлы категорий `documentation`, `rules` и `skills`, включая `AGENTS.md` и `SKILL.md`. Он применяет общие фильтры разрешённого корня, ignore-файлов, размера и безопасности. Это отдельное пространство данных `zorya_project_text_*` в переданной базе: оно не сбрасывает и не заменяет индекс кода или knowledge storage.
 
 Установленная конфигурация управляет включением возможности. Если поле `projectText` отсутствует, сохраняется прежний режим, включая индексацию только кода. Значение `projectText: {}` включает отдельный локальный лексический индекс без моделей. Параметр `--text-env NAME` задаёт профиль `voyageai/voyage-4-large` размерности 1024 для типов входа `document` при индексации и `query` при поиске, а также `voyageai/rerank-2.5-lite`. Этот профиль отдельный от настроек `voyageai/voyage-code-4` и visual профиля Mechanism. При облачной настройке документы отправляются провайдеру во время индексации, а запросы — при поиске. Индексация атомарно публикует новое поколение и связывает результат с репозиторием, рабочей копией, снимком, хешем содержимого и диапазонами строк. Если исходники изменились, чтение со старым `snapshotId` отклоняется. Поиск не дозаполняет индекс: обновление выполняется явно, общей командой `index` или наблюдателем за файлами.
 
@@ -14,8 +14,8 @@
 
 ```ts
 import { isAbsolute, relative, resolve, sep } from 'node:path'
-import { openEmbeddedDatabase } from '@zorya/search'
-import { createProjectTextIndex } from '@zorya/search/project-text'
+import { openEmbeddedDatabase } from 'zorya-search'
+import { createProjectTextIndex } from 'zorya-search/project-text'
 
 const rootInput = process.env.ZORYA_SEARCH_ROOT
 const dataInput = process.env.ZORYA_SEARCH_DATA_DIR

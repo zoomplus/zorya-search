@@ -1,25 +1,25 @@
 # Начало работы с Zorya Search
 
-Это краткое руководство описывает source candidate `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Он сохраняет ранее опубликованные возможности `v0.1.7` и добавляет opt-in выбор MCP stdio presentation. Перед установкой проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag сверяй отдельно в registry.
+Это краткое руководство описывает source/package version `v0.1.9` с unscoped именем пакета `zorya-search`. Меняются только package identity и упаковка; runtime, API, CLI behavior, зависимости и defaults сохраняют `v0.1.8`, включая opt-in structured presentation MCP stdio с `legacy` по умолчанию. Перед установкой проверь, что release page и registry содержат точные tag и npm version.
 
 ## 1. Установи пакет preview
 
-Нужна Node.js `>=20.19.0`. Когда на странице релиза перечислен `zorya-search-0.1.8.tgz`, установи его в проект, который будет владеть Search:
+Нужна Node.js `>=20.19.0`. После проверки точного tag `v0.1.9` и версии в registry установи пакет в проект, который будет владеть Search:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
-npm ls @zorya/search --depth=0
+npm install --save-exact zorya-search@0.1.9
+npm ls zorya-search --depth=0
 ```
 
-Команда URL — рецепт для указанного asset, не подтверждение его наличия. Если используешь npm, сначала проверь, что registry показывает `0.1.8` с тегом `next`; тогда можно выполнить `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.8` только после проверки этой версии в registry. Не используй неприкреплённый `latest` или `npx` для получения отсутствующей версии. Установка GitHub archive не зависит от доступа к npm-аккаунту.
+Запускай эти version-pinned примеры только после проверки точного tag и версии в registry. Исторический архив `v0.1.8` сохраняет прежнее имя пакета; см. changelog.
 
 ## 2. Создай runtime config
 
 Для локального lexical поиска по коду и project-text выбери этот вариант первичного `setup`:
 
 ```sh
-npm exec -- zorya-search setup --root .
-npm exec -- zorya-search client-config
+npx --yes zorya-search@0.1.9 setup --root .
+npx --yes zorya-search@0.1.9 client-config
 ```
 
 Новый `setup` без provider flags создаёт `projectText: {}`: лексический поиск по коду и проектному тексту остаётся локальным, без моделей и облачных запросов. `client-config` только печатает варианты и не регистрирует клиента.

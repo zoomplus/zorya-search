@@ -1,17 +1,17 @@
 # Jev, classification и reuse context
 
-Эта страница описывает Jev/reuse API preview `v0.1.7` на runtime/source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Проверяй [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset: устанавливай перечисленный там файл и сверяй версию пакета. npm install используй только после проверки точной версии или `next` tag в registry; `npx` не получает отсутствующую version-specific сборку. Исторический GitHub archive `v0.1.6` этих API не содержит. Исторические исходные точки интеграции указаны в соответствующих разделах. Краткие разделы и карта потоков: [SDK](sdk.md), [CLI](cli.md), [MCP](mcp.md), [архитектура](architecture.md), [потоки сервисов](service-flows.md).
+Эта страница описывает Jev/reuse API preview `v0.1.7` на runtime/source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Старые release assets сохраняют исходную scoped package identity; текущая версия исходников использует `zorya-search`. Проверяй страницу соответствующего релиза и точное имя/версию в registry до установки. Для версии `0.1.9` используй pinned `zorya-search@0.1.9` только после проверки tag и registry. Не используй `npx` для отсутствующей version-specific сборки. Исторический GitHub archive `v0.1.6` этих API не содержит. Исторические исходные точки интеграции указаны в соответствующих разделах. Краткие разделы и карта потоков: [SDK](sdk.md), [CLI](cli.md), [MCP](mcp.md), [архитектура](architecture.md), [потоки сервисов](service-flows.md).
 
 ## Один Jev Decisions порт
 
 Runtime создаёт `createJevDecisions` при наличии `classifier` в config и передаёт тот же порт `createJevClassifier` и `createReuseContext`. Его профиль закреплён на `typesafe/jev-1.14`, provider route — TypeSafe без fallback, endpoint — `/api/alpha/decisions`, транспорт выполняет одну попытку. `profileId` остаётся метаданными профиля; он не меняет provider или model.
 
-В SDK точка входа `@zorya/search/providers` экспортирует `createJevDecisions`, `createJevClassifier` и совместимый по имени `createOpenRouterClassifier`; `@zorya/search/context` экспортирует `createReuseContext`. Пример связывает существующий `CodeIndex` с одним портом решений:
+В SDK точка входа `zorya-search/providers` экспортирует `createJevDecisions`, `createJevClassifier` и совместимый по имени `createOpenRouterClassifier`; `zorya-search/context` экспортирует `createReuseContext`. Пример связывает существующий `CodeIndex` с одним портом решений:
 
 ```ts
-import { createJevDecisions, createJevClassifier } from '@zorya/search/providers'
-import { createReuseContext } from '@zorya/search/context'
-import type { CodeIndex } from '@zorya/search/code'
+import { createJevDecisions, createJevClassifier } from 'zorya-search/providers'
+import { createReuseContext } from 'zorya-search/context'
+import type { CodeIndex } from 'zorya-search/code'
 
 // CodeIndex и разрешённый root уже созданы/выбраны вызывающим владельцем.
 declare const index: CodeIndex

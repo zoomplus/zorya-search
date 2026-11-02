@@ -63,8 +63,10 @@ function stopOwnedService(entry, config) {
 }
 
 function assertStoragePackagesAreRegularDependencies() {
-  const appRoot = join(consumer, 'node_modules', '@zorya', 'search')
+  const appRoot = join(consumer, 'node_modules', 'zorya-search')
   const manifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
+  assert.equal(manifest.name, 'zorya-search')
+  assert.equal(manifest.version, '0.1.9')
   const requireFromSearch = createRequire(join(appRoot, 'package.json'))
   for (const [name, version] of Object.entries(requiredStoragePackages)) {
     assert.equal(manifest.dependencies?.[name], version, `${name} must be pinned as a regular dependency`)
@@ -97,24 +99,61 @@ try {
   runNpm(['install', '--no-audit', '--no-fund'])
   assertStoragePackagesAreRegularDependencies()
 
-  const entry = join(consumer, 'node_modules', '@zorya', 'search', 'dist', 'cli', 'entry.js')
-  const appRoot = join(consumer, 'node_modules', '@zorya', 'search')
+  const entry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'cli', 'entry.js')
+  const appRoot = join(consumer, 'node_modules', 'zorya-search')
   const packageManifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
   const version = runCli(entry, ['--version']).trim()
   assert.equal(version, packageManifest.version)
   runCli(entry, ['--help'])
+  const clientConfig = JSON.parse(runCli(entry, ['client-config']))
+  assert.equal(clientConfig.registry.command, 'npx')
+  assert.deepEqual(clientConfig.registry.args, [
+    '--yes',
+    `zorya-search@${packageManifest.version}`,
+    'mcp',
+    '--config',
+    clientConfig.configPath,
+  ])
+  assert.equal(clientConfig.registry.args.includes('--result-presentation'), false)
+  assert.deepEqual(clientConfig.registryCodex.args.slice(-6), [
+    'npx',
+    '--yes',
+    `zorya-search@${packageManifest.version}`,
+    'mcp',
+    '--config',
+    clientConfig.configPath,
+  ])
+  const structuredClientConfig = JSON.parse(
+    runCli(entry, ['client-config', '--result-presentation', 'structured']),
+  )
+  assert.deepEqual(structuredClientConfig.registry.args, [
+    '--yes',
+    `zorya-search@${packageManifest.version}`,
+    'mcp',
+    '--config',
+    structuredClientConfig.configPath,
+    '--result-presentation',
+    'structured',
+  ])
   const publicImports = [
-    '@zorya/search',
-    '@zorya/search/code',
-    '@zorya/search/providers',
-    '@zorya/search/context',
-    '@zorya/search/context/web',
-    '@zorya/search/context/classify',
-    '@zorya/search/visual',
-    '@zorya/search/runtime',
-    '@zorya/search/mcp',
-    '@zorya/search/daemon',
+    'zorya-search',
+    'zorya-search/code',
+    'zorya-search/project-text',
+    'zorya-search/providers',
+    'zorya-search/context',
+    'zorya-search/context/web',
+    'zorya-search/context/classify',
+    'zorya-search/visual',
+    'zorya-search/runtime',
+    'zorya-search/mcp',
+    'zorya-search/daemon',
   ]
+  assert.deepEqual(
+    [...publicImports].sort(),
+    Object.keys(packageManifest.exports)
+      .map((path) => path === '.' ? 'zorya-search' : `zorya-search${path.slice(1)}`)
+      .sort(),
+  )
   const importExpression = `for (const name of ${JSON.stringify(publicImports)}) await import(name)`
   execFileSync(process.execPath, ['--input-type=module', '-e', importExpression], {
     cwd: consumer,
@@ -158,7 +197,7 @@ try {
   exerciseInstalledStorage()
 } finally {
   if (ownerMayBeRunning) {
-    const installedEntry = join(consumer, 'node_modules', '@zorya', 'search', 'dist', 'cli', 'entry.js')
+    const installedEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'cli', 'entry.js')
     try {
       stopOwnedService(installedEntry, join(consumer, 'runtime.json'))
     } catch (error) {

@@ -24,24 +24,24 @@ Zorya Search помогает существующему приложению и
 
 ## Доступность релиза
 
-Документация описывает source candidate **`v0.1.8`** на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Он сохраняет ранее опубликованные возможности `v0.1.7` и добавляет opt-in представление результата локального MCP stdio; `legacy` остаётся режимом по умолчанию. Перед установкой проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset, а npm version/tag — отдельно в registry; после установки сверь версию. Четыре нативных прогона подтверждают транспортные поля и сохранение source context только для Codex CLI 0.163.0; это не доказательство качества ответов, преимущества MCP над обычным поиском/чтением или экономии на оплате. См. [руководство представления MCP результата](docs/mcp-result-presentation.md).
+Текущая версия исходников и пакета — **`v0.1.9`** с unscoped npm-именем `zorya-search`. Меняется только имя и упаковка пакета; runtime, публичные API, поведение CLI и defaults сохраняют состояние `v0.1.8`. Structured presentation для MCP остаётся opt-in, а `legacy` — режимом по умолчанию. Перед установкой проверь, что release page и registry содержат точные tag `v0.1.9` и версию `zorya-search@0.1.9`, а после установки сверь имя и версию пакета. Исторические сведения о `v0.1.8` и доказательства native caller сохранены в [руководстве представления результата](docs/mcp-result-presentation.md).
 
-Если на странице релиза перечислен `zorya-search-0.1.8.tgz`, установить его можно при Node.js `>=20.19.0`:
+После подтверждения точной версии `zorya-search@0.1.9` в registry и проверки GitHub tag `v0.1.9` установите пакет при Node.js `>=20.19.0`:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
-npm ls @zorya/search --depth=0
-npm exec -- zorya-search setup --root .
-npm exec -- zorya-search client-config
+npm install --save-exact zorya-search@0.1.9
+npm ls zorya-search --depth=0
+npx --yes zorya-search@0.1.9 setup --root .
+npx --yes zorya-search@0.1.9 client-config
 ```
 
-Эта команда установки предназначена для указанного asset и не подтверждает, что он перечислен. Для npm сначала проверь, что registry показывает `0.1.8` под тегом `next`; затем можно использовать `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.8` только если версия действительно отображается в registry. Не используй неприкреплённый `latest` или `npx` для загрузки отсутствующей сборки. Установка с GitHub не требует npm-аккаунта.
+Запускай эти команды только после проверки точного GitHub tag и версии в registry. Исторический архив `v0.1.8` сохраняет прежнее имя пакета и относящиеся к нему сведения; см. [историю изменений](CHANGELOG.md).
 
 Опубликованный релиз [`v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) остаётся предыдущей базой возможностей и не включает structured stdio. Исторический архив [`v0.1.6`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) — более ранний отдельный вариант установки. `client-config` только печатает примеры; владелец отдельно регистрирует один из них в выбранном клиенте и выдаёт разрешения. Индексация запускается явно, если владелец не включил watch. См. [краткое руководство на русском](docs/getting-started.md), [английское руководство](docs/getting-started.en.md) и [матрицу возможностей](docs/capabilities.md).
 
 ## Пример SDK
 
-Пример ниже в англоязычном [README](README.md#sdk-example) использует лексические SDK API, общие для `v0.1.6`, `v0.1.7` и candidate `v0.1.8`: проверку исходника и кандидатов дубликатов. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
+Пример ниже в англоязычном [README](README.md#sdk-example) использует лексические SDK API, сохранённые в candidate `v0.1.9`, для проверки исходника и кандидатов дубликатов. Используйте импорты `zorya-search` и его subpaths. Базу следует держать вне индексируемого репозитория. Лексический поиск не вызывает embedding provider.
 
 ## Документация
 

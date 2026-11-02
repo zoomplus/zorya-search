@@ -1,16 +1,16 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Кандидат `v0.1.8` сохраняет preview `v0.1.7` и добавляет opt-in `--result-presentation structured` для команд `mcp` и `client-config`. Перед установкой проверь [страницу релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag проверяй отдельно в registry. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Версия исходников `v0.1.9` меняет только npm identity на `zorya-search` и упаковку; runtime, API, CLI behavior, dependencies и defaults сохраняются из `v0.1.8`. Structured presentation остаётся opt-in, `legacy` — default. Наличие точных GitHub tag и npm version нужно проверить отдельно перед установкой. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
-Для Node.js `>=20.19.0` сначала проверьте [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8). Если asset перечислен, установите его точный URL в проект, который будет владеть Search, затем сверяйте package version и schema. Кандидат добавляет только опциональную stdio-презентацию к ранее опубликованным возможностям. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
+Для Node.js `>=20.19.0` проверьте наличие точных GitHub tag `v0.1.9` и npm версии `zorya-search@0.1.9`. До подтверждения обеих публикаций эти команды остаются примерами, не заявлением о доступности. Затем устанавливайте точную версию и сверяйте package identity и schema. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
-npm ls @zorya/search --depth=0
-npm exec -- zorya-search setup --root .
-npm exec -- zorya-search client-config
+npm install --save-exact zorya-search@0.1.9
+npm ls zorya-search --depth=0
+npx --yes zorya-search@0.1.9 setup --root .
+npx --yes zorya-search@0.1.9 client-config
 ```
 
 `client-config` печатает готовые варианты, включая `installedCodex`; владелец отдельно регистрирует нужный вариант в существующем клиенте. После регистрации отдельно выдаются разрешения, запускается `index`, а доступ к моделям включается только при отдельной настройке профиля и ключа. Установка в workspace не использует глобальную команду и не меняет конфигурацию клиента.

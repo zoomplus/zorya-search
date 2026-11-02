@@ -2,7 +2,7 @@
 
 Project-text preset — отдельная конфигурация preview `v0.1.7` для документации, правил и навыков, не профиль code или visual. CLI включает text embedding через `--text-env NAME`; локальный lexical project-text доступен и без него. Пример и ограничения — в [руководстве по тексту проекта](project-text.md). Эта возможность отсутствует в историческом архиве `v0.1.6`; фактическую доступность asset preview проверяй на [странице релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7).
 
-`@zorya/search/providers` экспортирует замороженный `MECHANISM_RETRIEVAL_PRESETS`. Он описывает два независимых пространства векторов, сверенных с конфигурацией retrieval в Mechanism:
+`zorya-search/providers` экспортирует замороженный `MECHANISM_RETRIEVAL_PRESETS`. Он описывает два независимых пространства векторов, сверенных с конфигурацией retrieval в Mechanism:
 
 | Профиль | Модель | Размерность | Кандидаты | Результаты по умолчанию |
 | --- | --- | ---: | ---: | ---: |
@@ -30,7 +30,7 @@ Project-text preset — отдельная конфигурация preview `v0.
 Настройка `mechanism` должна включать `code`, `visual` или оба. Для каждого задаётся обычная runtime `SecretReference` и необязательные общие HTTP limits. Кодовый профиль не принимает дополнительный embedding рядом с `mechanism.code`: такое сочетание отклоняется как неоднозначное. Legacy `reranker` остаётся отдельным профилем web-поиска и не переопределяет кодовый Voyage reranker. Код и visual требуют только явно включённой своей модальности; невыбранный профиль не отправляет запросов.
 
 ```ts
-import { openSearchRuntime } from '@zorya/search/runtime'
+import { openSearchRuntime } from 'zorya-search/runtime'
 
 const runtime = await openSearchRuntime({
   config: {
@@ -68,8 +68,8 @@ MCP tool появляется только когда владелец вклю�
 SDK использует тот же контракт, но владелец сам создаёт короткоживущий visual index:
 
 ```ts
-import { createVisualSearch } from '@zorya/search/visual'
-import { createOpenRouterMultimodalEmbedding, MECHANISM_RETRIEVAL_PRESETS } from '@zorya/search/providers'
+import { createVisualSearch } from 'zorya-search/visual'
+import { createOpenRouterMultimodalEmbedding, MECHANISM_RETRIEVAL_PRESETS } from 'zorya-search/providers'
 
 // bytes и hash получены и проверены вызывающим владельцем; image URL не принимается.
 const visualProvider = createOpenRouterMultimodalEmbedding({

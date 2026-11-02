@@ -21,7 +21,7 @@ import { canonicalFuturePath } from "../runtime/path.js";
 import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
 import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadataUrl, remoteOAuthScopes, validateRemoteOAuthRoots } from "../daemon/remote-oauth.js";
 import { startSearchDaemon } from "../daemon/index.js";
-import { PACKAGE_VERSION } from "../package-version.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "../package-version.js";
 import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
 import { parseResultPresentation } from "../mcp/result-presentation.js";
 
@@ -559,7 +559,7 @@ async function main() {
       command: "npx",
       args: [
         "--yes",
-        `@zorya/search@${CLI_VERSION}`,
+        `${PACKAGE_NAME}@${CLI_VERSION}`,
         "mcp",
         "--config",
         configPath,

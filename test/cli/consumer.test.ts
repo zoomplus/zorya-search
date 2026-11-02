@@ -133,7 +133,8 @@ test(
     const common = ["--config", config];
     const transports: StdioClientTransport[] = [];
     try {
-      assert.equal(installedManifest.name, "@zorya/search");
+      assert.equal(installedManifest.name, "zorya-search");
+      assert.equal(installedManifest.version, "0.1.9");
       const versionResult = await run(["--version"], dir);
       assert.equal(versionResult.code, 0, versionResult.err);
       assert.equal(versionResult.out.trim(), installedManifest.version);
@@ -481,6 +482,7 @@ test(
       r = await run(["client-config", ...common]);
       assert.equal(r.code, 0, r.err);
       const clientConfig = JSON.parse(r.out);
+      assert.equal(clientConfig.registry.command, "npx");
       assert.equal(clientConfig.installed.command, process.execPath);
       assert.deepEqual(clientConfig.installed.args, [
         entry,
@@ -498,11 +500,12 @@ test(
       ]);
       assert.deepEqual(clientConfig.registry.args, [
         "--yes",
-        `@zorya/search@${installedManifest.version}`,
+        `zorya-search@${installedManifest.version}`,
         "mcp",
         "--config",
         await realpath(config),
       ]);
+      assert.equal(clientConfig.registry.args.includes("--result-presentation"), false);
       assert.equal(clientConfig.credentialsIncluded, false);
       r = await run(["client-config", "--result-presentation", "structured", ...common]);
       assert.equal(r.code, 0, r.err);
