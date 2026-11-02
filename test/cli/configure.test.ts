@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import test from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { access, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Client } from '@modelcontextprotocol/client'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
@@ -187,7 +189,7 @@ test('configure can reuse an explicitly selected existing secret reference witho
   }
 })
 
-test('configure accepts a hidden key in a local PTY without echoing it', { timeout: 60_000, skip: process.platform === 'win32' || spawnSync('script', ['--version'], { encoding: 'utf8' }).status !== 0 ? 'GNU script PTY is unavailable.' : false }, async () => {
+test('configure accepts hidden TTY input, restores stream state, and aborts without changing files', { timeout: 60_000, skip: process.platform !== 'linux' || spawnSync('script', ['--version'], { encoding: 'utf8' }).status !== 0 ? 'Linux GNU script PTY is unavailable.' : false }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'zorya-search-configure-pty-'))
   const root = join(dir, 'root')
   const configPath = join(dir, 'config', 'runtime.json')
@@ -197,55 +199,321 @@ test('configure accepts a hidden key in a local PTY without echoing it', { timeo
     await mkdir(dirname(configPath), { recursive: true })
     await writeFile(configPath, `${JSON.stringify({ version: 1, dataDir: join(dir, 'state'), roots: [{ id: 'repo', path: root }] }, null, 2)}\n`, { mode: 0o600 })
     const command = [process.execPath, '--import', 'tsx', cliEntry, 'configure', '--config', configPath, '--capability', 'visual'].map(shellQuote).join(' ')
-    const child = spawn('script', ['-qefc', command, '/dev/null'], { cwd: process.cwd(), env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
-    let transcript = ''
-    let secretSent = false
-    child.stdout.setEncoding('utf8').on('data', (chunk) => {
-      transcript += chunk
-      if (!secretSent && transcript.includes('API key (hidden; stored in the local private secrets file; provider: OpenRouter): ')) {
-        secretSent = true
-        child.stdin.write(canary + '\r')
-        child.stdin.end()
-      }
-    })
-    child.stderr.setEncoding('utf8').on('data', (chunk) => { transcript += chunk })
-    const exitCode = await new Promise<number | null>((resolvePromise, reject) => {
-      child.once('error', reject)
-      child.once('close', resolvePromise)
-    })
-    assert.equal(exitCode, 0, transcript)
-    assert.doesNotMatch(transcript, new RegExp(canary, 'u'))
-    assert.match(transcript, /"providerProbed": false/u)
+    const prompt = 'API key (hidden; stored in the local private secrets file; provider: OpenRouter): '
+    const success = await runOwnedPty(command, prompt, async (write) => {
+      await write(canary.slice(0, 13))
+      await delay(20)
+      await write(`${canary.slice(13)}\r`)
+    }, t.signal, dir, configPath, [canary])
+    assert.equal(success.code, 0, success.transcript)
+    assert.equal(success.groupClosed, true)
+    assert.equal(success.echoDetected, false, success.transcript)
+    assert.match(success.transcript, /"providerProbed": false/u)
     const secrets = JSON.parse(await readFile(join(dirname(configPath), 'secrets.json'), 'utf8')) as Record<string, string>
     assert.deepEqual(Object.values(secrets), [canary])
     if (process.platform !== 'win32') assert.equal((await stat(join(dirname(configPath), 'secrets.json'))).mode & 0o777, 0o600)
     const configBytes = await readFile(configPath, 'utf8')
     const secretsBytes = await readFile(join(dirname(configPath), 'secrets.json'), 'utf8')
     const abortCommand = [process.execPath, '--import', 'tsx', cliEntry, 'configure', '--config', configPath, '--capability', 'web-discovery'].map(shellQuote).join(' ')
-    const aborted = spawn('script', ['-qefc', abortCommand, '/dev/null'], { cwd: process.cwd(), env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
-    let abortTranscript = ''
-    let abortSent = false
-    aborted.stdout.setEncoding('utf8').on('data', (chunk) => {
-      abortTranscript += chunk
-      if (!abortSent && abortTranscript.includes('API key (hidden; stored in the local private secrets file; provider: Brave Search): ')) {
-        abortSent = true
-        aborted.stdin.write('\u0004')
-        aborted.stdin.end()
-      }
-    })
-    aborted.stderr.setEncoding('utf8').on('data', (chunk) => { abortTranscript += chunk })
-    const abortedCode = await new Promise<number | null>((resolvePromise, reject) => {
-      aborted.once('error', reject)
-      aborted.once('close', resolvePromise)
-    })
-    assert.equal(abortedCode, 1, abortTranscript)
-    assert.match(abortTranscript, /CONFIGURE_ABORTED/u)
+    for (const control of ['\u0003', '\u0004']) {
+      const aborted = await runOwnedPty(abortCommand, 'API key (hidden; stored in the local private secrets file; provider: Brave Search): ', (write) => write(control), t.signal, dir, configPath)
+      assert.equal(aborted.code, 1, aborted.transcript)
+      assert.equal(aborted.groupClosed, true)
+      assert.match(aborted.transcript, /CONFIGURE_ABORTED/u)
+      assert.equal(await readFile(configPath, 'utf8'), configBytes)
+      assert.equal(await readFile(join(dirname(configPath), 'secrets.json'), 'utf8'), secretsBytes)
+    }
+
+    const terminalModule = new URL('../../src/cli/configure-terminal.ts', import.meta.url).href
+    const flowingProbe = [
+      `import { stdin, stderr } from 'node:process'`,
+      `import { readHiddenSecret } from ${JSON.stringify(terminalModule)}`,
+      `stdin.resume()`,
+      `const before = stdin.readableFlowing`,
+      `const value = await readHiddenSecret('FLOWING-STATE-PROBE:')`,
+      `stderr.write('FLOWING-STATE-RESULT:' + JSON.stringify({ before, after: stdin.readableFlowing, raw: stdin.isRaw, length: Buffer.byteLength(value) }) + '\\n')`,
+      `stdin.pause()`,
+    ].join(';')
+    const flowingCanary = 'flowing-state-canary'
+    const flowingPrompt = `FLOWING-STATE-PROBE:${randomUUID()}`
+    const flowingCommand = [process.execPath, '--import', 'tsx', '--input-type=module', '-e', flowingProbe.replace('FLOWING-STATE-PROBE:', flowingPrompt)].map(shellQuote).join(' ')
+    const flowing = await runOwnedPty(flowingCommand, flowingPrompt, (write) => write(`${flowingCanary}\r`), t.signal, dir, flowingPrompt, [flowingCanary])
+    assert.equal(flowing.code, 0, flowing.transcript)
+    assert.equal(flowing.groupClosed, true)
+    assert.equal(flowing.echoDetected, false, flowing.transcript)
+    assert.match(flowing.transcript, /FLOWING-STATE-RESULT:\{"before":true,"after":true,"raw":false,"length":20\}/u)
+
+    const eofInjector = join(dir, 'inject-eof.mjs')
+    await writeFile(eofInjector, `import { stderr, stdin } from 'node:process'\nconst original = stderr.write.bind(stderr)\nstderr.write = (chunk, ...args) => { const result = original(chunk, ...args); if (String(chunk).startsWith('API key (hidden;')) setTimeout(() => stdin.emit('end'), 10); return result }\n`)
+    const eofCommand = [process.execPath, '--import', 'tsx', '--import', eofInjector, cliEntry, 'configure', '--config', configPath, '--capability', 'web-discovery'].map(shellQuote).join(' ')
+    const eof = await runOwnedPty(eofCommand, 'API key (hidden; stored in the local private secrets file; provider: Brave Search): ', undefined, t.signal, dir, configPath)
+    assert.equal(eof.code, 1, eof.transcript)
+    assert.equal(eof.groupClosed, true)
+    assert.match(eof.transcript, /CONFIGURE_INPUT_CLOSED/u)
     assert.equal(await readFile(configPath, 'utf8'), configBytes)
     assert.equal(await readFile(join(dirname(configPath), 'secrets.json'), 'utf8'), secretsBytes)
+
+    const errorInjector = join(dir, 'inject-error.mjs')
+    await writeFile(errorInjector, `import { stderr, stdin } from 'node:process'\nconst original = stderr.write.bind(stderr)\nstderr.write = (chunk, ...args) => { const result = original(chunk, ...args); if (String(chunk).startsWith('API key (hidden;')) setTimeout(() => stdin.emit('error', new Error('synthetic input error')), 10); return result }\n`)
+    const errorCommand = [process.execPath, '--import', 'tsx', '--import', errorInjector, cliEntry, 'configure', '--config', configPath, '--capability', 'web-discovery'].map(shellQuote).join(' ')
+    const inputError = await runOwnedPty(errorCommand, 'API key (hidden; stored in the local private secrets file; provider: Brave Search): ', undefined, t.signal, dir, configPath)
+    assert.equal(inputError.code, 1, inputError.transcript)
+    assert.equal(inputError.groupClosed, true)
+    assert.match(inputError.transcript, /CONFIGURE_INPUT_FAILED/u)
+    assert.equal(await readFile(configPath, 'utf8'), configBytes)
+    assert.equal(await readFile(join(dirname(configPath), 'secrets.json'), 'utf8'), secretsBytes)
+
+    const hungMarker = `HUNG-PROBE-${randomUUID()}`
+    const hungCommand = [process.execPath, '-e', `globalThis.__zoryaOwnedProbe=${JSON.stringify(hungMarker)};setInterval(() => {}, 1000)`].map(shellQuote).join(' ')
+    let hungCleanup: PtyCleanupReport | undefined
+    await assert.rejects(
+      runOwnedPty(hungCommand, 'PROMPT_THAT_NEVER_APPEARS', undefined, t.signal, dir, hungMarker, [], (report) => { hungCleanup = report }),
+      /CONFIGURE_PTY_TIMEOUT:spawned/u,
+    )
+    assert.equal(hungCleanup?.innerChildPidObserved, true)
+    assert.equal(hungCleanup?.innerChildAbsent, true)
+    assert.equal(hungCleanup?.outerGroupClosed, true)
+    assert.ok(hungCleanup?.innerChildPid)
+    assert.ok(hungCleanup.innerChildStartTime)
+    const afterHungCleanup = await readProcessInfo(hungCleanup.innerChildPid)
+    assert.ok(!afterHungCleanup || afterHungCleanup.startTime !== hungCleanup.innerChildStartTime)
+    t.diagnostic(`timed-out inner child pid ${hungCleanup.innerChildPid} original process absent; outer process group closed`)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+type PtyCleanupReport = { innerChildPidObserved: boolean; innerChildPid?: number; innerChildStartTime?: string; innerChildAbsent: boolean; outerGroupClosed: boolean }
+type OwnedPtyChild = { pid: number; startTime: string; identityMarker: string }
+
+async function runOwnedPty(command: string, prompt: string, respond: ((write: (value: string) => Promise<void>) => Promise<void>) | undefined, signal: AbortSignal, ownedDir: string, identityMarker: string, canaries: readonly string[] = [], onCleanup?: (report: PtyCleanupReport | undefined) => void) {
+  const ownerToken = randomUUID()
+  const childPidFile = join(ownedDir, `pty-child-${ownerToken}.pid`)
+  const wrappedCommand = `printf '%s\\n' "$$" > ${shellQuote(childPidFile)}; exec ${command}`
+  const child = spawn('script', ['-qefc', wrappedCommand, '/dev/null'], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true,
+  })
+  let transcript = ''
+  let phase = 'spawned'
+  let responseStarted = false
+  let responseError: unknown
+  let closed = false
+  let timeout: NodeJS.Timeout | undefined
+  let termination: Promise<PtyCleanupReport> | undefined
+  let cleanupReport: PtyCleanupReport | undefined
+  const closePromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolvePromise, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, childSignal) => { closed = true; resolvePromise({ code, signal: childSignal }) })
+  })
+  const write = (value: string) => new Promise<void>((resolvePromise, reject) => {
+    child.stdin.write(value, (error) => error ? reject(error) : resolvePromise())
+  })
+  const onOutput = (chunk: string) => {
+    transcript += chunk
+    if (!responseStarted && transcript.includes(prompt)) {
+      responseStarted = true
+      phase = 'prompt-observed'
+      if (respond) void respond(write).then(() => { phase = 'input-sent' }).catch((error: unknown) => { responseError = error; phase = 'input-write-failed' })
+    }
+  }
+  child.stdout.setEncoding('utf8').on('data', onOutput)
+  child.stderr.setEncoding('utf8').on('data', onOutput)
+  const terminate = () => termination ??= terminateOwnedGroup(child, closePromise, () => closed, childPidFile, identityMarker).then((report) => { cleanupReport = report; return report })
+  const abort = () => { phase = `aborted:${phase}`; void terminate() }
+  let onTestAbort: (() => void) | undefined
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    const finished = await Promise.race([
+      closePromise.then((result) => ({ kind: 'closed' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolvePromise) => { timeout = setTimeout(() => resolvePromise({ kind: 'timeout' }), 12_000) }),
+      new Promise<{ kind: 'aborted' }>((resolvePromise) => {
+        onTestAbort = () => resolvePromise({ kind: 'aborted' })
+        if (signal.aborted) onTestAbort()
+        else signal.addEventListener('abort', onTestAbort, { once: true })
+      }),
+    ])
+    if (finished.kind === 'timeout') throw new Error(`CONFIGURE_PTY_TIMEOUT:${phase}`)
+    if (finished.kind === 'aborted') throw new Error(`CONFIGURE_PTY_ABORTED:${phase}`)
+    if (!responseStarted) throw new Error('CONFIGURE_PTY_PROMPT_NOT_OBSERVED')
+    if (responseError) throw new Error(`CONFIGURE_PTY_INPUT_FAILED:${phase}`)
+    const innerChildAbsent = await waitForOwnedChildAbsent(childPidFile, identityMarker)
+    const groupClosed = await waitForOwnedGroupClose(child.pid!) && innerChildAbsent
+    const echoDetected = canaries.some((canary) => transcript.includes(canary))
+    return { ...finished.result, transcript: redactCanaries(transcript, canaries), groupClosed, echoDetected }
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    signal.removeEventListener('abort', abort)
+    if (onTestAbort) signal.removeEventListener('abort', onTestAbort)
+    if (child.pid && (!closed || await ownedGroupExists(child.pid) || await readOwnedChild(childPidFile, identityMarker))) await terminate()
+    onCleanup?.(cleanupReport)
+  }
+}
+
+async function terminateOwnedGroup(child: ReturnType<typeof spawn>, closePromise: Promise<unknown>, isClosed: () => boolean, childPidFile: string, identityMarker: string): Promise<PtyCleanupReport> {
+  const pid = child.pid
+  if (!pid || process.platform === 'win32') return { innerChildPidObserved: false, innerChildAbsent: true, outerGroupClosed: true }
+  const signalGroup = (signalName: NodeJS.Signals) => { try { process.kill(-pid, signalName) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error } }
+  let ownedChild: OwnedPtyChild | undefined
+  let identityFailure: unknown
+  let groupFailure: unknown
+  try {
+    ownedChild = await waitForOwnedChild(childPidFile, identityMarker, 500)
+    if (ownedChild) await signalOwnedChild(ownedChild, 'SIGTERM')
+  } catch (error) {
+    identityFailure = error
+  } finally {
+    try {
+      if (!isClosed()) {
+        signalGroup('SIGTERM')
+        const closedGracefully = await Promise.race([closePromise.then(() => true, () => true), delay(750).then(() => false)])
+        if (!closedGracefully) {
+          if (ownedChild) await signalOwnedChild(ownedChild, 'SIGKILL')
+          signalGroup('SIGKILL')
+        }
+        if (!isClosed()) await Promise.race([closePromise.then(() => undefined, () => undefined), delay(1500)])
+      }
+      if (await ownedGroupExists(pid)) {
+        if (isClosed()) throw new Error('CONFIGURE_PTY_PROCESS_GROUP_NOT_CLOSED')
+        signalGroup('SIGKILL')
+      }
+      if (!await waitForOwnedGroupClose(pid, 1000)) throw new Error('CONFIGURE_PTY_PROCESS_GROUP_NOT_CLOSED')
+    } catch (error) {
+      groupFailure = error
+    }
+  }
+  if (identityFailure) throw identityFailure
+  if (groupFailure) throw groupFailure
+  let innerChildAbsent = !ownedChild || await waitForOwnedChildClose(ownedChild)
+  if (!innerChildAbsent && ownedChild) {
+    await signalOwnedChild(ownedChild, 'SIGKILL')
+    innerChildAbsent = await waitForOwnedChildClose(ownedChild, 1000)
+    if (!innerChildAbsent) throw new Error('CONFIGURE_PTY_CHILD_NOT_CLOSED')
+  }
+  return {
+    innerChildPidObserved: ownedChild !== undefined,
+    ...(ownedChild ? { innerChildPid: ownedChild.pid, innerChildStartTime: ownedChild.startTime } : {}),
+    innerChildAbsent,
+    outerGroupClosed: true,
+  }
+}
+
+async function waitForOwnedGroupClose(pid: number, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!await ownedGroupExists(pid)) return true
+    await delay(25)
+  }
+  return !await ownedGroupExists(pid)
+}
+
+async function ownedGroupExists(pid: number) {
+  if (process.platform === 'win32') return false
+  try { process.kill(-pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
+}
+
+async function readOwnedChild(pidFile: string, identityMarker: string): Promise<OwnedPtyChild | undefined> {
+  const value = await readFile(pidFile, 'utf8').catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  })
+  if (value === undefined) return undefined
+  if (!value.trim()) throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  const pid = Number(value.trim())
+  if (!Number.isInteger(pid) || pid < 1) throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  const status = await processOwnerStatus(pid, identityMarker)
+  if (status === 'foreign-or-reused') return undefined
+  if (status === 'unverified') throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  if (status === 'absent') return undefined
+  const processInfo = await readProcessInfo(pid)
+  if (!processInfo) return undefined
+  return { pid, startTime: processInfo.startTime, identityMarker }
+}
+
+async function waitForOwnedChild(pidFile: string, identityMarker: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs
+  do {
+    const child = await readOwnedChild(pidFile, identityMarker)
+    if (child) return child
+    await delay(25)
+  } while (Date.now() < deadline)
+  return readOwnedChild(pidFile, identityMarker)
+}
+
+async function waitForOwnedChildAbsent(pidFile: string, identityMarker: string, timeoutMs = 1000) {
+  const value = await readFile(pidFile, 'utf8').catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+    throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  })
+  const pid = Number(value.trim())
+  if (!Number.isInteger(pid) || pid < 1) throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  let ownedStartTime: string | undefined
+  const deadline = Date.now() + timeoutMs
+  do {
+    const status = await processOwnerStatus(pid, identityMarker)
+    if (status === 'absent' || status === 'foreign-or-reused') return true
+    if (status === 'unverified') throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+    const info = await readProcessInfo(pid)
+    if (!info) return true
+    if (ownedStartTime === undefined) ownedStartTime = info.startTime
+    else if (info.startTime !== ownedStartTime) return true
+    await delay(25)
+  } while (Date.now() < deadline)
+  return false
+}
+
+async function processOwnerStatus(pid: number, identityMarker: string): Promise<'owned' | 'foreign-or-reused' | 'absent' | 'unverified'> {
+  try {
+    const commandLine = await readFile(`/proc/${pid}/cmdline`, 'utf8')
+    return commandLine.includes(identityMarker) ? 'owned' : 'foreign-or-reused'
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ESRCH' ? 'absent' : 'unverified'
+  }
+}
+
+async function waitForOwnedChildClose(child: OwnedPtyChild, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const processInfo = await readProcessInfo(child.pid)
+    if (!processInfo || processInfo.startTime !== child.startTime) return true
+    await delay(25)
+  }
+  const processInfo = await readProcessInfo(child.pid)
+  return !processInfo || processInfo.startTime !== child.startTime
+}
+
+async function readProcessInfo(pid: number) {
+  try {
+    const statText = await readFile(`/proc/${pid}/stat`, 'utf8')
+    const closeParen = statText.lastIndexOf(')')
+    const fields = statText.slice(closeParen + 2).trim().split(/\s+/u)
+    const state = fields[0]
+    const startTime = fields[19]
+    if (!state || !startTime) throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+    return { state, startTime }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED') throw error
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ESRCH') return undefined
+    throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  }
+}
+
+async function signalOwnedChild(child: OwnedPtyChild, signalName: NodeJS.Signals) {
+  const status = await processOwnerStatus(child.pid, child.identityMarker)
+  if (status === 'absent' || status === 'foreign-or-reused') return
+  if (status === 'unverified') throw new Error('CONFIGURE_PTY_CHILD_IDENTITY_UNVERIFIED')
+  const processInfo = await readProcessInfo(child.pid)
+  if (!processInfo || processInfo.startTime !== child.startTime) return
+  try { process.kill(child.pid, signalName) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+}
+
+function redactCanaries(value: string, canaries: readonly string[]) {
+  return canaries.reduce((text, canary) => text.replaceAll(canary, '<redacted>'), value)
+}
 
 test('configure refuses incompatible provider secret references before changing config', { timeout: 60_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'zorya-search-configure-family-'))

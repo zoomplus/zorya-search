@@ -3,11 +3,9 @@ import { createInterface } from 'node:readline/promises'
 
 export async function readHiddenSecret(prompt: string): Promise<string> {
   if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') throw new Error('CONFIGURE_SECRET_TTY_REQUIRED')
-  stderr.write(prompt)
   const priorRaw = stdin.isRaw
-  const priorPaused = stdin.isPaused()
+  const priorFlowing = stdin.readableFlowing
   stdin.setRawMode(true)
-  stdin.resume()
   let value = ''
   try {
     return await new Promise<string>((resolve, reject) => {
@@ -48,11 +46,13 @@ export async function readHiddenSecret(prompt: string): Promise<string> {
       stdin.on('data', onData)
       stdin.once('end', onEnd)
       stdin.once('error', onError)
+      stdin.resume()
+      stderr.write(prompt)
     })
   } finally {
     stdin.setRawMode(priorRaw ?? false)
-    if (priorPaused) stdin.pause()
-    else stdin.resume()
+    if (priorFlowing === true) stdin.resume()
+    else stdin.pause()
     stderr.write('\n')
   }
 }
