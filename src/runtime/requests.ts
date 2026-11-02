@@ -2,6 +2,21 @@ import { z } from 'zod'
 import { webDateRangeSchema } from '../core/contracts.js'
 
 const idField = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/)
+export const sourceReadRecoverySchema = z.object({
+  fileLineCount: z.number().int().min(1).max(10_000_001),
+  lineStart: z.number().int().min(1).max(10_000_001),
+  snapshotId: z.string().regex(/^[a-f0-9]{64}$/u),
+  maxDefaultLines: z.literal(200),
+}).strict().refine((value) => value.lineStart <= value.fileLineCount)
+export type SourceReadRecovery = Readonly<z.infer<typeof sourceReadRecoverySchema>>
+export function parseSourceReadRecovery(value: unknown): SourceReadRecovery | undefined {
+  try {
+    const parsed = sourceReadRecoverySchema.safeParse(value)
+    return parsed.success ? Object.freeze(parsed.data) : undefined
+  } catch {
+    return undefined
+  }
+}
 export const statusRequest = z.object({ rootId: idField }).strict()
 export const indexStatusRequest = z.object({ rootId: idField, jobId: z.string().uuid().optional() }).strict()
 export const indexRequest = statusRequest
@@ -73,8 +88,8 @@ export const readRequest = z
   .object({
     rootId: idField,
     path: z.string().min(1).max(1024),
-    lineStart: z.number().int().min(1).max(10_000_000).optional(),
-    lineEnd: z.number().int().min(1).max(10_000_000).optional(),
+    lineStart: z.number().int().min(1).max(10_000_000).optional().describe('Defaults to line 1. Explicit values must be within the current source file.'),
+    lineEnd: z.number().int().min(1).max(10_000_000).optional().describe('Omit to read at most 200 lines from lineStart. An explicit end must exist in the current file and span at most 1000 lines.'),
     snapshotId: z.string().min(1).max(256).optional(),
   })
   .strict()

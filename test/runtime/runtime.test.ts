@@ -10,7 +10,7 @@ import {
   RuntimeConfigError,
   SearchRuntimeError,
 } from '../../src/runtime/index.js'
-import { codeDuplicatesRequest } from '../../src/runtime/requests.js'
+import { codeDuplicatesRequest, parseSourceReadRecovery, sourceReadRecoverySchema } from '../../src/runtime/requests.js'
 import { readBoundedRegularFile } from '../../src/runtime/config.js'
 import { createHash } from 'node:crypto'
 
@@ -22,6 +22,77 @@ test('code duplicate request is bounded, strict, and defaults remain index-owned
   )
   assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'app', minTokens: 11 }).success, false)
   assert.equal(codeDuplicatesRequest.safeParse({ rootId: 'app', unknown: true }).success, false)
+})
+
+test('runtime errors attach only valid range recovery and omit absent fields', () => {
+  const valid = { fileLineCount: 3, lineStart: 1, snapshotId: 'a'.repeat(64), maxDefaultLines: 200 }
+  const ordinary = new SearchRuntimeError('OPERATION_FAILED')
+  assert.equal('sourceReadRecovery' in ordinary, false)
+  assert.equal(Object.keys(ordinary).includes('sourceReadRecovery'), false)
+
+  const accepted = new SearchRuntimeError('CODE_INDEX_LINE_RANGE_INVALID', undefined, undefined, undefined, valid)
+  assert.deepEqual(accepted.sourceReadRecovery, valid)
+  assert.equal(Object.isFrozen(accepted.sourceReadRecovery), true)
+
+  const invalid = new SearchRuntimeError('CODE_INDEX_LINE_RANGE_INVALID', undefined, undefined, undefined, { ...valid, secret: 'must not attach' })
+  assert.equal('sourceReadRecovery' in invalid, false)
+  const unrelated = new SearchRuntimeError('CANCELLED', undefined, undefined, undefined, valid)
+  assert.equal('sourceReadRecovery' in unrelated, false)
+
+  const malformed = Object.defineProperty({}, 'fileLineCount', {
+    enumerable: true,
+    get() { throw new Error('accessor-secret-must-not-escape') },
+  })
+  assert.equal(parseSourceReadRecovery(malformed), undefined)
+})
+
+test('runtime carries validated recovery only from the actual strict source reader', async () => {
+  const f = await fixture()
+  let runtime: Awaited<ReturnType<typeof openSearchRuntime>> | undefined
+  try {
+    const source = Array.from({ length: 57 }, (_, index) => `line ${index + 1}`).join('\n')
+    await writeFile(join(f.a, 'range.ts'), source)
+    runtime = await openSearchRuntime({ config: f.config })
+    await runtime.indexRepository({ rootId: 'a' })
+    const snapshotId = (await runtime.indexStatus({ rootId: 'a' })).identity?.snapshotId
+    assert.match(snapshotId ?? '', /^[a-f0-9]{64}$/u)
+    await assert.rejects(
+      runtime.readSource({ rootId: 'a', path: 'range.ts', lineStart: 1, lineEnd: 58 }),
+      (error: unknown) => {
+        assert.ok(error instanceof SearchRuntimeError)
+        assert.equal(error.code, 'CODE_INDEX_LINE_RANGE_INVALID')
+        assert.deepEqual(error.sourceReadRecovery, {
+          fileLineCount: 57,
+          lineStart: 1,
+          snapshotId,
+          maxDefaultLines: 200,
+        })
+        assert.equal(Object.isFrozen(error.sourceReadRecovery), true)
+        return true
+      },
+    )
+    const recovery = sourceReadRecoverySchema.parse({ fileLineCount: 57, lineStart: 1, snapshotId, maxDefaultLines: 200 })
+    assert.equal((await runtime.readSource({ rootId: 'a', path: 'range.ts', lineStart: recovery.lineStart, snapshotId: recovery.snapshotId })).text, source)
+    await assert.rejects(
+      runtime.readSource({ rootId: 'a', path: 'range.ts', lineStart: 1, lineEnd: 58, snapshotId: '0'.repeat(64) }),
+      (error: unknown) => error instanceof SearchRuntimeError && error.code === 'CODE_INDEX_SNAPSHOT_MISMATCH' && error.sourceReadRecovery === undefined,
+    )
+    const cancelled = new AbortController()
+    cancelled.abort()
+    await assert.rejects(
+      runtime.readSource({ rootId: 'a', path: 'range.ts', lineStart: 1, lineEnd: 58, signal: cancelled.signal }),
+      (error: unknown) => error instanceof SearchRuntimeError && error.code === 'CANCELLED' && error.sourceReadRecovery === undefined,
+    )
+    await writeFile(join(f.a, 'range.ts'), `${source}\nchanged`)
+    await assert.rejects(
+      runtime.readSource({ rootId: 'a', path: 'range.ts', lineStart: 1, lineEnd: 58 }),
+      (error: unknown) => error instanceof SearchRuntimeError && ['CODE_INDEX_SOURCE_CHANGED', 'CODE_INDEX_STALE'].includes(error.code) && error.sourceReadRecovery === undefined,
+    )
+    assert.equal(sourceReadRecoverySchema.safeParse({ fileLineCount: 57, lineStart: 1, snapshotId, maxDefaultLines: 200, message: 'leak' }).success, false)
+  } finally {
+    await runtime?.close()
+    await rm(f.dir, { recursive: true, force: true })
+  }
 })
 
 test('runtime rejects non-Jev classifier configuration during parse before data ownership', async () => {

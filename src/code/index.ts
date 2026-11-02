@@ -1232,7 +1232,7 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
     const lines = currentFile.text.split(/\r?\n/u)
     const start = input.lineStart ?? 1
     const end = input.lineEnd ?? Math.min(lines.length, start + 199)
-    if (
+    const invalidRange =
       !Number.isInteger(start) ||
       !Number.isInteger(end) ||
       start < 1 ||
@@ -1240,21 +1240,28 @@ export function createCodeIndex(options: CodeIndexOptions): CodeIndex {
       end < start ||
       end > lines.length ||
       end - start > 999
-    )
-      throw new CodeIndexError('CODE_INDEX_LINE_RANGE_INVALID')
-    const text = lines.slice(start - 1, end).join('\n')
+    const text = invalidRange ? undefined : lines.slice(start - 1, end).join('\n')
     if (scope) assertReadScope(scope, input.root, input.signal!)
     else {
       const after = await current(input.root, input.signal)
       if (after.snapshot !== before.snapshot)
         throw new CodeIndexError('CODE_INDEX_SOURCE_CHANGED_DURING_READ')
     }
+    checkAbort(input.signal)
+    if (invalidRange) {
+      throw new CodeIndexError('CODE_INDEX_LINE_RANGE_INVALID', 'CODE_INDEX_LINE_RANGE_INVALID', undefined, {
+        fileLineCount: lines.length,
+        lineStart: Number.isInteger(start) && start >= 1 && start <= lines.length ? start : 1,
+        snapshotId: before.snapshot,
+        maxDefaultLines: 200,
+      })
+    }
     return {
       path: input.path.replaceAll('\\', '/'),
       lineStart: start,
       lineEnd: Math.min(end, lines.length),
       fileLineCount: lines.length,
-      text,
+      text: text!,
       contentHash: currentFile.hash,
       snapshotId: before.snapshot,
       stale: false,

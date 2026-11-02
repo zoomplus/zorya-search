@@ -33,8 +33,19 @@ flowchart TD
  U --> V
  V --> W["readSource: verify snapshot + content hash"]
  W --> AA{"Source current?"}
- AA -->|"yes"| AB["Bounded source ranges"]
+ AA -->|"yes"| RRANGE
  AA -->|"no"| AC["Stale/currentness refusal"]
+ RRANGE{"Explicit range valid?"}
+ RRANGE -->|"yes"| AB["Bounded source ranges"]
+ RRANGE -->|"no"| RINVALID["Strict range error"]
+ RINVALID --> RFENCE{"Reader currentness/cancellation fence"}
+ RFENCE -->|"current"| RMETA["Optional CodeIndexError.details"]
+ RFENCE -->|"stale / cancelled"| AC
+ RMETA --> RDTO{"Runtime recovery DTO validates?"}
+ RDTO -->|"no / legacy"| RREFUSAL["Keep original range refusal"]
+ RDTO -->|"yes"| RPOINTER["MCP validates pointer for granted root; omit lineEnd"]
+ RPOINTER --> RCALLER["Caller decides whether to issue strict follow-up read"]
+ RCALLER --> W
  AD["duplicates / symbols / references"] --> AE["AST and static links with explicit coverage"]
 ```
 
@@ -68,5 +79,7 @@ Reuse не индексирует проект заново, не меняет e
 Symbol metadata учитывает настроенное `maxFiles` code index при построении, чтении и проверке актуальности. Значение по умолчанию остаётся 5 000, а заданный предел до 20 000 не подменяется скрытой границей 5 000 при обработке symbols. Неподдерживаемые типы файлов и неразрешённые статические связи остаются в partial coverage; `complete` не означает полноту runtime-графа.
 
 Embeddings и reranking — самостоятельные необязательные retrieval-порты. Jev оценивает смысл запроса и кандидатов только в путях reuse/classification; он не выбирает retrieval profile и не доказывает истинность или безопасность найденного кода.
+
+`readSource` строго отклоняет любой явный недопустимый диапазон: начало вне файла, конец за EOF или span больше 1000 строк. Для стабильной ошибки фактического файла reader после currentness/cancellation fence может приложить к `CodeIndexError.details` только число строк, безопасный `lineStart`, `snapshotId` и default cap 200 строк. Runtime валидирует DTO; MCP проверяет указатель по строгой read-схеме и уже проверенному grant для root. `lineEnd` опускается. Клиент сам решает, выполнять ли новый строгий read; этот read снова проверяет snapshot. Отказ не смягчается, а источник не ограничивается молча, не индексируется и не отправляется внешнему provider.
 
 Действующие операции включают `indexRepository`, `searchCode`, `readSource`, `findCodeDuplicates`, `indexCodeSymbols`, `findCodeSymbols`, `findCodeReferences`, `traceCodeCalls`, `relatedCode`. Исходники: [`index.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/index.ts), [`ranking.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/ranking.ts), [`duplicates.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/duplicates.ts), [`schema.ts`](https://github.com/zoomplus/zorya-search/blob/main/src/code/schema.ts).

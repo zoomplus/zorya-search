@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import { createCodeIndex } from '../code/index.js'
+import { CodeIndexError } from '../code/errors.js'
 import { watchCodeRoot } from '../code/watch.js'
 import { createProjectTextIndex } from '../project-text/index.js'
 import type {
@@ -77,6 +78,8 @@ import {
   visualSearchRequest,
   startIndexingRequest,
   cancelIndexingRequest,
+  parseSourceReadRecovery,
+  type SourceReadRecovery,
 } from './requests.js'
 import {
   loadRuntimeConfig,
@@ -95,14 +98,20 @@ export {
 export type { RuntimeConfig } from './config.js'
 
 export class SearchRuntimeError extends Error {
+  declare readonly sourceReadRecovery?: SourceReadRecovery
   constructor(
     readonly code: string,
     readonly status?: number,
     readonly retryAfterMs?: number,
     options?: ErrorOptions,
+    sourceReadRecovery?: unknown,
   ) {
     super(`Search runtime operation failed: ${code}`, options)
     this.name = 'SearchRuntimeError'
+    const recovery = code === 'CODE_INDEX_LINE_RANGE_INVALID'
+      ? parseSourceReadRecovery(sourceReadRecovery)
+      : undefined
+    if (recovery) this.sourceReadRecovery = recovery
   }
 }
 export interface RuntimeRoot {
@@ -1979,6 +1988,13 @@ function sanitize(
     return new SearchRuntimeError('CANCELLED')
   }
   if (error instanceof SearchRuntimeError) return error
+  if (error instanceof CodeIndexError && error.code === 'CODE_INDEX_LINE_RANGE_INVALID') {
+    const details = Object.getOwnPropertyDescriptor(error, 'details')
+    const recovery = parseSourceReadRecovery(details && 'value' in details ? details.value : undefined)
+    return recovery
+      ? new SearchRuntimeError(error.code, undefined, undefined, undefined, recovery)
+      : new SearchRuntimeError(error.code)
+  }
   if (error instanceof RuntimeConfigError) return new SearchRuntimeError(error.code)
   if (error instanceof ProviderError)
     return new SearchRuntimeError(

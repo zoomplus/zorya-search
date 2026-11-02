@@ -112,6 +112,56 @@ async function index(
   return { database, code }
 }
 
+test('strict out-of-file source ranges carry only bounded current snapshot recovery metadata', async () => {
+  const root = await repository()
+  const source = Array.from({ length: 57 }, (_, i) => `line ${i + 1}`).join('\n')
+  const longSource = Array.from({ length: 1101 }, (_, i) => `long ${i + 1}`).join('\n')
+  await writeFile(join(root, 'plain.ts'), source)
+  await writeFile(join(root, 'newline.ts'), `${source}\n`)
+  await writeFile(join(root, 'long.ts'), longSource)
+  await commit(root, 'source read range fixtures')
+  const { code } = await index(root)
+  await code.indexRepository({ root })
+  const snapshotId = (await code.indexStatus(root)).identity?.snapshotId
+  assert.match(snapshotId ?? '', /^[a-f0-9]{64}$/u)
+
+  for (const [path, fileLineCount] of [['plain.ts', 57], ['newline.ts', 58]] as const) {
+    await assert.rejects(
+      code.readSource({ root, path, lineStart: 1, lineEnd: fileLineCount + 1 }),
+      (error: unknown) => {
+        assert.ok(error instanceof CodeIndexError)
+        assert.equal(error.code, 'CODE_INDEX_LINE_RANGE_INVALID')
+        assert.deepEqual(error.details, {
+          fileLineCount,
+          lineStart: 1,
+          snapshotId,
+          maxDefaultLines: 200,
+        })
+        return true
+      },
+    )
+  }
+  await assert.rejects(
+    code.readSource({ root, path: 'plain.ts', lineStart: 999, lineEnd: 1000 }),
+    (error: unknown) => error instanceof CodeIndexError && error.details?.lineStart === 1,
+  )
+  await assert.rejects(
+    code.readSource({ root, path: 'plain.ts', lineStart: 1, lineEnd: 1001 }),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_LINE_RANGE_INVALID' && error.details?.maxDefaultLines === 200,
+  )
+  await assert.rejects(
+    code.readSource({ root, path: 'long.ts', lineStart: 1, lineEnd: 1001 }),
+    (error: unknown) => error instanceof CodeIndexError && error.code === 'CODE_INDEX_LINE_RANGE_INVALID' && error.details?.fileLineCount === 1101,
+  )
+  const bounded = await code.readSource({ root, path: 'long.ts', lineStart: 1, snapshotId })
+  assert.equal(bounded.lineEnd, 200)
+  assert.equal(bounded.text.split('\n').length, 200)
+  const suggested = await code.readSource({ root, path: 'plain.ts', lineStart: 1, snapshotId })
+  assert.equal(suggested.text, source)
+  assert.equal(suggested.fileLineCount, 57)
+  assert.equal(suggested.snapshotId, snapshotId)
+})
+
 test('bounded rerank shortlist can promote a candidate beyond the requested output limit', async () => {
   const root = await repository()
   await writeFile(join(root, 'candidates.ts'), Array.from({ length: 12 }, (_, i) => `export function candidate${i}() { return "needle" }`).join('\n'))

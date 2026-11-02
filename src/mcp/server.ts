@@ -32,6 +32,7 @@ import {
   findCodeSymbolsRequest,
   findCodeReferencesRequest,
   traceCodeCallsRequest,
+  parseSourceReadRecovery,
 } from '../runtime/requests.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 import { compactReuseContext } from './reuse-presentation.js'
@@ -314,7 +315,30 @@ export function createSearchMcpServer(
             }
             return boundedSuccess(result)
           } catch (error) {
-            return failure(safeCode(error))
+            const code = safeCode(error)
+            if (name === 'read_source' && error instanceof SearchRuntimeError) {
+              const recoveryDescriptor = Object.getOwnPropertyDescriptor(error, 'sourceReadRecovery')
+              const recovery = parseSourceReadRecovery(
+                recoveryDescriptor && 'value' in recoveryDescriptor ? recoveryDescriptor.value : undefined,
+              )
+              if (error.code === 'CODE_INDEX_LINE_RANGE_INVALID' && recovery) {
+                const pointer = readRequest.safeParse({
+                  rootId: String((input as { rootId: string }).rootId),
+                  path: String((input as { path: string }).path),
+                  lineStart: recovery.lineStart,
+                  snapshotId: recovery.snapshotId,
+                })
+                if (pointer.success) {
+                  return failure(code, {
+                    fileLineCount: recovery.fileLineCount,
+                    maxDefaultLines: 200,
+                    requestedRangeFulfilled: false,
+                    readSourceRequest: pointer.data,
+                  })
+                }
+              }
+            }
+            return failure(code)
           }
         },
       )
@@ -451,10 +475,10 @@ function safeCode(error: unknown): string {
   return 'OPERATION_FAILED'
 }
 const runtimeErrorCodes = new Set(SEARCH_RUNTIME_ERROR_CODES)
-function failure(code: string) {
+function failure(code: string, recovery?: Record<string, unknown>) {
   return {
     isError: true,
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: code }) }],
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: code, ...(recovery ? { recovery } : {}) }) }],
   }
 }
 function boundedSuccess(result: unknown) {
