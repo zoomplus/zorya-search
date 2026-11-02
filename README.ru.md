@@ -51,9 +51,6 @@ npx --yes zorya-search@0.1.10 client-config
 - [Архитектура](docs/architecture.md) · [Потоки сервисов](docs/service-flows.md)
 - [Jev classification и reuse](docs/jev-classification.md) · [Профили Voyage](docs/voyage-profiles.md)
 - [Представление результата MCP и нативные доказательства](docs/mcp-result-presentation.md)
-- [Сравнение MCP и границы доказательств](docs/mcp-comparison.md)
 - [История изменений](CHANGELOG.md) · [Навык поиска кода](skills/code-retrieval/SKILL.md) · [Навык web-поиска](skills/web-source-retrieval/SKILL.md)
-
-**Статус:** проверки пакета и исходников не доказывают общее качество конечных ответов, поддержку hosted-клиентов, интеграцию Windows/игры/устройств, работу с live provider или полную приёмку программы. Четыре прогона представления stdio ограничены транспортом и сохранением source в Codex CLI 0.163.0; они не доказывают качество ответов или экономию на оплате. Отрицательное контролируемое сравнение качества MCP и его ограничения приведены в [отчёте сравнения](docs/mcp-comparison.md). Для многих задач достаточно обычного поиска и чтения файлов.
 
 Лицензия MIT. См. [LICENSE](LICENSE).

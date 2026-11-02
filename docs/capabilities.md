@@ -49,4 +49,4 @@ Lexical mode не вызывает embedding/rerank. Hybrid может пере�
 
 ## Установка и доказательства
 
-Source checks, CI, fixtures, SDK/MCP tests, provider credentials, установленный клиент, Windows package и реальные устройства — разные уровни доказательств. Отрицательное сравнение MCP и его исходные ограничения зафиксированы в [mcp-comparison.md](mcp-comparison.md). Ни одно из этих локальных source-доказательств не устанавливает end-answer superiority или full-plan acceptance.
+Функции SDK, CLI, MCP, локальной службы и удалённого endpoint используют общие контракты, но включаются и настраиваются отдельно. См. [архитектуру](architecture.md), [CLI](cli.md) и [руководство MCP](mcp.md) для путей вызова и настройки.

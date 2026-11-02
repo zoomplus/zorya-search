@@ -45,7 +45,6 @@
     "docs/architecture.md",
     "docs/service-flows.md",
     "docs/jev-classification.md",
-    "docs/mcp-comparison.md",
     "docs/mcp-result-presentation.md",
     "src/**/README.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",

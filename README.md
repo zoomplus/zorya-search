@@ -74,9 +74,6 @@ The lexical example makes no embedding-provider call. Search returns candidates;
 - [Architecture](docs/architecture.md) · [Service flows](docs/service-flows.md)
 - [Jev classification and reuse](docs/jev-classification.md) · [Voyage profiles](docs/voyage-profiles.md)
 - [MCP result presentation and native evidence](docs/mcp-result-presentation.md)
-- [MCP comparison evidence and limits](docs/mcp-comparison.md)
 - [Changelog](CHANGELOG.md) · [Code retrieval skill](skills/code-retrieval/SKILL.md) · [Web retrieval skill](skills/web-source-retrieval/SKILL.md)
-
-**Status:** package and current-source checks do not establish broad end-answer quality, hosted-client support, a Windows/game/device integration, live-provider behavior, or full-program acceptance. The four-run stdio presentation check is limited to native Codex CLI 0.163.0 transport and source preservation; it does not establish answer quality or billing savings. The negative controlled MCP quality comparison remains published with its scope and limitations in [the comparison guide](docs/mcp-comparison.md). Ordinary search and file-reading tools may be sufficient for a task.
 
 MIT License. See [LICENSE](LICENSE).

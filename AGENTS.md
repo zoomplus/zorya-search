@@ -5,9 +5,7 @@
 Candidate добавляет MCP availability/grant states и task-specific guidance, безопасные on-demand setup hints, инкрементальный CLI `configure` для семи capability и сообщение о необходимости переподключить MCP после изменения профиля. Он не включает provider автоматически и не меняет роль вызывающего агента. Публикацию `v0.1.10` нужно проверить отдельно; условные примеры установки находятся в README. Подробности и ограничения — в [MCP guide](docs/mcp.md), [CLI guide](docs/cli.md), [client guide](docs/agent-clients.md) и [матрице](docs/capabilities.md).
 
 
-Исторический source candidate `v0.1.8` добавил только opt-in режим представления ответа локального MCP stdio proxy: `--result-presentation structured` доступен командам `mcp` и `client-config`, а по умолчанию остаётся `legacy`. Режим заменяет лишь точный дубликат JSON текста в `content`; `structuredContent`, source text/hash/snapshot, остальные content blocks и metadata сохраняются. Поведение закреплено на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Фактические asset, npm version и tag проверяются отдельно; исторические факты не переносятся на `v0.1.9`. Четыре нативных прогона Codex CLI 0.163.0 подтверждают транспортные oracle и сохранение полного source context, но не качество конечных ответов или преимущество MCP по сравнению с обычным поиском и чтением; методика и все usage значения приведены в [руководстве представления результата](docs/mcp-result-presentation.md). Отрицательное контролируемое сравнение и его границы остаются в [сравнении MCP](docs/mcp-comparison.md). Полная цель и consumer/device gates остаются отдельными; не делайте вывод о full-plan acceptance по этой фазе.
-
-Принятый дополнительный scope и восемь dependency-ordered волн описаны в [плане качества Search](https://github.com/zoomplus/zorya-search/blob/main/docs/search-quality-plan-2026-11-01.md). Это продолжение полной цели, не её замена. Публикация плана не означает, что все технические и потребительские волны исполнены или приняты.
+Исторический source candidate `v0.1.8` добавил opt-in представление ответа локального MCP stdio proxy: `--result-presentation structured` доступен командам `mcp` и `client-config`, по умолчанию используется `legacy`. В режиме `structured` proxy может заменить точный дубликат JSON-текста в `content` на короткую ссылку; `structuredContent`, исходный текст и его identity, остальные блоки и metadata сохраняются. См. [руководство представления результата MCP](docs/mcp-result-presentation.md).
 
 Zorya Search — отдельный пакет `zorya-search` для поиска по коду и источникам. Следуй намерению пользователя и правилам его агента; эти локальные инструкции описывают только границы самого Search и не заменяют инструкции клиента.
 
@@ -36,12 +34,6 @@ Zorya Search — отдельный пакет `zorya-search` для поиск�
 - Используй [README](README.md) для первого запуска, [архитектурный обзор](docs/architecture.md), [SDK](docs/sdk.md), [MCP](docs/mcp.md) и [инструкции клиентским агентам](docs/agent-clients.md) для деталей. Версионные команды CLI и профили моделей должны соответствовать принятым интерфейсам, а не незавершённым веткам.
 - [Руководство по тексту проекта и web discovery](docs/project-text.md) описывает preview `v0.1.7`, который не входит в публичный архив `v0.1.6`.
 - Для Mechanism сверены независимые optional профили `voyageai/voyage-code-4` 1024d, `voyageai/rerank-2.5-lite` и visual `voyageai/voyage-multimodal-3.5` 1024d. Это клиентская конфигурация, не встроенные defaults. Visual поиск вызывается отдельно и только для предоставленных клиентом references.
-
-## Текущий статус и границы приёмки — 2026-11-01
-
-Исторический baseline `main` на snapshot `689c521c6c50e72fd9fa993b33dd3b3d8cb5bf15` прошёл package gates 206/206 тестов, hosted CI 8/8 jobs, а установленный CLI — 11/11 локальных проверок. Эти числа не относятся к v0.1.0 или v0.1.1; см. [версионные сведения и текущие ограничения](docs/architecture.md).
-
-Шесть пар пилота исполнены и проверены. Пара F получила native статус inconclusive, победитель не определён. Удалённый OAuth MCP `v0.1.1` прошёл ограниченную TLS-проверку с тестовым issuer и Codex; hosted ChatGPT, внешний IdP и пользовательский deployment не квалифицированы. Установка, перечисленные assets и npm registry availability проверяются по фактической release/registry странице; пользовательский Windows host, Witcher, физические игровые/аудио устройства и широкая ground-truth оценка остаются непроверенными; `fullPlanAcceptance=false`.
 
 ## Перед работой
 

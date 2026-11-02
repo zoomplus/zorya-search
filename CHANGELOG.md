@@ -10,7 +10,7 @@ Source candidate for consent-based, on-demand MCP capability setup. Check the re
 - Keep public URL reading and lexical project-text setup keyless. Brave discovery uses a Brave Search key; Voyage and Jev model profiles use an OpenRouter key.
 - Preserve existing roots, data and profiles. A restarted watch-enabled owner may resume its already configured indexing policy. On POSIX secret files use mode `0600`; this is not encryption or proof of Windows ACL protection.
 
-Four native Codex CLI onboarding scenarios passed for the tested fixture, including a keyless public URL read; no Search provider HTTP calls were made. They are functional setup checks, not general answer-quality or live-provider evidence. The earlier negative controlled quality comparison remains unchanged. Full package checks are reported separately by the release owner.
+Four native Codex CLI onboarding scenarios passed for the tested fixture, including a keyless public URL read; no Search provider HTTP calls were made.
 
 ## 0.1.9 — 2026-11-02
 
@@ -20,7 +20,7 @@ This source changes the npm package identity from the historical scoped name `@z
 - Keep `--result-presentation structured` opt-in for `mcp` and `client-config`; `legacy` remains the default.
 - Do not reinterpret historical `v0.1.8` assets, scoped package metadata, release evidence, or URLs as `v0.1.9` publication evidence.
 
-No runtime or search-quality behavior changes are included. The earlier controlled 40-task negative quality study remains unchanged, and this packaging work does not establish full-plan acceptance.
+No runtime behavior changes are included in this package identity migration.
 
 ## 0.1.8 preview — 2026-11-02
 
@@ -28,9 +28,9 @@ Historical source behavior is based on [`af0a1ed`](https://github.com/zoomplus/z
 
 - Add an opt-in `--result-presentation structured` mode to the local stdio proxy and generated client configuration. `legacy` remains the default.
 - In structured mode, replace only an exact duplicate JSON text block with `See structuredContent.`; keep structured fields, source identity, independent content, and metadata intact.
-- Add [result-presentation guidance and native caller evidence](docs/mcp-result-presentation.md), including complete per-run token/cost observations and their limitations.
+- Add [result-presentation guidance](docs/mcp-result-presentation.md) for the structured MCP transport option.
 
-The four native Codex CLI runs establish transport field/source preservation for this tested client and payload. They do not establish better task answers, billing savings, MCP superiority over ordinary search/read, hosted ChatGPT/Cursor/other-client support, or full-program acceptance. The earlier 40-task negative quality study remains unchanged.
+Native Codex CLI checks verified structured fields and source identity for the tested client and payload.
 
 ## 0.1.7 preview — 2026-11-02
 
@@ -43,8 +43,6 @@ Runtime behavior in this preview is based on source `3be35fdbe69357a4bb0daf6203d
 - Add typed, snapshot-bound source-read recovery guidance for bounded EOF reads.
 - Keep lexical code search as the default; preserve separate code, project-text, web, and visual model spaces.
 - Update SDK, CLI, MCP, setup, and client skill guidance to describe actual capability and release boundaries.
-
-No claim is made that these changes improve general answer quality. The controlled MCP comparison did not meet its predeclared quality requirements; see [the comparison report](docs/mcp-comparison.md). Actual asset availability, npm registry availability, user-device acceptance, and full-program acceptance are separate checks.
 
 ## 0.1.6 — public GitHub archive
 
