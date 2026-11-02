@@ -2,7 +2,7 @@ import { McpServer, type StandardSchemaWithJSON } from '@modelcontextprotocol/se
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { isIP } from 'node:net'
-import { SEARCH_MCP_TOOL_CONTRACTS } from './server.js'
+import { SEARCH_MCP_TOOL_CONTRACTS } from './contracts.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 import { buildSearchMcpInstructions } from './instructions.js'
 import { parseResultPresentation, presentStructuredResult, type ResultPresentation } from './result-presentation.js'
