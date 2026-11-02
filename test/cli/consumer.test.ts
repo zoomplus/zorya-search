@@ -134,7 +134,7 @@ test(
     const transports: StdioClientTransport[] = [];
     try {
       assert.equal(installedManifest.name, "zorya-search");
-      assert.equal(installedManifest.version, "0.1.9");
+      assert.equal(installedManifest.version, "0.1.10");
       const versionResult = await run(["--version"], dir);
       assert.equal(versionResult.code, 0, versionResult.err);
       assert.equal(versionResult.out.trim(), installedManifest.version);
