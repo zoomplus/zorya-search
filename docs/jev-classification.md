@@ -1,6 +1,6 @@
 # Jev, classification и reuse context
 
-Эта страница описывает Jev/reuse API в candidate `v0.1.7` на source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Исторические исходные точки интеграции указаны в соответствующих разделах. GitHub archive `v0.1.6` этих API не содержит, candidate package не опубликован в npm. Для локального review нужен закреплённый candidate build/checkout; команды `npx` не устанавливают неопубликованный candidate. Краткие разделы и карта потоков: [SDK](sdk.md), [CLI](cli.md), [MCP](mcp.md), [архитектура](architecture.md), [потоки сервисов](service-flows.md).
+Эта страница описывает Jev/reuse API preview `v0.1.7` на runtime/source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Проверяй [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset: устанавливай перечисленный там файл и сверяй версию пакета. npm install используй только после проверки точной версии или `next` tag в registry; `npx` не получает отсутствующую version-specific сборку. Исторический GitHub archive `v0.1.6` этих API не содержит. Исторические исходные точки интеграции указаны в соответствующих разделах. Краткие разделы и карта потоков: [SDK](sdk.md), [CLI](cli.md), [MCP](mcp.md), [архитектура](architecture.md), [потоки сервисов](service-flows.md).
 
 ## Один Jev Decisions порт
 
@@ -54,7 +54,7 @@ Runtime поле `usage().classification` — общий ledger этого по�
 
 ## SDK: поиск пригодных к повторному использованию мест
 
-Jev-backed reuse впервые добавлен в исходном change set `0a584e6`; bounded symbol pages появились в snapshot `a85eb8c506c8`. Текущий candidate `v0.1.7` на `3be35fd` включает эту последовательность изменений. Функция отсутствует в публичном archive `v0.1.6`, а candidate package не опубликован.
+Jev-backed reuse впервые добавлен в исходном change set `0a584e6`; bounded symbol pages появились в snapshot `a85eb8c506c8`. Runtime basis preview `v0.1.7` закреплён на `3be35fd` и включает эту последовательность изменений. Подготовленный package metadata/documentation snapshot — `ee82077827bc0e099ae63fd2e44c5c512c9f2ba7`; скомпилированные runtime-файлы не изменялись. Функция отсутствует в историческом archive `v0.1.6`.
 
 `createReuseContext({ index, decisions, limits? })` принимает уже созданный `CodeIndex` и опциональный Jev Decisions порт. Он не создаёт индекс и не меняет его модельные профили. По умолчанию budget source context — 48 000 символов, 24 файла-кандидата и deadline 60 секунд; hard SDK пределы — 64 000 символов, 24 файла и 120 секунд. `maxChars` ограничивает текст контекста, а не весь структурированный результат с identity, assessment, coverage и другими метаданными: общий SDK DTO может быть больше этого значения. Вызов `getReuseContext({ root, query, maxChars?, limit?, signal? })` разрешает `maxChars` не выше настроенного предела, а `limit` — от 1 до 40.
 
@@ -90,6 +90,6 @@ MCP tool `get_reuse_context` принимает `{ rootId, query, maxChars?, lim
 
 ## Что подтверждено и что открыто
 
-Для candidate отдельно проверялись локальные HTTP/stdio контракты и OAuth-граница; ограниченные live/source свидетельства относятся только к своим зафиксированным запросам. Отдельное frozen comparison на source `2da7abe578cc871ca2c9a4d02bffa778ad700b10` не прошло все четыре заранее заданных quality requirements; метрики и ограничения приведены в [сравнении MCP](mcp-comparison.md). Ни эти проверки, ни source CI не устанавливают общее качество, публикацию, hosted client support или полную приёмку.
+Для preview отдельно проверялись локальные HTTP/stdio контракты и OAuth-граница; ограниченные live/source свидетельства относятся только к своим зафиксированным запросам. Отдельное frozen comparison на source `2da7abe578cc871ca2c9a4d02bffa778ad700b10` не прошло все четыре заранее заданных quality requirements; метрики и ограничения приведены в [сравнении MCP](mcp-comparison.md). Ни эти проверки, ни source CI не устанавливают общее качество, фактическую доступность GitHub/npm, hosted client support или полную приёмку.
 
-Дополнительные sealed hard cases остаются отдельным gate; подготовка текстовых корпусов не является итоговым индексом или quality acceptance. Candidate package не опубликован. Hosted-клиенты, пользовательский Assistant/Windows host, устройства и остальные пункты полной цели остаются вне завершённой приёмки; `fullPlanAcceptance=false`.
+Дополнительные sealed hard cases остаются отдельным gate; подготовка текстовых корпусов не является итоговым индексом или quality acceptance. Hosted-клиенты, пользовательский Assistant/Windows host, устройства и остальные пункты полной цели остаются вне завершённой приёмки; `fullPlanAcceptance=false`.

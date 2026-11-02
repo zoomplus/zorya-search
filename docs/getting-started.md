@@ -1,53 +1,32 @@
 # Начало работы с Zorya Search
 
-Публичный архив сейчас `v0.1.6`; кандидат `v0.1.7` на source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) ещё не опубликован. Команды установки ниже ставят именно доступный архив `v0.1.6`; не ожидай в нём project-text, symbol/reference, multi-query web или typed source-read recovery из кандидата. Registry install и будущая release-ссылка `v0.1.7` не доступны.
+Это руководство относится к preview `v0.1.7` на source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Проверь [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset. Устанавливай только перечисленный там файл и проверь версию пакета после установки. Планируемое имя asset: `zorya-search-0.1.7.tgz`.
 
-## 1. Установи доступный архив
+## 1. Установи пакет preview
 
-Нужна Node.js `>=20.19.0`. Устанавливай пакет в проект, который будет владеть Search:
+Нужна Node.js `>=20.19.0`. Когда на странице релиза перечислен `zorya-search-0.1.7.tgz`, установи его в проект, который будет владеть Search:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.6/zorya-search-0.1.6.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.7/zorya-search-0.1.7.tgz
+npm ls @zorya/search --depth=0
 ```
 
-## 2. Создай runtime config для архива `v0.1.6`
+Команда URL — рецепт для указанного asset, не подтверждение его наличия. Если используешь npm, сначала проверь, что registry показывает `0.1.7` с тегом `next`; тогда можно выполнить `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.7` только после проверки этой версии в registry. Не используй неприкреплённый `latest` или `npx` для получения отсутствующей версии. Установка GitHub archive не зависит от доступа к npm-аккаунту.
 
-Для локального lexical поиска и MCP:
+## 2. Создай runtime config
+
+Для локального lexical поиска по коду и project-text выбери этот вариант первичного `setup`:
 
 ```sh
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
-`setup` создаёт конфигурацию один раз; `client-config` только печатает варианты. Он не регистрирует клиента. В архиве `v0.1.6` доступны, например, необязательный code profile и Brave discovery:
+Новый `setup` без provider flags создаёт `projectText: {}`: лексический поиск по коду и проектному тексту остаётся локальным, без моделей и облачных запросов. `client-config` только печатает варианты и не регистрирует клиента.
 
-```sh
-npm exec -- zorya-search setup --root . \
-  --code-env OPENROUTER_API_KEY \
-  --web-env BRAVE_SEARCH_API_KEY
-```
+### Необязательная облачная конфигурация
 
-Эта команда и короткая команда выше — варианты **первичного создания** профиля; выбери одну и не запускай их последовательно для одного config. `--code-env` задаёт имя переменной для OpenRouter, а `--web-env` — имя переменной Brave Search API. Используй уже имеющиеся ключи провайдеров; не помещай значения ключей в argv или client JSON. В `v0.1.6` нет `--text-env`, `--jev-env` или project-text capability.
-
-Эти флаги предназначены для первичного создания профиля. `setup` не перезаписывает существующий config. Для существующего runtime JSON сохрани прежние `dataDir`, roots и остальные настройки; редактируй его явно после остановки службы. Передавай тот же `--config PATH` командам setup/client-config/index/service. Config и data directory должны быть вне индексируемого корня.
-
-## 3. Подключи клиента и проиндексируй root
-
-Владелец отдельно регистрирует подходящий пример `client-config` в существующем клиенте и выдаёт нужные grants. Затем запусти первичную индексацию явно:
-
-```sh
-npm exec -- zorya-search index
-```
-
-Индексация не меняет исходники. Watch работает только если владелец включил его в config. Не запускай второй процесс-владелец с тем же каталогом базы.
-
-Для кода начни с `search_code` и проверь найденный диапазон через `read_source`; ограниченный `get_code_context` и duplicate candidates — отдельные запросы. В candidate `v0.1.7` доступны отдельный project-text индекс, exact symbol/reference/static call tools, `includeLogical`, reuse и caller-selected `additionalQueries`. Используй только API фактически установленной версии; подробности в [матрице возможностей](capabilities.md), [SDK](sdk.md), [CLI](cli.md) и [MCP](mcp.md).
-
-## Локальная проверка кандидата
-
-Для проверки `v0.1.7` сначала установи конкретный locally prepared candidate tarball или source checkout, полученный отдельно от владельца candidate. Публичной install-команды пока нет; не подменяй её URL будущего релиза. После установки сверяй package version, exports и фактическую MCP/SDK schema.
-
-В candidate `v0.1.7` можно выбрать следующую команду **вместо** первичного setup для `v0.1.6` выше:
+Если профиль уже имеет нужные environment variables для OpenRouter и Brave Search API, можно выбрать этот вариант `setup` вместо локального блока выше:
 
 ```sh
 npm exec -- zorya-search setup --root . \
@@ -55,12 +34,31 @@ npm exec -- zorya-search setup --root . \
   --text-env OPENROUTER_API_KEY \
   --jev-env OPENROUTER_API_KEY \
   --web-env BRAVE_SEARCH_API_KEY
+npm exec -- zorya-search client-config
 ```
 
-`--code-env`, `--text-env` и `--jev-env` здесь ссылаются на уже настроенную переменную OpenRouter: это не прямые Voyage или TypeSafe ключи. `--web-env` отдельно ссылается на переменную Brave Search API. Флаги сохраняют только имена переменных, а не их значения. TTY wizard не предлагает отдельную настройку Jev; чтобы включить Jev, укажи `--jev-env` явно. Для нового candidate config `setup` создаёт `projectText: {}` и включает lexical project-text даже без `--text-env`; этот default не относится к установленному `v0.1.6`. Выбери ровно один initial `setup`: эти команды не предназначены для последовательного запуска на одном config. `setup` откажется перезаписывать существующий файл; уже созданный runtime config меняй отдельно, сохраняя его текущие roots и `dataDir`.
+Выбери только один из двух вариантов первичного `setup`: не запускай их последовательно для одного config. Эти флаги задают имена уже существующих переменных окружения, не значения ключей: code, text и Jev используют ссылку на OpenRouter transport, `web` отдельно использует Brave Search API. Они не являются прямыми Voyage или TypeSafe ключами. Если опустить только `--text-env`, проектный текст останется локальным лексическим поиском, но без text embedding; для полностью локальной конфигурации опусти все облачные флаги. TTY wizard не спрашивает о Jev, поэтому для этой опциональной capability укажи `--jev-env` явно. Не передавай секреты в argv или client JSON.
+
+Параметры `setup` — выбор при первоначальном создании профиля, а не последовательные обновления. Если config уже существует, команда откажется его перезаписывать. Для правки существующего runtime JSON сначала останови службу и сохрани прежние `dataDir`, roots и прочие настройки. Передавай одинаковый `--config PATH` командам setup/client-config/index/service. Config и каталог данных размещай вне индексируемого корня.
+
+## 3. Подключи клиента и проиндексируй root
+
+Владелец отдельно регистрирует выбранный пример `client-config` в существующем клиенте и выдаёт необходимые grants. Затем запусти начальную индексацию явно:
+
+```sh
+npm exec -- zorya-search index
+```
+
+Индексация не меняет исходники. Watch работает только если владелец включил его в config. Не запускай второй процесс-владелец с тем же каталогом базы.
+
+Для кода начни с `search_code` и проверь найденный диапазон через `read_source`; ограниченный `get_code_context` и duplicate candidates — отдельные запросы. Используй только API фактически установленной версии; подробности приведены в [матрице возможностей](capabilities.md), [SDK](sdk.md), [CLI](cli.md) и [MCP](mcp.md).
+
+## Исторический архив `v0.1.6`
+
+Если страница релиза `v0.1.7` пока не перечисляет asset, можно установить исторический [`v0.1.6` архив](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6). Он не включает project-text, symbol/reference, multi-query web, typed source-read recovery и другие возможности preview `v0.1.7`. Для него используй соответствующую version-specific документацию; не применяй к нему команды и capabilities нового preview.
 
 ## Web и ограничения
 
-Brave discovery требует `--web-env`; чтение известного публичного URL использует отдельный web reader и `web` grant, не ключ Brave. Дополнительные запросы `additionalQueries` — список вызывающей стороны, Search не генерирует его. Code, text, web, classifier и visual profiles независимы.
+Brave discovery требует `--web-env`; чтение известного публичного URL использует отдельный web reader и `web` grant, без ключа Brave. `additionalQueries` выбирает вызывающая сторона, Search не генерирует их. Code, text, web, classifier и visual profiles независимы.
 
-Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации/локального владельца, не provider health. Удалённый MCP требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Для более подробных границ см. [MCP](mcp.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).
+Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации и локального владельца, не provider health. Удалённый MCP требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Подробности: [MCP](mcp.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).

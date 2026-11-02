@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Zorya Search. Before opening an issue or pull request, check whether the behavior already exists in the version you are using: the public GitHub archive is `v0.1.6`, while current main may contain unreleased source-only features.
+Thanks for helping improve Zorya Search. This guide describes the `v0.1.7` preview, whose runtime/source basis is `3be35fd`; the prepared package metadata/documentation snapshot is `ee82077827bc0e099ae63fd2e44c5c512c9f2ba7` and leaves compiled runtime files unchanged. Before opening an issue or pull request, check the [v0.1.7 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) for actual asset availability, install only an asset listed there, and verify the package version. Use an npm version or `next` tag only if the registry actually lists it. The historical `v0.1.6` archive has an earlier capability set.
 
 ## Issues and pull requests
 

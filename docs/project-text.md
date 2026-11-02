@@ -1,6 +1,6 @@
 # Текст проекта и управляемый поиск web-источников
 
-Это руководство описывает candidate `v0.1.7` на source `3be35fd`; project-text и multi-query web отсутствуют в публичном GitHub archive `v0.1.6`. Candidate не опубликован в npm или GitHub Releases. Проверяйте фактическую схему установленного клиента; [матрица возможностей](capabilities.md) показывает границы версий.
+Это руководство описывает preview `v0.1.7` на source `3be35fd`; project-text и multi-query web отсутствуют в историческом GitHub archive `v0.1.6`. Проверяй [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset и сверяй схему установленного клиента; [матрица возможностей](capabilities.md) показывает границы версий.
 
 ## Отдельный индекс документов, правил и навыков
 
@@ -141,4 +141,4 @@ const result = await search.searchWeb({
 
 ## Доступность
 
-Project-text и multi-query web входят в candidate `v0.1.7`, но отсутствуют в публичном archive `v0.1.6`. Candidate package не опубликован в npm registry. Эти примеры относятся к candidate source/API, а не к установленному `v0.1.6`.
+Project-text и multi-query web входят в preview `v0.1.7`, но отсутствуют в историческом archive `v0.1.6`. Эти примеры относятся к API preview; перед использованием сверь фактическую версию, установленный пакет и его schema.
