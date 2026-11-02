@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const consumer = mkdtempSync(join(tmpdir(), 'zorya-search-installed-storage-'))
@@ -182,7 +182,7 @@ try {
       throw new Error('BRIDGE_CLIENT_IMPORTED_STORAGE_OR_PROVIDER')
     return nextResolve(specifier, context)
   }\n`)
-  execFileSync(process.execPath, ['--experimental-loader', clientIsolationLoader, '--input-type=module', '-e', "await import('zorya-search/bridge/client')"], {
+  execFileSync(process.execPath, ['--experimental-loader', pathToFileURL(clientIsolationLoader).href, '--input-type=module', '-e', "await import('zorya-search/bridge/client')"], {
     cwd: consumer,
     stdio: 'inherit',
   })
