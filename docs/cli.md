@@ -1,10 +1,10 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Source candidate `v0.1.10` добавляет инкрементальную команду `configure` для существующего профиля и поле `mcpReconnectRequired` в её receipt; structured MCP presentation остаётся opt-in, `legacy` — default. Наличие точных GitHub tag и npm version нужно проверить отдельно перед установкой. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Опубликованный prerelease `v0.1.10` добавляет инкрементальную команду `configure` для существующего профиля и поле `mcpReconnectRequired` в её receipt; structured MCP presentation остаётся opt-in, `legacy` — default. npm dist-tag `next` указывает на эту версию, а `latest` остаётся на `0.1.9`. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
-Для Node.js `>=20.19.0` проверьте наличие точных GitHub tag `v0.1.10` и npm версии `zorya-search@0.1.10`. До подтверждения обеих публикаций эти команды остаются примерами, не заявлением о доступности. Затем устанавливайте точную версию и сверяйте package identity и schema. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
+Для Node.js `>=20.19.0` установите опубликованную версию npm `zorya-search@0.1.10` и сверяйте package identity и schema. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
 
 ```sh
 npm install --save-exact zorya-search@0.1.10
@@ -85,7 +85,7 @@ Jev classification и reuse включаются при создании про�
 
 ## Команды
 
-Команда `configure` входит в source candidate `v0.1.10`; проверьте установленную версию перед использованием.
+Команда `configure` доступна в `zorya-search@0.1.10`; перед использованием можно проверить версию установленного пакета.
 
 - `setup` — создать конфигурацию; `--code-env NAME` задаёт code preset, `--visual-env NAME` отдельно включает visual profile, `--web-env NAME` включает Brave discovery. По умолчанию поиск по страницам lexical. Web text embedding включается отдельно через `--web-embedding-model`, `--web-embedding-dimensions` и `--web-embedding-env`; для своего HTTPS endpoint дополнительно нужна парная опция `--web-embedding-profile`. `--embedding-env NAME` — совместимый alias для code preset. `--watch [--watch-interval-ms N]` включает автоматическую повторную сверку.
 - `doctor` — сообщить, существует ли конфигурация и отвечает ли подтверждённый локальный владелец. Проверка не вызывает внешние модели; поля провайдера остаются `not-run`.

@@ -1,8 +1,8 @@
 # Правила работы с репозиторием Zorya Search
 
-## Текущий source candidate — `v0.1.10` (2026-11-02)
+## Опубликованный prerelease — `v0.1.10` (2026-11-02)
 
-Candidate добавляет MCP availability/grant states и task-specific guidance, безопасные on-demand setup hints, инкрементальный CLI `configure` для семи capability и сообщение о необходимости переподключить MCP после изменения профиля. Он не включает provider автоматически и не меняет роль вызывающего агента. Публикацию `v0.1.10` нужно проверить отдельно; условные примеры установки находятся в README. Подробности и ограничения — в [MCP guide](docs/mcp.md), [CLI guide](docs/cli.md), [client guide](docs/agent-clients.md) и [матрице](docs/capabilities.md).
+Пакет `zorya-search@0.1.10` опубликован в npm и доступен как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). npm dist-tag `next` указывает на `0.1.10`, а `latest` намеренно остаётся на `0.1.9`. Релиз добавляет MCP availability/grant states и task-specific guidance, безопасные on-demand setup hints, инкрементальный CLI `configure` для семи capability и сообщение о необходимости переподключить MCP после изменения профиля. Он не включает provider автоматически и не меняет роль вызывающего агента. Подробности и ограничения — в [MCP guide](docs/mcp.md), [CLI guide](docs/cli.md), [client guide](docs/agent-clients.md) и [матрице](docs/capabilities.md).
 
 
 Исторический source candidate `v0.1.8` добавил opt-in представление ответа локального MCP stdio proxy: `--result-presentation structured` доступен командам `mcp` и `client-config`, по умолчанию используется `legacy`. В режиме `structured` proxy может заменить точный дубликат JSON-текста в `content` на короткую ссылку; `structuredContent`, исходный текст и его identity, остальные блоки и metadata сохраняются. См. [руководство представления результата MCP](docs/mcp-result-presentation.md).

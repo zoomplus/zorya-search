@@ -1,12 +1,12 @@
 # Возможности и границы версий
 
-Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9` и описывает source candidate `v0.1.10`. Имя пакета — `zorya-search`; наличие точного GitHub tag и npm version `0.1.10` нужно проверить отдельно перед установкой.
+Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9` и описывает опубликованный prerelease `v0.1.10` пакета `zorya-search`. npm dist-tag `next` указывает на `0.1.10`, а `latest` остаётся на `0.1.9`; релиз опубликован [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10).
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Candidate `v0.1.10` |
+| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Опубликованный prerelease `v0.1.10` |
 | --- | --- | --- | --- |
 | Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да |
 | Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата | Да |
@@ -21,7 +21,7 @@ Search предоставляет инструменты существующе�
 | Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
 | Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля |
 
-Для установки candidate `v0.1.10` сначала подтверди точный GitHub tag и registry version `zorya-search@0.1.10`; conditional examples находятся в [README](../README.md#release-availability). Это не подтверждение публикации. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
+Устанавливайте опубликованную версию `zorya-search@0.1.10` явно; команда приведена в [README](../README.md#release-availability). См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 
@@ -33,7 +33,7 @@ Duplicate groups — эвристические кандидаты на точн
 
 ## Отдельный project-text индекс
 
-Candidate может индексировать поддержанные документы, правила и skills в пространстве `zorya_project_text_*`, отдельно от code index и knowledge storage. Возможность включается явным `projectText` config. Новый setup может создать `projectText: {}` для lexical support, даже если текстовая embedding-модель не настроена; существующий config не включается и не переписывается автоматически. Результаты привязаны к snapshot; чтение не индексирует.
+В `v0.1.10` Search может индексировать поддержанные документы, правила и skills в пространстве `zorya_project_text_*`, отдельно от code index и knowledge storage. Возможность включается явным `projectText` config. Новый setup может создать `projectText: {}` для lexical support, даже если текстовая embedding-модель не настроена; существующий config не включается и не переписывается автоматически. Результаты привязаны к snapshot; чтение не индексирует.
 
 ## Web, классификация и visual
 

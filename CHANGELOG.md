@@ -2,7 +2,7 @@
 
 ## 0.1.10 — 2026-11-02
 
-Source candidate for consent-based, on-demand MCP capability setup. Check the release page and npm registry before treating this version as published.
+Published to npm on 2026-11-02 and available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). npm `next` points to `0.1.10`; `latest` intentionally remains `0.1.9`.
 
 - Add typed capability availability and grant reasons, plus trusted task-specific MCP tool guidance.
 - Add incremental `configure` roles for project text, public web reading, Brave discovery, visual retrieval, code embeddings, project-text embeddings, and Jev classification. Setup asks for consent, keeps secrets in the local hidden terminal or explicit env reference, and never enables providers automatically.

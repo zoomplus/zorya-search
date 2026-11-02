@@ -2,7 +2,7 @@
 
 ## Выбор инструментов и предложение настройки владельцу
 
-Этот раздел описывает текущий source candidate. Source candidate `v0.1.10` добавляет `setupOptions` и owner CLI `configure`; перед использованием проверьте фактическую версию установленного сервера.
+Этот раздел описывает опубликованный prerelease `v0.1.10`. Пакет `zorya-search@0.1.10` доступен в npm и как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10); npm dist-tag `next` указывает на него, а `latest` остаётся на `0.1.9`. Версия добавляет `setupOptions` и owner CLI `configure`; проверьте фактическую версию установленного сервера.
 
 MCP initialize содержит компактные инструкции по группам инструментов и не запускает search, indexing, classifier или provider. Имена, schema и descriptions берутся из локальных доверенных контрактов; MCP proxy не копирует враждебную metadata upstream. Caller выбирает только полезную группе текущей задачи: code search/context для кандидатов; symbol search → `symbols[].id` → references/call trace для статических связей; `related_code` для imports/similarity; `find_code_duplicates` для механических кандидатов; project-text для project docs/rules/skills; web discovery, public web read, classification и visual comparison — только когда задача этого требует.
 
@@ -103,7 +103,7 @@ Search не исправляет код. Найденные фрагменты, 
 
 `serve` запускает daemon на loopback с локальной авторизацией. `mcp` предоставляет stdio интерфейс клиенту и подключается к уже работающему владельцу службы. Для Codex можно использовать `client-config` и затем явно зарегистрировать полученный профиль. Локальный stdio обычно подходит локальному Codex и другим клиентам, которые могут запускать процесс на той же машине.
 
-В source candidate `v0.1.10` добавлены typed availability/grant состояния, trusted task-specific guidance и consent-based настройка владельцем; изменения предыдущих версий сохранены. Историческая версия `v0.1.8` добавила необязательный параметр `--result-presentation structured` только для `mcp` и `client-config`. Он заменяет коротким `See structuredContent.` только точный дубликат JSON текста в `content`; structured payload, metadata, независимые блоки и ошибки сохраняются. По умолчанию остаётся `legacy`. Выбери режим через CLI, а не через SDK экспорт или приватный путь `dist`. См. [гайд и evidence нативного caller](mcp-result-presentation.md); точные tag и npm version `v0.1.10` проверяй перед установкой.
+В опубликованном `v0.1.10` добавлены typed availability/grant состояния, trusted task-specific guidance и consent-based настройка владельцем; изменения предыдущих версий сохранены. Историческая версия `v0.1.8` добавила необязательный параметр `--result-presentation structured` только для `mcp` и `client-config`. Он заменяет коротким `See structuredContent.` только точный дубликат JSON текста в `content`; structured payload, metadata, независимые блоки и ошибки сохраняются. По умолчанию остаётся `legacy`. Выбери режим через CLI, а не через SDK экспорт или приватный путь `dist`. См. [гайд и evidence нативного caller](mcp-result-presentation.md); для использования `v0.1.10` установи точную опубликованную версию.
 
 Установка пакета или локальный smoke-test не добавляют инструмент в текущий чат. Для настоящего ChatGPT нужен удалённый HTTPS MCP endpoint и настройка в интерфейсе ChatGPT. Подробности ниже.
 

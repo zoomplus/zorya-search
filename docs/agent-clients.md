@@ -2,17 +2,17 @@
 
 Search вызывается существующим клиентом и не меняет его prompt, модель, память, инструкции, настройки или workflow. Установка и `client-config` не регистрируют MCP автоматически. Следуй указаниям пользователя и правилам того репозитория, где выполняется задача.
 
-Source candidate `v0.1.10` использует npm identity `zorya-search` и добавляет task-specific MCP guidance, typed availability и incremental owner setup. Перед установкой проверь точный GitHub tag и npm version; подробности см. в [MCP guide](mcp.md).
+Опубликованный prerelease `zorya-search@0.1.10` доступен в npm и как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Он добавляет task-specific MCP guidance, typed availability и incremental owner setup; npm dist-tag `latest` остаётся на `0.1.9`. Подробности см. в [MCP guide](mcp.md).
 
 ## Подключение MCP
 
 Клиент-владелец отдельно регистрирует вариант, напечатанный CLI `client-config`, и задаёт минимальные roots и операции. `list_roots` показывает разрешённые корни; capability инструмента и его grant проверяются отдельно. Одно имя tool не доказывает, что capability включена или provider настроен. Не запускай поиск или индексацию просто потому, что сервер подключён.
 
-Для локального процесса используй stdio/loopback по [руководству MCP](mcp.md#локальный-mcp). Hosted или удалённый клиент требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Локальная проверка не доказывает поддержку hosted ChatGPT или production IdP.
+Для локального процесса используй stdio/loopback по [руководству MCP](mcp.md#локальный-mcp). Hosted или удалённый клиент требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Нативный каталог инструментов hosted ChatGPT для `v0.1.10` не проверялся; локальная проверка не доказывает его поддержку или совместимость с production IdP.
 
 ### Выбор MCP-инструмента и запрос владельцу о настройке
 
-`setupOptions` и команда `configure` входят в source candidate `v0.1.10`; перед использованием проверьте установленную версию.
+`setupOptions` и команда `configure` доступны в `zorya-search@0.1.10`; перед использованием проверьте версию установленного пакета.
 
 Используй только группу, которая помогает текущей задаче: `search_code`/`get_code_context` — найти исходник; `find_code_symbols` затем точный `symbols[].id` для `find_code_references` или `trace_code_calls` — увидеть ограниченные статические связи; `related_code` — получить кандидатов по imports/similarity; `find_code_duplicates` — найти механически похожее тело. В `get_code_context` `includeLogical` и `includeRelated` выбираются отдельно. Полная static coverage не подтверждает runtime dispatch, а duplicate candidate не доказывает безопасную эквивалентность.
 
@@ -43,4 +43,4 @@ Source candidate `v0.1.10` использует npm identity `zorya-search` и �
 
 ## Web retrieval
 
-Вызывай web поиск, если внешние сведения нужны задаче и доступ разрешён. В candidate `search_web` принимает до семи `additionalQueries`, которые выбирает вызывающая сторона; Search не генерирует их и оставляет основной query для ranking. Отделяй найденные URL от реально прочитанных страниц, проверяй важные утверждения по первоисточнику и сохраняй partial/error состояния. Никогда не передавай ключи в argv, URL или prompt.
+Вызывай web поиск, если внешние сведения нужны задаче и доступ разрешён. В `search_web` пакет принимает до семи `additionalQueries`, которые выбирает вызывающая сторона; Search не генерирует их и оставляет основной query для ranking. Отделяй найденные URL от реально прочитанных страниц, проверяй важные утверждения по первоисточнику и сохраняй partial/error состояния. Никогда не передавай ключи в argv, URL или prompt.

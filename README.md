@@ -24,11 +24,11 @@ The code path is lexical unless the owner enables an embedding profile. Optional
 
 ## Release availability
 
-The current source candidate is **`v0.1.10`** (`zorya-search`). It adds trusted MCP capability availability and task-specific tool guidance, plus a consent-based `configure` command for seven independent roles. Agents can offer owner setup only when a needed capability is not configured; they do not enable it automatically or replace the caller. Public URL reading and local project-text lexical search need no provider key. Brave discovery uses a Brave Search key; Voyage and Jev model presets use an OpenRouter key. After a profile change, reconnect the MCP client and refresh its tool list and capabilities. Configure does not probe providers; restarting an already watch-enabled owner can resume its existing indexing policy. See the [MCP](docs/mcp.md), [CLI](docs/cli.md), and [client guidance](docs/agent-clients.md) guides for safe setup and limits.
+Version **`0.1.10`** of `zorya-search` was published on npm on 2026-11-02 and is available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). The npm `next` dist-tag points to `0.1.10`; `latest` intentionally remains `0.1.9`. This release adds trusted MCP capability availability and task-specific tool guidance, plus a consent-based `configure` command for seven independent roles. Agents can offer owner setup only when a needed capability is not configured; they do not enable it automatically or replace the caller. Public URL reading and local project-text lexical search need no provider key. Brave discovery uses a Brave Search key; Voyage and Jev model presets use an OpenRouter key. After a profile change, reconnect the MCP client and refresh its tool list and capabilities. Configure does not probe providers; restarting an already watch-enabled owner can resume its existing indexing policy. See the [MCP](docs/mcp.md), [CLI](docs/cli.md), and [client guidance](docs/agent-clients.md) guides for safe setup and limits.
 
-Version-pinned installation examples are conditional: first verify that the registry and release page list the exact `zorya-search@0.1.10` version and `v0.1.10` tag. They require Node.js `>=20.19.0`; see the [English](docs/getting-started.en.md) and [Russian](docs/getting-started.md) quickstarts.
+These version-pinned commands install the published release. They require Node.js `>=20.19.0`; see the [English](docs/getting-started.en.md) and [Russian](docs/getting-started.md) quickstarts.
 
-After verifying both sources, these commands install the exact version and create a first profile:
+Install the exact version and create a first profile:
 
 ```sh
 npm install --save-exact zorya-search@0.1.10
@@ -39,7 +39,7 @@ npx --yes zorya-search@0.1.10 client-config
 `client-config` prints MCP registration instructions; it does not install or register the server in a client. The owner registers the chosen entry and grants access. Indexing is explicit unless the owner enables watch.
 ## SDK example
 
-This example uses lexical SDK APIs retained through candidate `v0.1.10`, with source verification and duplicate candidates. Import from `zorya-search` and its subpaths. Keep the database outside the indexed repository.
+This example uses lexical SDK APIs available in `zorya-search@0.1.10`, with source verification and duplicate candidates. Import from `zorya-search` and its subpaths. Keep the database outside the indexed repository.
 
 ```js
 import { openEmbeddedDatabase } from 'zorya-search'
@@ -62,7 +62,7 @@ try {
 }
 ```
 
-The lexical example makes no embedding-provider call. Search returns candidates; verify the source and decide whether any duplicate is relevant. See the [SDK reference](docs/sdk.md) for the current candidate capabilities and ownership details.
+The lexical example makes no embedding-provider call. Search returns candidates; verify the source and decide whether any duplicate is relevant. See the [SDK reference](docs/sdk.md) for the package capabilities and ownership details.
 
 ## Guides
 
