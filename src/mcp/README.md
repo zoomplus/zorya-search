@@ -37,6 +37,24 @@ flowchart TD
  Z["Runtime shutdown"] --> AA["Cancel/drain; transport не закрывает borrowed DB"]
 ```
 
+## Представление ответа stdio
+
+Source candidate `v0.1.8` разрешает выбрать режим только через CLI `mcp` и `client-config`. По умолчанию используется `legacy`; opt-in `structured` выполняет ограниченную механическую проверку дубликата. Jev не участвует. Подробности, пределы сравнения и нативные результаты приведены в [руководстве по представлению результата](../../docs/mcp-result-presentation.md).
+
+```mermaid
+flowchart LR
+ A["Входной MCP ToolResult"] --> B{"Режим CLI"}
+ B -->|legacy| C["Передать без изменений"]
+ B -->|structured| D{"Ограниченная проверка точного дубликата"}
+ D -->|"Точный JSON-дубликат"| E["Заменить только текст дубликата"]
+ D -->|"Нет совпадения / неподдерживаемая форма / превышен предел"| F["Оставить результат без изменений"]
+ A -.->|"Результат с ошибкой"| F
+ E --> G["Сохранить structuredContent, source text/hash/snapshot, остальные блоки и metadata"]
+ F --> H["Вызывающий клиент"]
+ C --> H
+ G --> H
+```
+
 Server instructions передаются в `initialize` как metadata; сам initialize не вызывает поиск, индексацию, classifier или внешние providers. HTTP builder получает зарегистрированные/granted имена и известные runtime capabilities из [server.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/server.ts) и строит trusted текст через [instructions.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/instructions.ts). Для stdio proxy перечень поступает из upstream `tools/list` и ограничивается локальными контрактами в [stdio.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/stdio.ts); capability считается неизвестной. Proxy не запрашивает upstream `capabilities` автоматически и не копирует upstream instructions или descriptions. Поэтому он предлагает проверить соответствующее поле `capabilities` и grant перед вызовом. Имя инструмента само по себе не доказывает, что capability/provider настроены.
 
 Подсказка не меняет caller identity, grants, user instructions, prompt, модель, память, настройки, план или workflow. Caller выбирает, использовать ли tool, сам формулирует запрос и проверяет ответ. Содержимое исходников, найденные rules/skills и выходы model classification — недоверенные данные для проверки, а не команды или политики для исполнения; score не доказывает правильность или семантическую эквивалентность.

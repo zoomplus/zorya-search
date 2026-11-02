@@ -24,24 +24,24 @@ The code path is lexical unless the owner enables an embedding profile. Optional
 
 ## Release availability
 
-This guide describes the **`v0.1.7` preview** at source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). It includes the separate project-text index, exact symbol/reference/static-call tools, opt-in logical context and Jev-backed reuse, caller-selected multi-query web discovery, and typed source-read recovery. Check the [v0.1.7 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) for actual asset availability. Use a listed asset and verify the installed package reports `0.1.7` before using this preview's capabilities.
+This documentation describes source candidate **`v0.1.8`** at [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). It retains the previously published `v0.1.7` capabilities and adds an opt-in structured presentation for local MCP stdio. `legacy` remains the default. Check the [v0.1.8 release page](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) for a listed asset and verify the installed version before using this feature; check npm version/tag availability separately for registry installs. Details and native caller evidence are in the [result-presentation guide](docs/mcp-result-presentation.md).
 
-When the release page lists `zorya-search-0.1.7.tgz`, install that asset with Node.js `>=20.19.0`:
+When the release page lists `zorya-search-0.1.8.tgz`, install that asset with Node.js `>=20.19.0`:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.7/zorya-search-0.1.7.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
 npm ls @zorya/search --depth=0
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
-The install command is a recipe for the named asset, not confirmation that the asset is listed. If you choose npm instead, first confirm the registry lists `0.1.7` under `next`, then use `npm install --save-exact @zorya/search@next`; use `@zorya/search@0.1.7` only when that exact version is listed. Do not use unqualified `latest` or `npx` to fetch an unlisted build. GitHub installation does not require npm account access.
+The install command is a recipe for the named asset, not confirmation that the asset is listed. If you choose npm instead, first confirm the registry lists `0.1.8` under `next`, then use `npm install --save-exact @zorya/search@next`; use `@zorya/search@0.1.8` only when that exact version is listed. Do not use unqualified `latest` or `npx` to fetch an unlisted build. GitHub installation does not require npm account access.
 
-The historical [`v0.1.6` GitHub archive](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) remains a separate installation option, but it does not include the `v0.1.7` preview capabilities. `client-config` prints examples; an owner separately registers one in the chosen client and grants access. Indexing is explicit unless the owner selected watch. See the [English quickstart](docs/getting-started.en.md), [Russian quickstart](docs/getting-started.md), and [capability matrix](docs/capabilities.md).
+The published [`v0.1.7` release](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) is the prior capability baseline; it does not include structured stdio presentation. The historical [`v0.1.6` GitHub archive](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) remains a still earlier, separate installation option. `client-config` prints examples; an owner separately registers one in the chosen client and grants access. Indexing is explicit unless the owner selected watch. See the [English quickstart](docs/getting-started.en.md), [Russian quickstart](docs/getting-started.md), and [capability matrix](docs/capabilities.md).
 
 ## SDK example
 
-This example uses lexical SDK APIs shared by `v0.1.6` and the `v0.1.7` preview, with source verification and duplicate candidates. Keep the database outside the indexed repository.
+This example uses lexical SDK APIs shared by published `v0.1.6`, `v0.1.7`, and candidate `v0.1.8`, with source verification and duplicate candidates. Keep the database outside the indexed repository.
 
 ```js
 import { openEmbeddedDatabase } from '@zorya/search'
@@ -64,7 +64,7 @@ try {
 }
 ```
 
-The lexical example makes no embedding-provider call. Search returns candidates; verify the source and decide whether any duplicate is relevant. See the [SDK reference](docs/sdk.md) for the `v0.1.7` preview capabilities and ownership details.
+The lexical example makes no embedding-provider call. Search returns candidates; verify the source and decide whether any duplicate is relevant. See the [SDK reference](docs/sdk.md) for the current candidate capabilities and ownership details.
 
 ## Guides
 
@@ -75,9 +75,10 @@ The lexical example makes no embedding-provider call. Search returns candidates;
 - [Agent client guidance](docs/agent-clients.md)
 - [Architecture](docs/architecture.md) · [Service flows](docs/service-flows.md)
 - [Jev classification and reuse](docs/jev-classification.md) · [Voyage profiles](docs/voyage-profiles.md)
+- [MCP result presentation and native evidence](docs/mcp-result-presentation.md)
 - [MCP comparison evidence and limits](docs/mcp-comparison.md)
 - [Changelog](CHANGELOG.md) · [Code retrieval skill](skills/code-retrieval/SKILL.md) · [Web retrieval skill](skills/web-source-retrieval/SKILL.md)
 
-**Status:** package and current-source checks do not establish broad end-answer quality, hosted-client support, a Windows/game/device integration, live-provider behavior, or full-program acceptance. The negative controlled MCP quality comparison is published with its scope and limitations in [the comparison guide](docs/mcp-comparison.md). Ordinary search and file-reading tools may be sufficient for a task.
+**Status:** package and current-source checks do not establish broad end-answer quality, hosted-client support, a Windows/game/device integration, live-provider behavior, or full-program acceptance. The four-run stdio presentation check is limited to native Codex CLI 0.163.0 transport and source preservation; it does not establish answer quality or billing savings. The negative controlled MCP quality comparison remains published with its scope and limitations in [the comparison guide](docs/mcp-comparison.md). Ordinary search and file-reading tools may be sufficient for a task.
 
 MIT License. See [LICENSE](LICENSE).

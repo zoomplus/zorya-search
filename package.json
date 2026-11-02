@@ -1,6 +1,6 @@
 {
   "name": "@zorya/search",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local-first code and project-text retrieval, source-backed symbol analysis, caller-controlled web discovery, and MCP for SDK clients",
   "keywords": [
     "code-search",
@@ -46,6 +46,7 @@
     "docs/service-flows.md",
     "docs/jev-classification.md",
     "docs/mcp-comparison.md",
+    "docs/mcp-result-presentation.md",
     "src/**/README.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",

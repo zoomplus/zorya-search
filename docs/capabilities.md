@@ -1,25 +1,26 @@
 # Возможности и границы версий
 
-Эта матрица сравнивает preview `v0.1.7` на commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d) с историческим архивом `v0.1.6`. Фактическую доступность preview asset проверяй на [странице релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7); устанавливай перечисленный asset и сверяй версию установленного клиента.
+Матрица фиксирует опубликованный архив `v0.1.6`, последующую поверхность `v0.1.7` и candidate `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Candidate сохраняет прежние возможности и добавляет только опциональное представление MCP stdio. Перед установкой проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag сверяй отдельно в registry.
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Исторический архив `v0.1.6` | Preview `v0.1.7` |
-| --- | --- | --- |
-| Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да |
-| Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата |
-| Точный поиск символов, статические references, ограниченный call/construct trace | Нет | Да |
-| Необязательный `includeLogical` для доказанных статических связей | Нет | Да, выключен по умолчанию |
-| Отдельный project-text index для `documentation`, `rules`, `skills` | Нет | Да, только при явном `projectText` config |
-| Brave web discovery и чтение публичных страниц | Да | Да |
-| Несколько discovery queries от вызывающей стороны | Нет | Да, до семи дополнительный запросов; Search их не формирует |
-| Jev-backed classification и reuse context | Частично: существующая классификация | Да, shared Jev Decisions port; reuse opt-in |
-| Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса |
-| SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца |
+| Capability | Исторический архив `v0.1.6` | Публикация `v0.1.7` | Candidate `v0.1.8` |
+| --- | --- | --- | --- |
+| Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да |
+| Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата | Да |
+| Точный поиск символов, статические references, ограниченный call/construct trace | Нет | Да | Да |
+| Необязательный `includeLogical` для доказанных статических связей | Нет | Да, выключен по умолчанию | Да |
+| Отдельный project-text index для `documentation`, `rules`, `skills` | Нет | Да, только при явном `projectText` config | Да |
+| Brave web discovery и чтение публичных страниц | Да | Да | Да |
+| Несколько discovery queries от вызывающей стороны | Нет | Да, до семи дополнительных запросов; Search их не формирует | Да |
+| Jev-backed classification и reuse context | Частично: существующая классификация | Да, shared Jev Decisions port; reuse opt-in | Да |
+| Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса | Да |
+| SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation |
+| Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
 
-Для preview setup используй [release availability instructions](../README.md#release-availability): GitHub — основной канал, а npm `next` допустим только после того, как registry действительно покажет соответствующий version/tag. Установи только перечисленный asset и проверь версию. См. также [changelog](../CHANGELOG.md).
+Для candidate setup используй [release availability instructions](../README.md#release-availability): устанавливай asset `v0.1.8`, только если он перечислен, а npm `next` — только после подтверждения version/tag в registry. См. [changelog](../CHANGELOG.md) и [гайд presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 

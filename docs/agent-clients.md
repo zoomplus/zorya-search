@@ -2,13 +2,15 @@
 
 Search вызывается существующим клиентом и не меняет его prompt, модель, память, инструкции, настройки или workflow. Установка и `client-config` не регистрируют MCP автоматически. Следуй указаниям пользователя и правилам того репозитория, где выполняется задача.
 
-Этот репозиторий описывает preview `v0.1.7` source [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d); исторический archive `v0.1.6` имеет более узкую поверхность. Проверь [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset, а затем сверяй SDK/MCP schema и grants установленной версии.
+Этот документ описывает кандидата `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Он сохраняет ранее опубликованную поверхность `v0.1.7` и добавляет opt-in выбор stdio result presentation. Проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) и npm registry для фактической доступности, затем сверяй SDK/MCP schema и grants установленной версии.
 
 ## Подключение MCP
 
 Клиент-владелец отдельно регистрирует вариант, напечатанный CLI `client-config`, и задаёт минимальные roots и операции. `list_roots` показывает разрешённые корни; capability инструмента и его grant проверяются отдельно. Одно имя tool не доказывает, что capability включена или provider настроен. Не запускай поиск или индексацию просто потому, что сервер подключён.
 
 Для локального процесса используй stdio/loopback по [руководству MCP](mcp.md#локальный-mcp). Hosted или удалённый клиент требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Локальная проверка не доказывает поддержку hosted ChatGPT или production IdP.
+
+В candidate `v0.1.8` владелец может выбрать `client-config --result-presentation structured`, чтобы сгенерированный локальный stdio profile добавлял флаг прокси. Ручная команда использует `mcp --result-presentation structured`. Режим меняет только точный повтор JSON внутри `content`; полный JSON остаётся в `structuredContent`, другие блоки и source identity сохраняются. Оставь `legacy`, если клиент читает только text content, или если поведение конкретного клиента не проверено. Нативная проверка проведена только с Codex CLI 0.163.0 на Linux; это не подтверждает hosted ChatGPT, Cursor либо другие клиенты. См. [полное руководство и run-by-run результаты](mcp-result-presentation.md).
 
 ## Skills для локального клиента
 

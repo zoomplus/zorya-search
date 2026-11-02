@@ -1,17 +1,17 @@
 # Начало работы с Zorya Search
 
-Это руководство относится к preview `v0.1.7` на source commit [`3be35fd`](https://github.com/zoomplus/zorya-search/tree/3be35fdbe69357a4bb0daf6203d9472b5c5a184d). Проверь [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset. Устанавливай только перечисленный там файл и проверь версию пакета после установки. Планируемое имя asset: `zorya-search-0.1.7.tgz`.
+Это краткое руководство описывает source candidate `v0.1.8` на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Он сохраняет ранее опубликованные возможности `v0.1.7` и добавляет opt-in выбор MCP stdio presentation. Перед установкой проверь [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag сверяй отдельно в registry.
 
 ## 1. Установи пакет preview
 
-Нужна Node.js `>=20.19.0`. Когда на странице релиза перечислен `zorya-search-0.1.7.tgz`, установи его в проект, который будет владеть Search:
+Нужна Node.js `>=20.19.0`. Когда на странице релиза перечислен `zorya-search-0.1.8.tgz`, установи его в проект, который будет владеть Search:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.7/zorya-search-0.1.7.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
 npm ls @zorya/search --depth=0
 ```
 
-Команда URL — рецепт для указанного asset, не подтверждение его наличия. Если используешь npm, сначала проверь, что registry показывает `0.1.7` с тегом `next`; тогда можно выполнить `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.7` только после проверки этой версии в registry. Не используй неприкреплённый `latest` или `npx` для получения отсутствующей версии. Установка GitHub archive не зависит от доступа к npm-аккаунту.
+Команда URL — рецепт для указанного asset, не подтверждение его наличия. Если используешь npm, сначала проверь, что registry показывает `0.1.8` с тегом `next`; тогда можно выполнить `npm install --save-exact @zorya/search@next`. Указывай `@zorya/search@0.1.8` только после проверки этой версии в registry. Не используй неприкреплённый `latest` или `npx` для получения отсутствующей версии. Установка GitHub archive не зависит от доступа к npm-аккаунту.
 
 ## 2. Создай runtime config
 
@@ -53,9 +53,20 @@ npm exec -- zorya-search index
 
 Для кода начни с `search_code` и проверь найденный диапазон через `read_source`; ограниченный `get_code_context` и duplicate candidates — отдельные запросы. Используй только API фактически установленной версии; подробности приведены в [матрице возможностей](capabilities.md), [SDK](sdk.md), [CLI](cli.md) и [MCP](mcp.md).
 
-## Исторический архив `v0.1.6`
+## Выбор представления ответа stdio
 
-Если страница релиза `v0.1.7` пока не перечисляет asset, можно установить исторический [`v0.1.6` архив](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6). Он не включает project-text, symbol/reference, multi-query web, typed source-read recovery и другие возможности preview `v0.1.7`. Для него используй соответствующую version-specific документацию; не применяй к нему команды и capabilities нового preview.
+В candidate `v0.1.8` для локального MCP proxy можно явно выбрать `structured`; в нём только точный повтор JSON в текстовом `content` заменяется короткой ссылкой на сохранённый `structuredContent`. Значение по умолчанию — `legacy`. Используй поддерживаемые CLI entrypoints:
+
+```sh
+npm exec -- zorya-search mcp --result-presentation structured
+npm exec -- zorya-search client-config --result-presentation structured
+```
+
+`client-config` лишь печатает профиль; регистрируй его в клиенте отдельно. Оставь `legacy`, если интеграция читает только text blocks или не проверена на этом формате. Нативный caller evidence есть только для Codex CLI 0.163.0 на Linux; не переноси его на hosted ChatGPT, Cursor или другие клиенты. Подробности и ограничения приведены в [гайде](mcp-result-presentation.md).
+
+## Ранее опубликованные версии
+
+Предыдущий релиз [`v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) не включает структурированное stdio представление. Если используешь его, оставь привычное поведение `legacy`. Исторический [`v0.1.6` архив](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.6) не включает более поздние возможности project-text, symbol/reference, multi-query web и source-read recovery; сверяй команды с документацией именно этой версии.
 
 ## Web и ограничения
 

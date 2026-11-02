@@ -1,19 +1,21 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Preview `v0.1.7` добавляет opt-in команду `reuse` и настройку Jev; исторический GitHub archive `v0.1.6` этого не содержит. Проверь [страницу релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7) для фактической доступности asset. Параметры и миграция описаны в [руководстве Jev](jev-classification.md).
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Кандидат `v0.1.8` сохраняет preview `v0.1.7` и добавляет opt-in `--result-presentation structured` для команд `mcp` и `client-config`. Перед установкой проверь [страницу релиза](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8) на наличие asset; npm version/tag проверяй отдельно в registry. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
-Для Node.js `>=20.19.0` сначала проверьте [страницу релиза `v0.1.7`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.7). Если asset перечислен, установите его точный URL в проект, который будет владеть Search, затем сверяйте package version и schema. Исторический `v0.1.6` не включает описанные ниже новые команды. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
+Для Node.js `>=20.19.0` сначала проверьте [страницу релиза `v0.1.8`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.8). Если asset перечислен, установите его точный URL в проект, который будет владеть Search, затем сверяйте package version и schema. Кандидат добавляет только опциональную stdio-презентацию к ранее опубликованным возможностям. Команды настройки не устанавливают MCP в чат или редактор и не запускают индексацию:
 
 ```sh
-npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.7/zorya-search-0.1.7.tgz
+npm install --save-exact https://github.com/zoomplus/zorya-search/releases/download/v0.1.8/zorya-search-0.1.8.tgz
 npm ls @zorya/search --depth=0
 npm exec -- zorya-search setup --root .
 npm exec -- zorya-search client-config
 ```
 
 `client-config` печатает готовые варианты, включая `installedCodex`; владелец отдельно регистрирует нужный вариант в существующем клиенте. После регистрации отдельно выдаются разрешения, запускается `index`, а доступ к моделям включается только при отдельной настройке профиля и ключа. Установка в workspace не использует глобальную команду и не меняет конфигурацию клиента.
+
+Чтобы включить opt-in сжатую подачу точного повторённого JSON для локального stdio, используй `mcp --result-presentation structured` либо сгенерируй соответствующий профиль через `client-config --result-presentation structured`. Без флага остаётся `legacy`. Режим действует только на `mcp`/`client-config`; детали, ограничения и usage измерений приведены в [руководстве result presentation](mcp-result-presentation.md).
 
 ## Индекс документации, правил и навыков — preview `v0.1.7`
 
@@ -91,8 +93,8 @@ Jev classification и reuse включаются при создании про�
 - `reuse --config PATH --root-id ID --query TEXT` — в preview вызвать `get_reuse_context`; требуется Jev capability и grant `read` плюс `classify`. Не входит в archive `v0.1.6`.
 - `root-add --root-id ID --root PATH [--watch] [--watch-interval-ms N]` — добавить корень. Watch вступает в силу при следующем запуске службы; конфигурация не перезаписывается при активном владельце.
 - `serve` — запустить локальную службу на loopback в foreground. При ручном запуске CLI сам создаёт приватные owner и control секреты; внутренние параметры секретных файлов используются только launcher-ом. На Node 24 для этого ограниченного workaround можно запустить entry как `node --wasm-wrapper-tiering-budget=1000000000 <entry> serve --config <path>`; обычная команда `zorya-search serve` сохраняет стандартные настройки Node. Команды, автоматически создающие владельца службы, применяют флаг к собственному Node 24 daemon.
-- `mcp` — предоставить MCP stdio и подключиться к общей локальной службе. Данные протокола идут только в stdout; диагностика — в stderr.
-- `client-config` — вывести готовые варианты JSON `command`/`args`: `installed` запускает текущий установленный package entry через абсолютные `process.execPath` и путь entry и пригоден из другого cwd; `installedCodex` печатает соответствующую команду `codex mcp add`. Варианты `registry` и `registryCodex` адресуют одноимённую версию из npm и работают только после публикации этой версии в npm; используйте `installed` для установленного GitHub archive. Команда только показывает конфигурацию, не регистрирует MCP и не меняет профиль клиента.
+- `mcp [--result-presentation legacy|structured]` — предоставить MCP stdio и подключиться к общей локальной службе. `legacy` — default; `structured` заменяет только точный дубликат JSON text из `content` короткой подсказкой. Данные протокола идут только в stdout; диагностика — в stderr.
+- `client-config [--result-presentation legacy|structured]` — вывести готовые варианты JSON `command`/`args`; заданный structured режим включается в напечатанные stdio-команды: `installed` запускает текущий установленный package entry через абсолютные `process.execPath` и путь entry и пригоден из другого cwd; `installedCodex` печатает соответствующую команду `codex mcp add`. Варианты `registry` и `registryCodex` адресуют одноимённую версию из npm и работают только после публикации этой версии в npm; используйте `installed` для установленного GitHub archive. Команда только показывает конфигурацию, не регистрирует MCP и не меняет профиль клиента.
 - `service` — показать статус; `service --stop` отправляет отдельный случайный секрет по owner-specific локальному IPC каналу после проверки текущего daemon токена. PID из редактируемого descriptor не используется для остановки процесса.
 
 Для help и version не читаются конфигурация, секреты или база. Диагностика возвращает структурированные значения; `doctor` различает установленный CLI, валидную конфигурацию, подтверждённый локальный сервис и фактическую проверку провайдера.
