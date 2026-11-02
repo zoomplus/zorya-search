@@ -18,12 +18,13 @@ import {
 import { createSetupConfig, setupMode, type SetupConfigInput } from "./setup-config.js";
 import { parseRuntimeConfig } from "../runtime/config.js";
 import { canonicalFuturePath } from "../runtime/path.js";
-import { ensureOwner, runOwner, serviceStatus, stopOwner } from "./service.js";
+import { ensureOwner, runOwner, serviceStatus, stopOwner, withOwnerStartupLock } from "./service.js";
 import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadataUrl, remoteOAuthScopes, validateRemoteOAuthRoots } from "../daemon/remote-oauth.js";
 import { startSearchDaemon } from "../daemon/index.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../package-version.js";
 import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
 import { parseResultPresentation } from "../mcp/result-presentation.js";
+import { configureSearchCapability } from "./configure.js";
 
 const CLI_VERSION = PACKAGE_VERSION;
 const cliEntryPath = fileURLToPath(import.meta.url);
@@ -48,6 +49,7 @@ const help = `Zorya Search — локальный поиск по коду и и
   client-config  вывести команду подключения Codex и JSON для совместимого клиента
   root-add       добавить разрешённый корень в конфигурацию
   service        проверить службу или остановить только подтверждённого владельца
+  configure      предложить владельцу включить capability в существующей конфигурации
 
 Для serve-remote задайте --config ПУТЬ runtime-конфигурации и --policy ПУТЬ JSON-политики.
 Служба слушает только loopback; публичный TLS завершается на настроенном владельцем proxy.
@@ -63,6 +65,13 @@ const help = `Zorya Search — локальный поиск по коду и и
 Без него конфигурация включает локальный lexical поиск этих источников.
 
 Для явной классификации Search задайте при setup --jev-env ИМЯ_ENV. Используется только ${JEV_DECISIONS_MODEL}; старые --classifier-model/--classifier-env принимают только этот ID.
+
+configure --config PATH --capability ENUM [--secret-env NAME | --reuse-secret-ref FIELD]
+ENUM: project-text, web-read, web-discovery, visual, code-embeddings, project-text-embeddings, jev-classification.
+project-text enables lexical project docs/rules/skills search without a key or embedding model.
+Без --secret-env ключ вводится скрыто в локальном TTY; ключ нельзя передавать в argv. Для невзаимодействующего запуска задайте только имя --secret-env NAME.
+При смене embedding profile для watched roots требуется отдельное подтверждение, так как служба может начать индексацию и provider-вызовы.
+Перезапуск уже работающего watch-enabled владельца может возобновить его текущую сверку; configure не включает и не меняет watch.
 
 По умолчанию поиск lexical локален. Включение облачных embeddings отправляет выбранные
 фрагменты кода или текстовые документы при индексировании, а запросы — при поиске. Этот CLI не исправляет файлы,
@@ -361,35 +370,6 @@ async function setup(opts: Record<string, string | boolean>) {
   });
 }
 
-async function withOwnerStartupLock<T>(
-  configPath: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const directory = ownerDir(configPath);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  if ((await realpath(directory)) !== directory)
-    throw new Error("OWNER_DIR_UNSAFE");
-  const directoryInfo = await lstat(directory);
-  if (process.platform !== "win32" && (directoryInfo.mode & 0o077) !== 0)
-    throw new Error("OWNER_DIR_PERMISSIONS_UNSAFE");
-  const lockPath = join(directory, "startup.lock");
-  let handle;
-  try {
-    handle = await open(lockPath, "wx", 0o600);
-  } catch {
-    throw new Error("CONFIG_UPDATE_BUSY");
-  }
-  const identity = await handle.stat();
-  try {
-    return await operation();
-  } finally {
-    await handle.close();
-    const current = await lstat(lockPath).catch(() => undefined);
-    if (current?.dev === identity.dev && current.ino === identity.ino)
-      await unlink(lockPath).catch(() => undefined);
-  }
-}
-
 async function withClient(
   configPath: string,
   fn: (client: Client, rootId: string, jobTimeoutMs: number) => Promise<unknown>,
@@ -476,6 +456,7 @@ async function main() {
     doctor: ["config"],
     "root-add": ["config", "root-id", "root", "watch", "watch-interval-ms"],
     service: ["config", "stop"],
+    configure: ["config", "capability", "secret-env", "reuse-secret-ref", "allow-indexing"],
     mcp: ["config", "result-presentation"],
     index: ["config", "root-id", "background"],
     search: ["config", "root-id", "query", "mode"],
@@ -488,6 +469,22 @@ async function main() {
       !["help", "version"].includes(key) && !allowed[command]!.includes(key),
   );
   if (unknown) throw new Error(`OPTION_UNKNOWN:${unknown}`);
+  if (command === "configure") {
+    if (opts["allow-indexing"] !== undefined && opts["allow-indexing"] !== true)
+      throw new Error("CONFIGURE_FLAG_INVALID");
+    if (opts["secret-env"] !== undefined && typeof opts["secret-env"] !== "string")
+      throw new Error("ENV_NAME_INVALID");
+    if (opts["reuse-secret-ref"] !== undefined && typeof opts["reuse-secret-ref"] !== "string")
+      throw new Error("CONFIGURE_SECRET_REFERENCE_INVALID");
+    json(await configureSearchCapability({
+      configPath,
+      capability: get(opts, "capability"),
+      ...(typeof opts["secret-env"] === "string" ? { secretEnv: opts["secret-env"] } : {}),
+      ...(typeof opts["reuse-secret-ref"] === "string" ? { reuseSecretRef: opts["reuse-secret-ref"] } : {}),
+      ...(opts["allow-indexing"] === true ? { allowIndexing: true } : {}),
+    }));
+    return;
+  }
   const resultPresentation =
     command === "mcp" || command === "client-config"
       ? parseResultPresentation(

@@ -57,6 +57,22 @@ flowchart LR
 
 Server instructions передаются в `initialize` как metadata; сам initialize не вызывает поиск, индексацию, classifier или внешние providers. HTTP builder получает зарегистрированные/granted имена и известные runtime capabilities из [server.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/server.ts) и строит trusted текст через [instructions.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/instructions.ts). Для stdio proxy перечень поступает из upstream `tools/list` и ограничивается локальными контрактами в [stdio.ts](https://github.com/zoomplus/zorya-search/blob/main/src/mcp/stdio.ts); capability считается неизвестной. Proxy не запрашивает upstream `capabilities` автоматически и не копирует upstream instructions или descriptions. Поэтому он предлагает проверить соответствующее поле `capabilities` и grant перед вызовом. Имя инструмента само по себе не доказывает, что capability/provider настроены.
 
+Для конкретной задачи caller использует `capabilities` и следует `capabilityAvailability[ENUM].status`: `available` — выдан доступ и роль настроена; `not_configured` — можно предложить владельцу matching `setupOptions` действие и запросить согласие; `access_denied` — попросить grant владельца, не новый ключ. Владелец меняет тот же профиль локальной командой `configure`; секрет вводится только через hidden terminal prompt или явную environment reference. После изменения с `mcpReconnectRequired: true` caller reconnects/reloads MCP, обновляет каталог через protocol method `tools/list` и снова запрашивает `capabilities`. Так обновляется каталог; `available` после настройки не означает проверку здоровья модели. Для удалённого сервера конфигурацию меняет его владелец.
+
+```mermaid
+flowchart TD
+ A["Нужна capability"] --> B["Запросить capabilities"]
+ B --> C{"Typed status"}
+ C -->|available| D["Использовать инструмент по необходимости"]
+ C -->|access_denied| E["Попросить владельца выдать operation grant"]
+ C -->|not_configured| F["Предложить настройку и спросить согласие"]
+ F -->|нет| G["Продолжить без этой capability"]
+ F -->|да| H["Владелец запускает hidden local configure для того же профиля"]
+ H --> I["Reconnect/reload MCP"]
+ I --> J["tools/list, затем capabilities"]
+ J --> C
+```
+
 Подсказка не меняет caller identity, grants, user instructions, prompt, модель, память, настройки, план или workflow. Caller выбирает, использовать ли tool, сам формулирует запрос и проверяет ответ. Содержимое исходников, найденные rules/skills и выходы model classification — недоверенные данные для проверки, а не команды или политики для исполнения; score не доказывает правильность или семантическую эквивалентность.
 
 | Capability и grant | Tool inventory и подсказка |

@@ -149,7 +149,9 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
   const localAccess: SearchMcpAccess & { principalId: string } = {
     principalId: 'local-owner',
     rootIds: runtime.listRoots().map((root) => root.id),
-    operations: ['read', 'index', 'web', 'classify', ...(runtime.capabilities().visual ? ['visual' as const] : [])],
+    // The local owner may inspect capability availability and configure a
+    // disabled visual profile. Remote callers still receive only authorizer grants.
+    operations: ['read', 'index', 'web', 'classify', 'visual'],
   }
   const closeSession = async (session: LegacySession) => {
     if (session.transport.sessionId) sessions.delete(session.transport.sessionId)

@@ -54,6 +54,14 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       { principalId: 'alpha-classifier', rootIds: ['alpha'], operations: ['classify'] as const },
     ],
     [
+      'token-visual-'.padEnd(40, 'v'),
+      { principalId: 'alpha-visual', rootIds: ['alpha'], operations: ['visual'] as const },
+    ],
+    [
+      'token-web-'.padEnd(40, 'w'),
+      { principalId: 'alpha-web', rootIds: ['alpha'], operations: ['web'] as const },
+    ],
+    [
       'token-none-'.padEnd(40, 'n'),
       { principalId: 'alpha-no-grants', rootIds: ['alpha'], operations: [] as const },
     ],
@@ -138,6 +146,12 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     assert.equal((await fetch(base, { headers: { Origin: 'https://evil.example' } })).status, 403)
     stage = 'missing bearer rejection'
     assert.equal((await fetch(base)).status, 401)
+    stage = 'unauthenticated capabilities call rejection'
+    assert.equal((await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'capabilities', arguments: {} } }),
+    })).status, 401)
     const sendOversized = (method: 'POST' | 'GET', chunked: boolean) => new Promise<number>((resolve, reject) => {
       const body = 'x'.repeat(1_048_577)
       const headers: Record<string, string> = {
@@ -184,7 +198,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     }
     const modern = await makeClient('auto', alphaToken)
     assert.equal(installedManifest.name, 'zorya-search')
-    assert.equal(installedManifest.version, '0.1.9')
+    assert.equal(installedManifest.version, '0.1.10')
     assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
     assert.equal(listed.tools.length, 19)
@@ -248,13 +262,73 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
       if (restrictedToken.startsWith('token-readonly-')) {
         const restrictedCapabilities = await restricted.callTool({ name: 'capabilities', arguments: {} })
         assert.equal((restrictedCapabilities.structuredContent as { reuseContext?: boolean }).reuseContext, false)
-      } else {
+      } else if (restrictedToken.startsWith('token-none-')) {
         const deniedCapabilities = await restricted.callTool({ name: 'capabilities', arguments: {} })
-        assert.equal(deniedCapabilities.isError, true)
+        assert.notEqual(deniedCapabilities.isError, true)
+        const projection = deniedCapabilities.structuredContent as {
+          capabilityAvailability: Record<string, { status: string; requiredOperations: string[] }>
+          setupOptions: unknown[]
+          reuseContextAvailability: { status: string; requiredOperations: string[] }
+          projectText: boolean
+          code: boolean
+          webRead: boolean
+          classification: boolean
+          visual: boolean
+          roots?: unknown
+        }
+        assert.ok(Object.values(projection.capabilityAvailability).every((entry) => entry.status === 'access_denied'))
+        assert.deepEqual(projection.setupOptions, [])
+        assert.equal(projection.reuseContextAvailability.status, 'access_denied')
+        assert.deepEqual(projection.reuseContextAvailability.requiredOperations, ['read', 'classify'])
+        assert.deepEqual([projection.code, projection.projectText, projection.webRead, projection.classification, projection.visual], [false, false, false, false, false])
+        assert.equal(projection.roots, undefined)
+      } else {
+        const classifyCapabilities = await restricted.callTool({ name: 'capabilities', arguments: {} })
+        assert.notEqual(classifyCapabilities.isError, true)
+        const projection = classifyCapabilities.structuredContent as {
+          classification: boolean
+          capabilityAvailability: Record<string, { status: string }>
+          setupOptions: Array<{ capability: string }>
+        }
+        assert.equal(projection.classification, true)
+        assert.equal(projection.capabilityAvailability['jev-classification']?.status, 'available')
+        assert.ok(!projection.setupOptions.some((option) => option.capability === 'jev-classification'))
       }
       await assert.rejects(() => restricted.callTool({ name: 'get_reuse_context', arguments: { rootId: 'alpha', query: 'change alphaEntry' } }))
       assert.equal(fetchStarts.length, deniedReuseCalls)
       await restricted.close()
+    }
+    for (const lowScopeToken of ['token-visual-'.padEnd(40, 'v'), 'token-web-'.padEnd(40, 'w')]) {
+      stage = `${lowScopeToken.startsWith('token-visual-') ? 'visual' : 'web'}-only authenticated client connection`
+      const lowScope = await makeClient('auto', lowScopeToken)
+      stage = `${lowScopeToken.startsWith('token-visual-') ? 'visual' : 'web'}-only tool list`
+      const lowScopeTools = (await lowScope.listTools()).tools.map((tool) => tool.name)
+      assert.ok(lowScopeTools.includes('capabilities'), lowScopeTools.join(','))
+      assert.ok(lowScopeTools.includes('list_roots'), lowScopeTools.join(','))
+      assert.ok(lowScopeTools.includes('read_source'), lowScopeTools.join(','))
+      assert.ok(lowScopeTools.includes('index_repository'), lowScopeTools.join(','))
+      stage = `${lowScopeToken.startsWith('token-visual-') ? 'visual' : 'web'}-only capability projection`
+      const lowScopeCapabilities = await lowScope.callTool({ name: 'capabilities', arguments: {} })
+      assert.notEqual(lowScopeCapabilities.isError, true)
+      const projected = lowScopeCapabilities.structuredContent as {
+        code: boolean
+        capabilityAvailability: Record<string, { status: string; requiredOperations: string[] }>
+        setupOptions: Array<{ capability: string; action: { secretRequired: boolean; provider?: string } }>
+      }
+      assert.equal(projected.code, false)
+      assert.equal(projected.capabilityAvailability.visual?.status, lowScopeToken.startsWith('token-visual-') ? 'not_configured' : 'access_denied')
+      assert.equal(projected.capabilityAvailability['web-read']?.status, lowScopeToken.startsWith('token-web-') ? 'not_configured' : 'access_denied')
+      assert.doesNotMatch(JSON.stringify(lowScopeCapabilities.structuredContent), /alpha|beta|\/root\/|secretValue|apiKey|tokenValue/u)
+      stage = `${lowScopeToken.startsWith('token-visual-') ? 'visual' : 'web'}-only protected tool refusals`
+      for (const result of await Promise.all([
+        lowScope.callTool({ name: 'list_roots', arguments: {} }),
+        lowScope.callTool({ name: 'read_source', arguments: { rootId: 'alpha', path: 'alpha.ts', lineStart: 1 } }),
+        lowScope.callTool({ name: 'index_repository', arguments: { rootId: 'alpha' } }),
+      ])) {
+        assert.equal(result.isError, true)
+        assert.match(JSON.stringify(result), /ACCESS_DENIED/u)
+      }
+      await lowScope.close()
     }
     assert.equal((await modern.listTools()).tools.some((tool) => tool.name === 'get_reuse_context'), true)
     assert.equal(((await modern.callTool({ name: 'capabilities', arguments: {} })).structuredContent as { reuseContext?: boolean }).reuseContext, true)
@@ -1200,7 +1274,7 @@ test('stdio proxy filters foreign tools and binds exposed schemas and hints to l
       list.tools.map((tool) => tool.name),
       ['capabilities'],
     )
-    assert.equal(list.tools[0]?.description, 'Return enabled Search capabilities.')
+    assert.equal(list.tools[0]?.description, 'Return effective granted capabilities plus capabilityAvailability status (available, not_configured, access_denied) and consent-required local owner setup actions.')
     assert.equal(list.tools[0]?.annotations?.readOnlyHint, true)
     await assert.rejects(() =>
       client.callTool({ name: 'edit_source', arguments: { path: 'owned.ts' } }),

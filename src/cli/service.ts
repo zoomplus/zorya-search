@@ -41,6 +41,25 @@ export async function ownerReadinessTimeoutMs(_configPath: string) {
   return DEFAULT_OWNER_START_TIMEOUT_MS;
 }
 
+/** Serialize config changes with owner startup using the existing owner lock. */
+export async function withOwnerStartupLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
+  const directory = ownerDir(configPath)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  if ((await realpath(directory)) !== resolve(directory)) throw new Error('OWNER_DIR_UNSAFE')
+  const directoryInfo = await import('node:fs/promises').then((fs) => fs.stat(directory))
+  if (process.platform !== 'win32' && (directoryInfo.mode & 0o077) !== 0) throw new Error('OWNER_DIR_PERMISSIONS_UNSAFE')
+  const lockPath = join(directory, 'startup.lock')
+  let handle
+  try { handle = await open(lockPath, 'wx', 0o600) } catch { throw new Error('CONFIG_UPDATE_BUSY') }
+  const identity = await handle.stat()
+  try { return await operation() }
+  finally {
+    await handle.close()
+    const current = await lstat(lockPath).catch(() => undefined)
+    if (current?.dev === identity.dev && current.ino === identity.ino) await unlink(lockPath).catch(() => undefined)
+  }
+}
+
 interface Owner {
   version: 1;
   pid: number;

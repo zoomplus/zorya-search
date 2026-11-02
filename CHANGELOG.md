@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.10 — 2026-11-02
+
+Source candidate for consent-based, on-demand MCP capability setup. Check the release page and npm registry before treating this version as published.
+
+- Add typed capability availability and grant reasons, plus trusted task-specific MCP tool guidance.
+- Add incremental `configure` roles for project text, public web reading, Brave discovery, visual retrieval, code embeddings, project-text embeddings, and Jev classification. Setup asks for consent, keeps secrets in the local hidden terminal or explicit env reference, and never enables providers automatically.
+- Report `mcpReconnectRequired` after profile changes; callers reconnect and refresh tools and capabilities. A configured profile is not provider-health verification.
+- Keep public URL reading and lexical project-text setup keyless. Brave discovery uses a Brave Search key; Voyage and Jev model profiles use an OpenRouter key.
+- Preserve existing roots, data and profiles. A restarted watch-enabled owner may resume its already configured indexing policy. On POSIX secret files use mode `0600`; this is not encryption or proof of Windows ACL protection.
+
+Four native Codex CLI onboarding scenarios passed for the tested fixture, including a keyless public URL read; no Search provider HTTP calls were made. They are functional setup checks, not general answer-quality or live-provider evidence. The earlier negative controlled quality comparison remains unchanged. Full package checks are reported separately by the release owner.
+
 ## 0.1.9 — 2026-11-02
 
 This source changes the npm package identity from the historical scoped name `@zorya/search` to `zorya-search` and updates package metadata and installed-consumer instructions. Before installing, verify that the release page and npm registry list the exact `v0.1.9` tag and `zorya-search@0.1.9` version.

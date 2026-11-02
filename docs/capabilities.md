@@ -1,12 +1,12 @@
 # Возможности и границы версий
 
-Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.8` и описывает версию исходников `v0.1.9` как migration package identity only: runtime/API/CLI behavior и defaults не меняются. Имя пакета — `zorya-search`; наличие точного GitHub tag и npm version `0.1.9` нужно проверить отдельно перед установкой.
+Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9` и описывает source candidate `v0.1.10`. Имя пакета — `zorya-search`; наличие точного GitHub tag и npm version `0.1.10` нужно проверить отдельно перед установкой.
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Candidate `v0.1.9` (runtime сохраняет candidate `v0.1.8`) |
+| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Candidate `v0.1.10` |
 | --- | --- | --- | --- |
 | Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да |
 | Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата | Да |
@@ -19,8 +19,9 @@ Search предоставляет инструменты существующе�
 | Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса | Да |
 | SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation |
 | Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
+| Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля |
 
-Для установки candidate `v0.1.9` сначала подтверди точный GitHub tag и registry version `zorya-search@0.1.9`; conditional examples находятся в [README](../README.md#release-availability). Это не подтверждение публикации. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
+Для установки candidate `v0.1.10` сначала подтверди точный GitHub tag и registry version `zorya-search@0.1.10`; conditional examples находятся в [README](../README.md#release-availability). Это не подтверждение публикации. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 

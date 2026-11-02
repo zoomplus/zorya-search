@@ -1,8 +1,9 @@
 # Правила работы с репозиторием Zorya Search
 
-## Текущая версия исходников — `v0.1.9` (2026-11-02)
+## Текущий source candidate — `v0.1.10` (2026-11-02)
 
-Версия `v0.1.9` меняет только npm identity и упаковку с исторического scoped имени `@zorya/search` на `zorya-search`. Runtime, exports, CLI behavior, dependencies, storage и defaults остаются как в `v0.1.8`; structured MCP presentation остаётся opt-in, `legacy` — default. Перед установкой сверяй точный GitHub tag и npm version. Условные примеры установки для `zorya-search@0.1.9` приведены в README и quickstarts.
+Candidate добавляет MCP availability/grant states и task-specific guidance, безопасные on-demand setup hints, инкрементальный CLI `configure` для семи capability и сообщение о необходимости переподключить MCP после изменения профиля. Он не включает provider автоматически и не меняет роль вызывающего агента. Публикацию `v0.1.10` нужно проверить отдельно; условные примеры установки находятся в README. Подробности и ограничения — в [MCP guide](docs/mcp.md), [CLI guide](docs/cli.md), [client guide](docs/agent-clients.md) и [матрице](docs/capabilities.md).
+
 
 Исторический source candidate `v0.1.8` добавил только opt-in режим представления ответа локального MCP stdio proxy: `--result-presentation structured` доступен командам `mcp` и `client-config`, а по умолчанию остаётся `legacy`. Режим заменяет лишь точный дубликат JSON текста в `content`; `structuredContent`, source text/hash/snapshot, остальные content blocks и metadata сохраняются. Поведение закреплено на source [`af0a1ed`](https://github.com/zoomplus/zorya-search/tree/af0a1ed6faa9dd912798d28af8401bd8026964c6). Фактические asset, npm version и tag проверяются отдельно; исторические факты не переносятся на `v0.1.9`. Четыре нативных прогона Codex CLI 0.163.0 подтверждают транспортные oracle и сохранение полного source context, но не качество конечных ответов или преимущество MCP по сравнению с обычным поиском и чтением; методика и все usage значения приведены в [руководстве представления результата](docs/mcp-result-presentation.md). Отрицательное контролируемое сравнение и его границы остаются в [сравнении MCP](docs/mcp-comparison.md). Полная цель и consumer/device gates остаются отдельными; не делайте вывод о full-plan acceptance по этой фазе.
 

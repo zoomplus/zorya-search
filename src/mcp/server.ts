@@ -36,7 +36,14 @@ import {
 } from '../runtime/requests.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 import { compactReuseContext } from './reuse-presentation.js'
-import { buildSearchMcpInstructions } from './instructions.js'
+import { buildSearchMcpInstructions, type SearchMcpInstructionCapabilities } from './instructions.js'
+import {
+  getSearchCapabilityAvailability,
+  getSearchMcpSetupHint,
+  SEARCH_SETUP_CAPABILITIES,
+  type SearchMcpOperation,
+  type SearchSetupCapabilityField,
+} from './setup-guidance.js'
 
 const mcpReuseContextRequest = reuseContextRequest.extend({
   responseDetail: z.enum(['compact', 'full']).optional(),
@@ -75,12 +82,12 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
     annotations: annotationsFor('list_roots'),
   },
   capabilities: {
-    description: 'Return enabled Search capabilities.',
+    description: 'Return effective granted capabilities plus capabilityAvailability status (available, not_configured, access_denied) and consent-required local owner setup actions.',
     schema: z.object({}).strict(),
     annotations: annotationsFor('capabilities'),
   },
   index_status: {
-    description: 'Get the index status for a granted root.',
+    description: 'Get index status for a granted root. For a background job pass the same rootId and jobId returned as structuredContent.job.jobId by start_indexing.',
     schema: indexStatusRequest,
     annotations: annotationsFor('index_status'),
   },
@@ -90,17 +97,17 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
     annotations: annotationsFor('index_repository'),
   },
   index_code_symbols: {
-    description: 'Refresh static symbol and reference metadata for the current indexed snapshot. This does not reindex vectors or edit source files.',
+    description: 'Refresh static symbol and reference metadata for the current indexed snapshot. This does not rebuild vectors or edit source files; do not repeat it before reads when metadata is already current.',
     schema: indexCodeSymbolsRequest,
     annotations: annotationsFor('index_code_symbols'),
   },
   start_indexing: {
-    description: 'Start or reuse a runtime-owned background indexing job for a granted root.',
+    description: 'Explicitly start or reuse a runtime-owned background indexing job for a granted root. Read structuredContent.job.jobId and poll index_status with the same rootId/jobId. When created is false, the returned valid job is reused: observe it but cancel only if this caller created it.',
     schema: startIndexingRequest,
     annotations: annotationsFor('start_indexing'),
   },
   cancel_indexing: {
-    description: 'Cancel and join the named background indexing job for a granted root.',
+    description: 'Cancel and join the exact named background indexing job for a granted root. Only cancel a job this caller created; never cancel a reused or owner-started job.',
     schema: cancelIndexingRequest,
     annotations: annotationsFor('cancel_indexing'),
   },
@@ -203,9 +210,9 @@ export const SEARCH_MCP_TOOL_CONTRACTS = {
   },
 } as const
 
-export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, 'read' | 'index' | 'web' | 'classify' | 'visual'>> = {
+export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, SearchMcpOperation | null>> = {
   list_roots: 'read',
-  capabilities: 'read',
+  capabilities: null,
   index_status: 'read',
   search_code: 'read',
   find_code_duplicates: 'read',
@@ -231,7 +238,7 @@ export const SEARCH_MCP_TOOL_OPERATIONS: Readonly<Record<string, 'read' | 'index
 }
 
 export const SEARCH_MCP_TOOL_REQUIRED_OPERATIONS: Readonly<Record<string, readonly ('read' | 'index' | 'web' | 'classify' | 'visual')[]>> = Object.freeze({
-  ...Object.fromEntries(Object.entries(SEARCH_MCP_TOOL_OPERATIONS).map(([name, operation]) => [name, Object.freeze([operation])])),
+  ...Object.fromEntries(Object.entries(SEARCH_MCP_TOOL_OPERATIONS).map(([name, operation]) => [name, Object.freeze(operation ? [operation] : [])])),
   get_reuse_context: Object.freeze(['read', 'classify'] as const),
 })
 
@@ -259,7 +266,7 @@ export function createSearchMcpServer(
     operationValues.some((operation) => !validOperation(operation))
   )
     throw new Error('MCP_ACCESS_INVALID')
-  const operations = new Set(operationValues)
+  const operations = new Set<SearchMcpOperation>(operationValues)
   const registeredToolNames: string[] = []
   const registerTools: Array<(server: McpServer) => void> = []
 
@@ -347,13 +354,33 @@ export function createSearchMcpServer(
   add('list_roots', () => runtime.listRoots().filter((root) => roots.has(root.id)))
   add('capabilities', () => {
     const capabilities = runtime.capabilities()
-    if (!filterUnauthorizedTools) return {
-      ...capabilities,
-      reuseContext: operations.has('read') && operations.has('classify') && capabilities.reuseContext,
+    const configured: Readonly<Record<SearchSetupCapabilityField, boolean>> = {
+      projectText: capabilities.projectText,
+      webRead: capabilities.webRead,
+      webDiscovery: capabilities.webDiscovery,
+      visual: capabilities.visual,
+      embedding: capabilities.embedding,
+      projectTextEmbedding: capabilities.projectTextEmbedding,
+      classification: capabilities.classification,
     }
+    const capabilityAvailability = getSearchCapabilityAvailability(operations, configured)
+    const setupOptions = SEARCH_SETUP_CAPABILITIES
+      .filter((capability) => capabilityAvailability[capability].status === 'not_configured')
+      .map((capability) => getSearchMcpSetupHint(capability))
+    const reuseAllowed = operations.has('read') && operations.has('classify')
+    const reuseContextAvailability = {
+      status: !reuseAllowed ? 'access_denied' : capabilities.reuseContext ? 'available' : 'not_configured',
+      requiredOperations: ['read', 'classify'],
+    } as const
     const web = operations.has('web')
     return {
       ...capabilities,
+      setupOptions,
+      capabilityAvailability,
+      reuseContextAvailability,
+      code: operations.has('read') && capabilities.code,
+      codeReranking: operations.has('read') && capabilities.codeReranking,
+      embedding: operations.has('read') && capabilities.embedding,
       webEmbedding: web && capabilities.webEmbedding,
       webReranking: web && capabilities.webReranking,
       webRead: web && capabilities.webRead,
@@ -454,13 +481,13 @@ export function createSearchMcpServer(
     requiredOperationsForTool(name)?.every((operation) => operations.has(operation)),
   )
   const capabilities = runtime.capabilities()
-  const instructionCapabilities = {
-    reuseContext: capabilities.reuseContext && operations.has('read') && operations.has('classify'),
-    projectText: capabilities.projectText && operations.has('read'),
-    webDiscovery: capabilities.webDiscovery && operations.has('web'),
-    webRead: capabilities.webRead && operations.has('web'),
-    classification: capabilities.classification && operations.has('classify'),
-    visual: capabilities.visual && operations.has('visual'),
+  const instructionCapabilities: SearchMcpInstructionCapabilities = {
+    reuseContext: operations.has('read') && operations.has('classify') ? capabilities.reuseContext : 'unknown',
+    projectText: operations.has('read') ? capabilities.projectText : 'unknown',
+    webDiscovery: operations.has('web') ? capabilities.webDiscovery : 'unknown',
+    webRead: operations.has('web') ? capabilities.webRead : 'unknown',
+    classification: operations.has('classify') ? capabilities.classification : 'unknown',
+    visual: operations.has('visual') ? capabilities.visual : 'unknown',
   }
   const server = new McpServer(
     { name: 'zorya-search', version: PACKAGE_VERSION },
