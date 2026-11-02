@@ -41,3 +41,11 @@ Lexical поиск работает без ключа и не вызывает e
 ## Текущий контракт
 
 Лексический поиск работает без ключа. Dense-поиск и reranking требуют совместимого профиля и отправляют выбранные фрагменты соответствующему provider adapter. Профили и пространства данных разделены, а каждый результат сохраняет identity источника и известные ограничения. Включение конкретной функции зависит от конфигурации владельца и grants клиента; см. [матрицу возможностей](capabilities.md).
+
+## Локальный workspace bridge (source candidate `v0.1.11`)
+
+`src/bridge/` связывает локальный Codex stdio MCP client с отдельным центральным BridgeServer. На каждый MCP call client проверяет per-call native conversation ID и canonical `process.cwd()`, затем формирует workspace identity из client ID и пути. `PWD`, ambient `CODEX_THREAD_ID`, статический config cwd и installation/server path не служат запасными источниками identity. Server хранит снимок источника отдельно по client/workspace identity и открывает существующий Search runtime.
+
+Source-free calls используют null snapshot и не передают проект. Явные `index_repository`, `start_indexing`, `index_code_symbols`, `index_project_text` сначала синхронизируют изменившиеся байты, затем вызывают существующий MCP tool с исходными аргументами. Сама передача не индексирует и не запускает provider. Code/project-text search/read/context не синхронизируют файлы автоматически: client сверяет local manifest до и после вызова и возвращает typed stale refusal при изменении. Отмена и статус фоновой индексации не требуют повторного upload; ownership ограничен conversation identity.
+
+Два resource targets имеют разные grants: `https://startzorya.com/mcp/search` предполагается только для публичных web-source tools и `web:{}` без project roots/data или `read`/`index` grants; `https://startzorya.com/mcp/search/workspace` предполагается для отдельной частной workspace-конфигурации. Это configuration targets, не deployed endpoints. Лимиты передачи, exclusion policies и evidence boundaries описаны в [руководстве workspace bridge](workspace-bridge.md).

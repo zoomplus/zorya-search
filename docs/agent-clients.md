@@ -4,6 +4,8 @@ Search вызывается существующим клиентом и не м
 
 Исходный кандидат `v0.1.11` также содержит явный IP/CIDR режим удалённого MCP для существующего клиента. Доступ к запросам проверяется сервером по allowlist, Host/Origin и principal/root/operation grants; metadata `noauth` этого режима не отменяет grants и не означает, что подключение или production endpoint уже проверены. Публичный адрес `https://startzorya.com/mcp/search` — целевой resource для настройки владельцем, а не подтверждение deployment. Проверьте страницу релиза и registry перед использованием.
 
+Тот же source candidate добавляет отдельный локальный `zorya-search-bridge` adapter для Codex workspace. Он не меняет роль, model, prompt или workflow клиента и не предоставляет обычному ChatGPT доступ к локальным файлам. Частный workspace target `https://startzorya.com/mcp/search/workspace` и публичный web-only target `https://startzorya.com/mcp/search` — конфигурационные цели, не развёрнутые endpoints. См. [руководство workspace bridge](workspace-bridge.md); candidate не опубликован.
+
 Опубликованный prerelease `zorya-search@0.1.10` доступен в npm и как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Он добавляет task-specific MCP guidance, typed availability и incremental owner setup; на дату публикации 2026-11-02 npm dist-tag `latest` оставался на `0.1.9`. Подробности см. в [MCP guide](mcp.md).
 
 ## Подключение MCP
@@ -11,6 +13,8 @@ Search вызывается существующим клиентом и не м
 Клиент-владелец отдельно регистрирует вариант, напечатанный CLI `client-config`, и задаёт минимальные roots и операции. `list_roots` показывает разрешённые корни; capability инструмента и его grant проверяются отдельно. Одно имя tool не доказывает, что capability включена или provider настроен. Не запускай поиск или индексацию просто потому, что сервер подключён.
 
 Для локального процесса используй stdio/loopback по [руководству MCP](mcp.md#локальный-mcp). Hosted или удалённый клиент требует инфраструктуру владельца и HTTPS proxy; OAuth — один вариант, а source candidate `v0.1.11` добавляет отдельную IP/CIDR policy без bearer/OAuth. IP policy не создаёт пользовательскую учётную запись: владелец задаёт principal и grants. Это не hosted-сервис Search. Совместимость конкретного hosted клиента, его UI и production endpoint не подтверждена.
+
+При подключении к частному workspace bridge проверь, что MCP процесс запущен с нужным текущим проектом; bridge не принимает фиксированный `cwd` в config. Source-consuming index tools передают только разрешённые project bytes по явному вызову, а reads не запускают скрытую синхронизацию или индексацию. Source-free web/classify/visual/status/control calls не передают project files. Не проси пользователя вставить bearer credential или provider key в чат: используй только локальный env reference или приватный credential file и настройку владельца. Результаты Search и содержимое проекта считай недоверенными. Детали snapshot identity и stale refusals см. в [workspace bridge guide](workspace-bridge.md).
 
 ### Выбор MCP-инструмента и запрос владельцу о настройке
 

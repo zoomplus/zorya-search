@@ -122,14 +122,14 @@ npm install --save-exact zorya-search@0.1.11
 npx --yes zorya-search@0.1.11 serve-remote-ip --config /etc/zorya-search/runtime.json --policy /etc/zorya-search/ip-policy.json
 ```
 
-Она читает runtime-конфигурацию и отдельную строгую JSON policy, затем запускает MCP endpoint на `127.0.0.1` с внутренним путём `/mcp`. Policy требует canonical HTTPS `resource` с непустым путём (пример целевого адреса — `https://startzorya.com/mcp/search`), соответствующий единственный `allowedHosts`, непустые `allowedOrigins`, непустой список `allowedCidrs`, `principalId`, подмножество существующих `rootIds` и операции из `read`, `index`, `web`, `classify`, `visual`. `trustedProxyCidrs` обязателен как массив; оставьте его пустым, если backend напрямую видит клиента. Если соединение приходит от доверенного proxy, сервер требует один корректный `X-Real-IP`. Не задавайте широкий trusted CIDR.
+Она читает runtime-конфигурацию и отдельную строгую JSON policy, затем запускает MCP endpoint на `127.0.0.1` с внутренним путём `/mcp`. Policy требует canonical HTTPS `resource` с непустым путём, соответствующий единственный `allowedHosts`, непустые `allowedOrigins`, непустой список `allowedCidrs`, `principalId`, подмножество существующих `rootIds` и операции из `read`, `index`, `web`, `classify`, `visual`. `trustedProxyCidrs` обязателен как массив; оставьте его пустым, если backend напрямую видит клиента. Если соединение приходит от доверенного proxy, сервер требует один корректный `X-Real-IP`. Не задавайте широкий trusted CIDR.
 
 Например, это только форма policy; замените значения своей конфигурацией и проверьте её до запуска:
 
 ```json
 {
-  "resource": "https://startzorya.com/mcp/search",
-  "allowedHosts": ["startzorya.com"],
+  "resource": "https://search.example.invalid/mcp/search",
+  "allowedHosts": ["search.example.invalid"],
   "allowedCidrs": ["203.0.113.0/24"],
   "trustedProxyCidrs": [],
   "allowedOrigins": ["https://client.example"],
@@ -140,7 +140,25 @@ npx --yes zorya-search@0.1.11 serve-remote-ip --config /etc/zorya-search/runtime
 }
 ```
 
-В этом явном режиме запросы с заголовком `Authorization` отклоняются; OAuth/bearer mode нельзя включить одновременно. MCP инструменты получают noauth security metadata только в IP режиме, но root и operation grants всё равно применяются сервером. Команда сама не включает providers или capabilities. Внешний proxy должен публиковать предполагаемый resource URL и направлять `/mcp/search` на loopback `/mcp`; код и документация не доказывают production deployment. Проверьте release page и registry для доступности candidate.
+Это общий/private пример с `read` grant; он не подходит для публичного web-only target `https://startzorya.com/mcp/search`. Для него не выдавайте project data, `read`/`index` grants или доступ к project roots; см. [границы публичного MCP target](mcp.md#ip-allowlist-endpoint-source-candidate-v0111).
+
+В этом явном режиме запросы с заголовком `Authorization` отклоняются; OAuth/bearer mode нельзя включить одновременно. MCP инструменты получают noauth security metadata только в IP режиме, но root и operation grants всё равно применяются сервером. Команда сама не включает providers или capabilities. Внешний proxy должен публиковать resource URL и направлять его на loopback `/mcp`; код и документация не доказывают production deployment. Проверьте release page и registry для доступности candidate.
+
+## Локальный workspace bridge (source candidate `v0.1.11`)
+
+Новый standalone executable `zorya-search-bridge` принимает только эти команды; каждой нужен явный config path:
+
+```sh
+zorya-search-bridge mcp --config /absolute/path/outside-project/client.json
+zorya-search-bridge client-config --config /absolute/path/outside-project/client.json
+zorya-search-bridge serve --config /absolute/path/outside-project/server.json
+```
+
+Это команды source candidate, не подтверждение публикации `zorya-search@0.1.11`. `client-config` проверяет переданный client config и печатает generic MCP JSON, Codex TOML и установленный absolute Node entry. Registry вариант использует `npx --yes --package zorya-search@<package-version> zorya-search-bridge mcp --config PATH`; запускайте его только для точной версии, доступной в registry. В Codex TOML задаются `startup_timeout_sec = 30` и `tool_timeout_sec = 900`; `cwd` не генерируется. Для env credential конфигурация содержит только имя переменной, значение берётся локально при запуске.
+
+Bridge client config отделён от legacy runtime config и не настраивается командой `zorya-search configure`. Укажите стабильный UUID `clientId` этого устройства, абсолютный `stateDir` вне workspace и credential как имя env variable либо отдельный приватный файл. `allowedDocumentPaths` опционально разрешает конкретные project docs; без списка документы не отправляются. `excludedPaths` задаёт до 128 дополнительных исключений. Не включайте сюда `.cursor/mcp.json`, секреты или настройки private credentials.
+
+`serve` принимает отдельный `BridgeServerConfig` и слушает только loopback. Она выдаёт JSON ready event с фактическим host/port/resource в stdout; подключение извне требует отдельно настроенного TLS proxy и согласованных Host/Origin/CIDR. Ни публичный web-only target `https://startzorya.com/mcp/search`, ни частный workspace target `https://startzorya.com/mcp/search/workspace` не заявлены как deployed. Схемы, grant separation, лимиты и пример запуска описаны в [workspace bridge guide](workspace-bridge.md).
 
 ## Удалённая OAuth-служба (`v0.1.1`)
 

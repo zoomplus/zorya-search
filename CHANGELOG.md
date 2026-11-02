@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.1.11 source candidate
+## 0.1.11 source candidate — not published
 
-This source candidate adds `serve-remote-ip --config PATH --policy PATH`, an explicit IP/CIDR-allowlisted MCP mode on the loopback daemon. The strict policy binds a canonical public HTTPS resource URL and exact Host, requires allowed origins, and grants a principal explicit roots and operations. Optional trusted proxy CIDRs enable a single `X-Real-IP` value; bearer/OAuth and IP mode cannot be combined. MCP tool metadata advertises `noauth` only in this explicit mode; server-side grants and root filtering remain active. No provider or capability is enabled automatically.
+This source candidate adds `zorya-search-bridge`, a separate local stdio MCP entry with explicit client/server configuration. It binds the actual current workspace and native per-call conversation identity, transfers changed source bytes only for explicit indexing or synchronization, and forwards the existing Search MCP calls without changing their contracts. Reads do not trigger synchronization or indexing. Ordinary ChatGPT receives no local project-file access.
 
-An example public resource address is `https://startzorya.com/mcp/search`, intended to be mapped by an owner-managed HTTPS proxy to loopback `/mcp`. This candidate text does not establish npm/GitHub publication, production deployment, ChatGPT UI support, or production endpoint acceptance. Check the release page and registry for availability.
+The candidate also adds `serve-remote-ip --config PATH --policy PATH`, an explicit IP/CIDR-allowlisted MCP mode on the loopback daemon. The strict policy binds a canonical public HTTPS resource URL and exact Host, requires allowed origins, and grants a principal explicit roots and operations. Optional trusted proxy CIDRs enable a single `X-Real-IP` value; bearer/OAuth and IP mode cannot be combined. MCP tool metadata advertises `noauth` only in this explicit mode; server-side grants and root filtering remain active. No provider or capability is enabled automatically.
+
+The intended public web-only target is `https://startzorya.com/mcp/search`; it has no project roots/data or project read/index grants. The separate private workspace target is `https://startzorya.com/mcp/search/workspace`. Both are configuration targets, not deployed endpoints. This source candidate does not establish npm/GitHub publication, production deployment, ChatGPT UI support, or production endpoint acceptance. Check the release page and registry for availability. See [workspace bridge guidance](docs/workspace-bridge.md).
 
 ## 0.1.10 — 2026-11-02
 
