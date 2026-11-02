@@ -114,28 +114,31 @@ test('serve emits its actual loopback endpoint as a ready event and shuts down o
         grants: ['read'],
       }],
     }))
-    child = spawn(process.execPath, ['--import', tsxLoader, entry, 'serve', '--config', configPath], {
-      cwd: root,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8').on('data', (value: string) => { stdout += value })
-    child.stderr.setEncoding('utf8').on('data', (value: string) => { stderr += value })
-    let timeout: NodeJS.Timeout | undefined
-    const ready = await Promise.race([
-      new Promise<string>((resolveReady) => child!.stdout.once('data', (value: string | Buffer) => resolveReady(String(value)))),
-      new Promise<never>((_, rejectReady) => { timeout = setTimeout(() => rejectReady(new Error(`server did not become ready: ${stderr}`)), 10_000) }),
-    ]).finally(() => { if (timeout) clearTimeout(timeout) })
-    const event = JSON.parse(ready) as { event: string; host: string; port: number; resource: string }
-    assert.deepEqual(event, { event: 'ready', host: '127.0.0.1', port: event.port, resource: 'https://search.example.test/mcp/search' })
-    assert.ok(Number.isInteger(event.port) && event.port > 0)
-    assert.equal(stderr, '')
-    child.kill('SIGTERM')
-    const [exitCode, exitSignal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
-    if (process.platform === 'win32') assert.equal(exitSignal, 'SIGTERM', stderr)
-    else assert.equal(exitCode, 0, stderr)
-    assert.match(stdout, /"event":"ready"/u)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      child = spawn(process.execPath, ['--import', tsxLoader, entry, 'serve', '--config', configPath], {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8').on('data', (value: string) => { stdout += value })
+      child.stderr.setEncoding('utf8').on('data', (value: string) => { stderr += value })
+      let timeout: NodeJS.Timeout | undefined
+      const ready = await Promise.race([
+        new Promise<string>((resolveReady) => child!.stdout.once('data', (value: string | Buffer) => resolveReady(String(value)))),
+        new Promise<never>((_, rejectReady) => { timeout = setTimeout(() => rejectReady(new Error(`server did not become ready: ${stderr}`)), 10_000) }),
+      ]).finally(() => { if (timeout) clearTimeout(timeout) })
+      const event = JSON.parse(ready) as { event: string; host: string; port: number; resource: string }
+      assert.deepEqual(event, { event: 'ready', host: '127.0.0.1', port: event.port, resource: 'https://search.example.test/mcp/search' })
+      assert.ok(Number.isInteger(event.port) && event.port > 0)
+      assert.equal(stderr, '')
+      child.kill('SIGTERM')
+      const [exitCode, exitSignal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
+      if (process.platform === 'win32') assert.equal(exitSignal, 'SIGTERM', stderr)
+      else assert.equal(exitCode, 0, stderr)
+      assert.match(stdout, /"event":"ready"/u)
+      child = undefined
+    }
   } finally {
     if (child?.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL')

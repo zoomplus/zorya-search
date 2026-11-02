@@ -133,8 +133,9 @@ async function runServe(configPath: string): Promise<void> {
   const config = await parseBridgeServerConfig(input.value)
   const { createBridgeServer } = await import('./server.js')
   const server = await createBridgeServer(config)
+  const termination = waitForTermination(() => server.close())
   process.stdout.write(`${JSON.stringify({ event: 'ready', host: server.address.address, port: server.address.port, resource: config.resource })}\n`)
-  await waitForTermination(() => server.close())
+  await termination
 }
 
 export async function runBridgeEntry(args: readonly string[] = process.argv.slice(2)): Promise<void> {
