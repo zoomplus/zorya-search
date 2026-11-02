@@ -110,7 +110,7 @@ export function createReuseContext(options: ReuseContextOptions) {
                 facts.push(...page.symbols.filter((symbol) => symbol.location.path === path && !symbol.contract && !symbol.synthetic))
                 cursor = page.nextCursor ?? undefined
                 fileAnalysisTruncated ||= page.analysis.coverage.some((item) => item.path === path && item.status === 'truncated')
-                fileAnalysisTruncated ||= page.truncated
+                fileAnalysisTruncated ||= page.truncated && !page.nextCursor
                 pages++
               } while (cursor && pages < 2)
               symbolCursors.set(path, cursor)

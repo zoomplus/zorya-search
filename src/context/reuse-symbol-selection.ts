@@ -59,7 +59,8 @@ export async function assessReuseSymbols(input: {
     const key = JSON.stringify(page.analysis.profile)
     if (profileKey !== null && key !== profileKey) throw new CodeContextError('STALE_SNAPSHOT')
     profileKey = key
-    analysisTruncated ||= page.truncated || page.analysis.coverage.some((item) => item.path === file.path && item.status === 'truncated')
+    analysisTruncated ||= (page.truncated && !page.nextCursor) ||
+      page.analysis.coverage.some((item) => item.path === file.path && item.status === 'truncated')
     for (const symbol of page.symbols) {
       if (symbol.location.path === file.path && !symbol.contract && !symbol.synthetic) allSymbols.set(symbol.id, symbol)
     }

@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { CodeContextError } from '../../src/context/index.js'
 import { OperationClosedError } from '../../src/context/lifecycle.js'
 import { createReuseContext } from '../../src/context/reuse.js'
+import { createCodeIndex } from '../../src/code/index.js'
+import { extractCodeSymbols } from '../../src/code/symbol-extraction.js'
+import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
 import type { CodeIndex, CodeSourceIdentity } from '../../src/code/types.js'
 import type { CodeSymbol, CodeSymbolAnalysisStatus } from '../../src/code/symbol-api.js'
 import type { JevDecisionsPort } from '../../src/providers/decision-types.js'
@@ -67,7 +74,7 @@ function harness(config: {
     const offset = input.cursor ? (Number(input.cursor.replace('page-', '')) - 1) * 100 : 0
     const page = symbols.slice(offset, offset + 100)
     return { analysis: { ...analysis, identity, symbolCount: symbols.length }, symbols: page,
-      nextCursor: offset + 100 < symbols.length ? `page-${offset / 100 + 2}` : null, truncated: false }
+      nextCursor: offset + 100 < symbols.length ? `page-${offset / 100 + 2}` : null, truncated: page.length === 100 && offset + 100 < symbols.length }
   }
   if (!config.omitDuplicates) base.findCodeDuplicates = async (input: { paths?: string[]; signal?: AbortSignal }) => {
     if (config.failDuplicates) throw config.failDuplicates
@@ -128,6 +135,87 @@ test('second symbol page is offered; long selected bodies are read in bounded co
   assert.equal(h.counts.snapshotCalls, 1)
   assert.equal(h.counts.queries[0], 'where should I add this behavior?')
   await reuse.close()
+})
+
+test('real symbol query pagination is not reported as per-file extractor truncation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zorya-reuse-pages-root-'))
+  const data = await mkdtemp(join(tmpdir(), 'zorya-reuse-pages-db-'))
+  const database = await openEmbeddedDatabase(data)
+  const index = createCodeIndex({ database })
+  const source = [
+    'import { helper } from "./helper.js"',
+    ...Array.from({ length: 230 }, (_, i) => `export function ${i === 229 ? 'lateExtensionPoint' : `declaration${i}`}() { return ${i} }`),
+  ].join('\n')
+  try {
+    await writeFile(join(root, 'many.ts'), source)
+    await index.indexRepository({ root })
+    const pages = []
+    let cursor: string | undefined
+    do {
+      const page = await index.findCodeSymbols!({ root, path: 'many.ts', limit: 100, ...(cursor ? { cursor } : {}) })
+      pages.push(page)
+      assert.equal(page.truncated, Boolean(page.nextCursor))
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    assert.equal(pages.length, 3)
+    assert.ok(pages.at(-1)?.symbols.some((symbol) => symbol.name === 'lateExtensionPoint'))
+
+    const decisions: JevDecisionsPort = {
+      profile: { provider: 'TypeSafe', model: 'typesafe/jev-1.14', space: 'jev' },
+      usage: () => ({ calls: 0, inputTokens: null, totalTokens: null, estimatedCost: null, latencyMs: 0 }),
+      async decide({ state, questions }) {
+        const stateValue = state as { questions?: Record<string, { symbols?: Record<string, { name?: string }> }>
+          candidates?: Record<string, { symbol?: { name?: string } }> }
+        const answers = Object.fromEntries(questions.map((question) => {
+          if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'implement_change' }]
+          if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'implementation' }]
+          if (question.type === 'noul') return [question.id, { type: 'noul', noul: 0.9 }]
+          const rows = stateValue.questions?.[question.id]?.symbols ?? {}
+          const pageTarget = Object.entries(rows).find(([, symbol]) => symbol.name === 'lateExtensionPoint')?.[0]
+          const finalistTarget = Object.entries(stateValue.candidates ?? {}).find(([, candidate]) => candidate.symbol?.name === 'lateExtensionPoint')?.[0]
+          return [question.id, { type: 'choice', choice: pageTarget ?? finalistTarget ?? Object.keys(rows)[0] ?? Object.keys(stateValue.candidates ?? {})[0] ?? 'none' }]
+        }))
+        return { requestId: 'local-fixture', model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+          usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+      },
+    }
+    const reuse = createReuseContext({ index, decisions })
+    try {
+      const result = await reuse.getReuseContext({ root, query: 'lateExtensionPoint' })
+      assert.equal(result.selection.selected[0]?.symbol.name, 'lateExtensionPoint')
+      assert.equal(result.symbolSelection?.files[0]?.sourceSymbolsObserved, 230)
+      assert.equal(result.symbolSelection?.files[0]?.state, 'selected')
+      assert.equal(result.symbolSelection?.files[0]?.choiceSymbolsUnassessed, 0)
+      assert.equal(result.candidates.files[0]?.symbolPages, 2)
+      assert.equal(result.candidates.files[0]?.symbolTruncated, true)
+    } finally { await reuse.close() }
+  } finally {
+    await index.close()
+    await database.close()
+    await Promise.all([rm(root, { recursive: true, force: true }), rm(data, { recursive: true, force: true })])
+  }
+})
+
+test('actual extractor truncation remains partial when the source page cursor is exhausted', async () => {
+  const path = 'src/extractor-truncated.ts'
+  const text = Array.from({ length: 5 }, (_, index) => `export function extracted${index}() { return ${index} }`).join('\n')
+  const fileHash = createHash('sha256').update(text).digest('hex')
+  const extracted = await extractCodeSymbols([{ path, text, hash: fileHash }], { root: identity.root, snapshotId: identity.snapshotId },
+    { signal: new AbortController().signal, maxSymbols: 2 })
+  assert.equal(extracted.truncation.symbols, true)
+  assert.equal(extracted.files.find((coverage) => coverage.path === path)?.status, 'truncated')
+
+  const h = harness({ files: [{ path, text, symbols: extracted.symbols.filter((symbol) => !symbol.synthetic) }] })
+  h.source.set(path, { text, hash: fileHash })
+  const findCodeSymbols = h.index.findCodeSymbols!.bind(h.index)
+  h.index.findCodeSymbols = async (input) => {
+    const page = await findCodeSymbols(input)
+    return { ...page, analysis: { ...page.analysis, complete: false, truncation: { symbols: true, references: false, files: false }, coverage: extracted.files } }
+  }
+  const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'extend extracted function' })
+  assert.equal(result.selection.selected.length, 1)
+  assert.equal(result.symbolSelection?.files[0]?.state, 'selected-partial')
+  assert.ok(result.omissions.includes(`symbol-analysis-truncated:${path}`))
 })
 
 test('late symbol names reach file Noul and all valid stages accept dated pinned Jev model metadata', async () => {
