@@ -50,11 +50,28 @@ export interface ReuseContextResult {
     selected: Array<{ path: string; symbol: ReuseFileCandidate['symbols'][number] }>
     unassessed: Array<{ path: string; reason: string }>
   }
+  /** Optional bounded Jev coverage for paged symbol assessment. */
+  symbolSelection?: {
+    files: Array<{
+      path: string
+      sourceSymbolsObserved: number
+      choiceSymbolsAssessed: number
+      choiceSymbolsUnassessed: number
+      sourcePagesRead: number
+      choicePagesPlanned: number
+      choicePagesAttempted: number
+      pageAnswers: JevAnswer[]
+      finalAnswer?: JevAnswer
+      state: string
+      continuationCursor?: string
+      continuationOmittedCount?: number
+    }>
+  }
   symbolAnalysis: Pick<CodeSymbolAnalysisStatus, 'state' | 'complete' | 'coverageTotalFiles' | 'coverageOmittedFiles' | 'coverageCounts' | 'truncation'> | null
   readCoverage: Array<{ path: string; symbolId: string; fileHash: string; status: 'full' | 'partial' | 'unavailable'; ranges: Array<{ lineStart: number; lineEnd: number }> }>
   duplicates: { state: 'available'; scope: string[]; result: CodeDuplicatesResult } | { state: 'unsupported' | 'unavailable'; scope: string[]; reason: string }
   omissions: string[]
-  continuation: Array<{ path: string; symbolId?: string; lineStart?: number; lineEnd?: number; reason: string }>
+  continuation: Array<{ path: string; symbolId?: string; lineStart?: number; lineEnd?: number; reason: string; cursor?: string; snapshotId?: string; fileHash?: string }>
 }
 
 export interface ReuseContextOptions {

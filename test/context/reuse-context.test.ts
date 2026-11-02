@@ -36,7 +36,7 @@ function harness(config: {
   const hit = (path: string) => ({ id: `hit:${path}`, path, lineStart: 1, lineEnd: 1, symbol: null, language: 'typescript', contentHash: `chunk:${path}`,
     repoId: identity.repoId, worktreeId: identity.worktreeId, branch: identity.branch, head: identity.head, snapshotId: identity.snapshotId, profileId: null, score: 1,
     ranking: { mode: 'lexical' as const, lexicalRank: 1, denseRank: null, rerankRank: null } })
-  const counts = { snapshotCalls: 0, queries: [] as string[], readCalls: 0 }
+  const counts = { snapshotCalls: 0, queries: [] as string[], readCalls: 0, decisionCalls: 0, symbolPages: 0 }
   const base: any = {
     async indexStatus() { return { identity, indexedAt: null, fileCount: files.length, chunkCount: files.length, profileId: null, denseAvailable: false, denseDisabledReason: null } },
     async searchCode(input: { query: string }) { counts.queries.push(input.query); return { hits: files.slice(0, 24).map((file) => hit(file.path)), identity, degraded: false, degradedReason: null } },
@@ -62,10 +62,12 @@ function harness(config: {
   }
   if (!config.omitSymbols) base.findCodeSymbols = async (input: { path: string; cursor?: string; signal?: AbortSignal }) => {
     input.signal?.throwIfAborted()
+    counts.symbolPages++
     const symbols = files.find((file) => file.path === input.path)?.symbols ?? []
-    const offset = input.cursor ? 100 : 0
+    const offset = input.cursor ? (Number(input.cursor.replace('page-', '')) - 1) * 100 : 0
     const page = symbols.slice(offset, offset + 100)
-    return { analysis: { ...analysis, identity, symbolCount: symbols.length }, symbols: page, nextCursor: offset + 100 < symbols.length ? 'page-2' : null, truncated: false }
+    return { analysis: { ...analysis, identity, symbolCount: symbols.length }, symbols: page,
+      nextCursor: offset + 100 < symbols.length ? `page-${offset / 100 + 2}` : null, truncated: false }
   }
   if (!config.omitDuplicates) base.findCodeDuplicates = async (input: { paths?: string[]; signal?: AbortSignal }) => {
     if (config.failDuplicates) throw config.failDuplicates
@@ -85,12 +87,17 @@ function harness(config: {
     profile: { provider: 'typesafe', model: 'typesafe/jev-1.14', space: 'jev' },
     usage: () => ({ calls: 0, inputTokens: null, totalTokens: null, estimatedCost: null, latencyMs: 0 }),
     async decide(input) {
+      counts.decisionCalls++
       if (config.decide) return config.decide(input)
       const answers: Record<string, unknown> = Object.create(null) as Record<string, unknown>
       for (const question of input.questions) {
         if (question.type === 'noul') answers[question.id] = { type: 'noul', noul: 0.9 }
         else if (question.id === 'taskIntent') answers[question.id] = { type: 'choice', choice: 'explain_behavior' }
         else if (question.id === 'sourceScope') answers[question.id] = { type: 'choice', choice: 'unspecified' }
+        else if ((input.state as { candidates?: Record<string, { symbol?: { name?: string } }> }).candidates) {
+          const candidates = (input.state as { candidates: Record<string, { symbol?: { name?: string } }> }).candidates
+          answers[question.id] = { type: 'choice', choice: Object.entries(candidates).find(([, value]) => value.symbol?.name === 'targetAfter100')?.[0] ?? Object.keys(candidates)[0] ?? 'none' }
+        }
         else {
           const state = input.state as { questions?: Record<string, { symbols?: Record<string, { name?: string }> }> }
       const rows = state.questions?.[question.id]?.symbols ?? {}
@@ -194,7 +201,7 @@ test('foreign IDs are not mapped and graph/duplicate currentness errors propagat
     usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }) })
   const foreignSymbolResult = await createReuseContext({ index: foreignSymbol.index, decisions: foreignSymbol.decisions }).getReuseContext({ root: '/repo', query: 'change this code' })
   assert.equal(foreignSymbolResult.selection.selected.length, 0)
-  assert.ok(foreignSymbolResult.selection.unassessed.some((item) => item.reason === 'jev-unavailable:malformed'))
+  assert.ok(foreignSymbolResult.selection.unassessed.some((item) => item.reason === 'unavailable:malformed'))
   const graphError = Object.assign(new Error('stale graph'), { code: 'CODE_INDEX_SOURCE_CHANGED_DURING_SEARCH' })
   const failedGraph = harness({ failGraph: graphError })
   await assert.rejects(createReuseContext({ index: failedGraph.index }).getReuseContext({ root: '/repo', query: 'x' }), (error) => error === graphError)
@@ -220,9 +227,11 @@ test('multiple positive file assessments each get a separate bounded symbol Choi
 })
 
 test('binary relevance ties stay unresolved and positive files beyond the cap are disclosed', async () => {
-  const files = ['src/first.ts', 'src/second.ts', 'src/third.ts', 'src/fourth.ts'].map((path, i) => ({
-    path, text: `function helper${i}() {}\n`, symbols: [makeSymbol(path, `s${i}`, `helper${i}`, 1, 1, `hash:${path}`)],
-  }))
+  const files = ['src/first.ts', 'src/second.ts', 'src/third.ts', 'src/fourth.ts'].map((path, i) => {
+    const count = i === 3 ? 250 : 1
+    return { path, text: Array.from({ length: count }, (_, line) => `function helper${i}_${line}() {}`).join('\n'),
+      symbols: Array.from({ length: count }, (_, line) => makeSymbol(path, `s${i}-${line}`, `helper${i}_${line}`, line + 1, line + 1, `hash:${path}`)) }
+  })
   const h = harness({ files, decide: async ({ questions }) => {
     const scores: Record<string, number> = { file_f0: 0.9, file_f1: 0.5, file_f2: 0.8, file_f3: 0.7 }
     return { requestId: null, model: 'typesafe/jev-1.14-20261014', provider: 'TypeSafe',
@@ -238,6 +247,14 @@ test('binary relevance ties stay unresolved and positive files beyond the cap ar
   assert.equal(result.selection.fileAssessments[2]?.state, 'positive')
   assert.equal(result.selection.fileAssessments[3]?.state, 'omitted')
   assert.ok(result.omissions.includes('positive-files-omitted:1'))
+  const restart = result.continuation.find((item) => item.reason === 'positive-file-cap')
+  assert.equal(restart?.path, 'src/fourth.ts')
+  assert.equal(restart?.cursor, undefined)
+  assert.equal(restart?.snapshotId, identity.snapshotId)
+  assert.equal(restart?.fileHash, 'hash:src/fourth.ts')
+  const sourceTail = result.continuation.find((item) => item.reason === 'positive-file-source-tail')
+  assert.equal(sourceTail?.path, 'src/fourth.ts')
+  assert.equal(sourceTail?.cursor, 'page-3')
 })
 
 test('selected callback reads through an anonymous wrapper to its verified named method owner', async () => {
@@ -310,7 +327,7 @@ test('wrong Jev model or provider after valid intent prevents dependent Choice c
   }
 })
 
-test('candidate budgets are honored and the complete wire request stays bounded', async () => {
+test('candidate budgets are honored and paged wire requests stay bounded without erasing evidence', async () => {
   const path = 'src/catalogue.ts'
   const symbols = Array.from({ length: 199 }, (_, i) => ({
     ...makeSymbol(path, `id-${i}`, `fn_${i}_${'x'.repeat(280)}`, i + 1, i + 1, `hash:${path}`),
@@ -319,32 +336,232 @@ test('candidate budgets are honored and the complete wire request stays bounded'
   let requestBytes = 0
   const h = harness({ files: [{ path, text: Array.from({ length: 199 }, (_, i) => `line_${i}`).join('\n'), symbols }], decide: async ({ state, questions }) => {
     requestBytes = Math.max(requestBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
-    const answers = Object.fromEntries(questions.map((q) => [q.id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: q.id === 'taskIntent' ? 'explain_behavior' : 'unspecified' }]))
+    const candidateState = state as { questions?: Record<string, { symbols?: Record<string, { name?: string }> }>; candidates?: Record<string, { symbol?: { name?: string } }> }
+    const answers = Object.fromEntries(questions.map((q) => {
+      if (q.type === 'noul') return [q.id, { type: 'noul', noul: 0.9 }]
+      if (q.id === 'taskIntent') return [q.id, { type: 'choice', choice: 'implement_change' }]
+      if (q.id === 'sourceScope') return [q.id, { type: 'choice', choice: 'implementation' }]
+      const rows = candidateState.questions?.[q.id]?.symbols
+      const final = candidateState.candidates
+      return [q.id, { type: 'choice', choice: rows ? Object.keys(rows)[0] : final ? Object.keys(final)[0] : 'none' }]
+    }))
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   const result = await createReuseContext({ index: h.index, decisions: h.decisions, limits: { maxCandidates: 1 } }).getReuseContext({ root: '/repo', query: 'inspect this' })
   assert.equal(result.candidates.files.length, 1)
   assert.ok(requestBytes <= 120000)
-  assert.ok(result.omissions.includes('symbol-choice-facts-compacted'))
+  assert.ok(!result.omissions.includes('symbol-choice-facts-compacted'))
+  assert.equal(result.symbolSelection?.files[0]?.choiceSymbolsAssessed, 199)
+})
+
+test('three Jev pages retain source evidence and assess a symbol beyond the old 199-symbol cutoff', async () => {
+  const path = 'src/runtime.ts'
+  const symbols = Array.from({ length: 215 }, (_, index) => {
+    const name = index === 214 ? 'startInitiative' : `handleRuntimeEvent${index}`
+    return { ...makeSymbol(path, `runtime-${index}`, name, index + 2, index + 2, `hash:${path}`),
+      qualifiedName: `GameRuntime.${name}`, signature: `export function ${name}(input: RuntimeInput): Promise<RuntimeResult>` }
+  })
+  const text = ['import { RuntimeInput, RuntimeResult } from "./types.js";', ...symbols.map((symbol) =>
+    `export function ${symbol.name}(input: RuntimeInput): Promise<RuntimeResult> { return route(input) }`)].join('\n')
+  let maxBytes = 0
+  let maxAlternatives = 0
+  const pageEvidence: string[] = []
+  let chosen = 'none'
+  const h = harness({ files: [{ path, text, symbols }], decide: async ({ state, questions }) => {
+    maxBytes = Math.max(maxBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
+    for (const question of questions) if (question.type === 'choice') {
+      maxAlternatives = Math.max(maxAlternatives, Object.keys(question.criteria).length)
+      const candidateState = state as { questions?: Record<string, { symbols?: Record<string, { name: string; evidence: { text: string } }> }>; candidates?: Record<string, { symbol: { name: string }; evidence: { text: string } }> }
+      const offered = candidateState.questions?.[question.id]?.symbols
+      if (offered) {
+        for (const candidate of Object.values(offered)) {
+          assert.ok(candidate.evidence.text.length > 0)
+          assert.equal(candidate.evidence.fileHash, `hash:${path}`)
+          pageEvidence.push(candidate.evidence.text)
+        }
+        chosen = Object.entries(offered).find(([, candidate]) => candidate.name === 'startInitiative')?.[0] ?? 'none'
+      } else if (candidateState.candidates) {
+        const finalists = candidateState.candidates
+        chosen = Object.entries(finalists).find(([, candidate]) => candidate.symbol.name === 'startInitiative')?.[0] ?? Object.keys(finalists)[0] ?? 'none'
+      }
+    }
+    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+      ? { type: 'noul', noul: 0.9 }
+      : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : question.id === 'sourceScope' ? 'implementation' : chosen }]))
+    return { requestId: 'paged', model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+  } })
+  const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'where should the initiative ingress be added?' })
+  assert.equal(result.selection.selected[0]?.symbol.name, 'startInitiative')
+  assert.equal(result.symbolSelection?.files[0]?.choiceSymbolsAssessed, 215)
+  assert.equal(result.symbolSelection?.files[0]?.choicePagesAttempted, 7)
+  assert.equal(result.candidates.files[0]?.symbolPages, 2)
+  assert.equal(result.symbolSelection?.files[0]?.sourcePagesRead, 3)
+  assert.ok(result.symbolSelection?.files[0]?.pageAnswers.slice(0, -1).every((answer) => answer.type === 'choice' && answer.choice === 'none'))
+  assert.deepEqual(result.selection.symbolAnswers[path], result.symbolSelection?.files[0]?.finalAnswer)
+  assert.equal(result.symbolSelection?.files[0]?.finalAnswer?.type, 'choice')
+  assert.equal(result.selection.symbolAnswers[path]?.type === 'choice' ? result.selection.symbolAnswers[path]?.choice : undefined,
+    result.symbolSelection?.files[0]?.pageAnswers.at(-1)?.type === 'choice' ? result.symbolSelection.files[0]?.pageAnswers.at(-1)?.choice : undefined)
+  assert.equal(pageEvidence.length, 215)
+  assert.ok(pageEvidence.some((excerpt) => excerpt.includes('startInitiative')))
+  assert.ok(maxBytes <= 120000)
+  assert.ok(maxAlternatives <= 200)
+})
+
+test('symbol decision and read budgets are finite and unassessed page remainder has a source cursor', async (t) => {
+  const path = 'src/large-runtime.ts'
+  const symbols = Array.from({ length: 800 }, (_, index) => {
+    const name = `runtimeOwner${index}_${'λ'.repeat(120)}`
+    return { ...makeSymbol(path, `budget-${index}`, name, index + 2, index + 2, `hash:${path}`),
+      qualifiedName: `GameRuntime.${name}.${'q'.repeat(120)}`, signature: `function ${name}(${ '🚀'.repeat(80) })` }
+  })
+  const text = ['import { RuntimeInput } from "./types.js";', ...symbols.map((symbol) => `export function ${symbol.name}(input: RuntimeInput) { /* ${'🚀'.repeat(80)} */ return input }`)].join('\n')
+  let choicePages = 0
+  let maxBytes = 0
+  const h = harness({ files: [{ path, text, symbols }], decide: async ({ state, questions }) => {
+    maxBytes = Math.max(maxBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
+    choicePages += questions.filter((question) => question.id.startsWith('symbol_') && !question.id.startsWith('symbol_final_')).length
+    const answers = Object.fromEntries(questions.map((question) => {
+      if (question.type === 'noul') return [question.id, { type: 'noul', noul: 0.9 }]
+      if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'implement_change' }]
+      if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'implementation' }]
+      const candidateState = state as { questions?: Record<string, { symbols?: Record<string, unknown> }>; candidates?: Record<string, unknown> }
+      for (const question of questions) {
+        const offered = candidateState.questions?.[question.id]?.symbols as Record<string, { evidence?: { text?: string } }> | undefined
+        if (offered) assert.ok(Object.values(offered).every((symbol) => Boolean(symbol.evidence?.text)))
+      }
+      return [question.id, { type: 'choice', choice: Object.keys(candidateState.questions?.[question.id]?.symbols ?? candidateState.candidates ?? {})[0] ?? 'none' }]
+    }))
+    return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+  } })
+  const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'extend runtime ownership' })
+  const metadata = result.symbolSelection?.files[0]
+  assert.equal(metadata?.choicePagesAttempted, 8)
+  assert.equal(metadata?.choiceSymbolsAssessed, 256)
+  assert.equal(metadata?.sourceSymbolsObserved, 400)
+  assert.equal(metadata?.choiceSymbolsUnassessed, 144)
+  assert.equal(metadata?.continuationOmittedCount, 64)
+  assert.equal(metadata?.state, 'selected-partial')
+  assert.ok(metadata?.continuationCursor)
+  assert.ok(result.continuation.some((item) => item.reason === 'symbol-choice-page-budget' && item.cursor === metadata?.continuationCursor))
+  assert.equal(h.counts.symbolPages, 4)
+  assert.ok(choicePages <= 8)
+  assert.ok(h.counts.decisionCalls <= 11)
+  assert.ok(maxBytes <= 120000)
+  t.diagnostic(JSON.stringify({ sample: 'unicode-fixture', maxRequestBytes: maxBytes, alternativesPerChoice: 33,
+    choicePages, sourcePages: h.counts.symbolPages, evidenceSymbols: metadata?.choiceSymbolsAssessed,
+    sourceContinuation: metadata?.continuationCursor !== undefined }))
+})
+
+test('multi-page none and foreign answers stay explicit and never select from partial coverage', async (t) => {
+  const path = 'src/many.ts'
+  const symbols = Array.from({ length: 70 }, (_, index) => makeSymbol(path, `many-${index}`, `handler${index}`, index + 1, index + 1, `hash:${path}`))
+  const text = symbols.map((symbol) => `function ${symbol.name}() { return 1 }`).join('\n')
+  for (const mode of ['none', 'foreign'] as const) await t.test(mode, async () => {
+    const h = harness({ files: [{ path, text, symbols }], decide: async ({ state, questions }) => {
+      const answers = Object.fromEntries(questions.map((question) => {
+        if (question.type === 'noul') return [question.id, { type: 'noul', noul: 0.9 }]
+        if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'implement_change' }]
+        if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'implementation' }]
+        if (mode === 'none') return [question.id, { type: 'choice', choice: 'none' }]
+        return [question.id, { type: 'choice', choice: question.id === 'symbol_0' ? 'none' : 'foreign-id' }]
+      }))
+      return { requestId: mode, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+        usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+    } })
+    const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'extend this handler' })
+    assert.equal(result.selection.selected.length, 0)
+    const metadata = result.symbolSelection?.files[0]
+    if (mode === 'none') {
+      assert.equal(metadata?.state, 'none')
+      assert.equal(metadata?.choicePagesAttempted, 3)
+      assert.equal(metadata?.pageAnswers.length, 3)
+      assert.ok(result.selection.unassessed.some((item) => item.reason === 'jev-selected-none'))
+    } else {
+      assert.equal(metadata?.state, 'unavailable:malformed')
+      assert.equal(metadata?.choicePagesAttempted, 2)
+      assert.equal(metadata?.choiceSymbolsAssessed, 32)
+      assert.equal(metadata?.choiceSymbolsUnassessed, 38)
+      assert.equal(metadata?.pageAnswers.length, 1)
+      assert.ok(result.selection.unassessed.some((item) => item.reason === 'unavailable:malformed'))
+      assert.equal(result.continuation.filter((item) => item.reason === 'symbol-assessment-unavailable').length, 38)
+      assert.equal(result.continuation[0]?.fileHash, `hash:${path}`)
+    }
+  })
+})
+
+test('serialized byte refusal returns exact source-backed symbol continuations', async () => {
+  const path = 'src/oversized-facts.ts'
+  const control = '\u0000'.repeat(260)
+  const symbols = Array.from({ length: 64 }, (_, index) => ({
+    ...makeSymbol(path, `oversized-${index}`, `function${index}${'\u0000'.repeat(120)}`, index + 1, index + 1, `hash:${path}`),
+    qualifiedName: `module${index}.${control}`, signature: `signature${control}`,
+  }))
+  const text = symbols.map((symbol) => `${symbol.name}${control}`).join('\n')
+  const h = harness({ files: [{ path, text, symbols }], decide: async ({ state, questions }) => {
+    const candidates = (state as { questions?: Record<string, { symbols?: Record<string, unknown> }> }).questions
+    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+      ? { type: 'noul', noul: 0.9 }
+      : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change'
+        : question.id === 'sourceScope' ? 'implementation' : Object.keys(candidates?.[question.id]?.symbols ?? {})[0] ?? 'none' }]))
+    return { requestId: 'oversized', model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+  } })
+  const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'locate this extension point' })
+  const metadata = result.symbolSelection?.files[0]
+  assert.equal(metadata?.state, 'input-budget-exhausted')
+  assert.equal(metadata?.choiceSymbolsAssessed, 0)
+  assert.equal(metadata?.choiceSymbolsUnassessed, metadata?.sourceSymbolsObserved)
+  assert.equal(result.selection.selected.length, 0)
+  assert.equal(result.continuation.filter((item) => item.reason === 'symbol-assessment-unavailable').length, 64)
+  assert.equal(result.continuation[0]?.symbolId, symbols[0]?.id)
+  assert.equal(result.continuation[0]?.lineStart, 1)
+  assert.equal(result.continuation[0]?.snapshotId, identity.snapshotId)
+  assert.equal(result.continuation[0]?.fileHash, `hash:${path}`)
+})
+
+test('symbol pagination rejects snapshot or analysis-profile drift before publishing a selected symbol', async (t) => {
+  const path = 'src/current.ts'
+  const symbols = Array.from({ length: 215 }, (_, index) => makeSymbol(path, `current-${index}`, `currentOwner${index}`, index + 1, index + 1, `hash:${path}`))
+  const file = { path, text: symbols.map((symbol) => `function ${symbol.name}() { return 1 }`).join('\n'), symbols }
+  for (const drift of ['snapshot', 'profile'] as const) await t.test(drift, async () => {
+    const h = harness({ files: [file] })
+    const readPage = h.index.findCodeSymbols!.bind(h.index)
+    ;(h.index as any).findCodeSymbols = async (input: { path: string; cursor?: string; signal?: AbortSignal }) => {
+      const result = await readPage(input)
+      if (!input.cursor?.startsWith('page-3')) return result
+      return drift === 'snapshot'
+        ? { ...result, analysis: { ...result.analysis, identity: { ...identity, snapshotId: 'foreign-snapshot' } } }
+        : { ...result, analysis: { ...result.analysis, profile: { ...result.analysis.profile, id: 'foreign-profile' } } }
+    }
+    await assert.rejects(createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'extend the current implementation' }),
+      (error) => error instanceof CodeContextError && error.code === 'STALE_SNAPSHOT')
+  })
 })
 
 test('large file catalogue compaction reports total, offered, omitted, and clipped names', async () => {
   const files = Array.from({ length: 8 }, (_, fileIndex) => {
     const path = `src/catalogue-${fileIndex}.ts`
-    const symbols = Array.from({ length: 180 }, (_, symbolIndex) => ({
+    const count = fileIndex === 0 ? 215 : 180
+    const symbols = Array.from({ length: count }, (_, symbolIndex) => ({
       ...makeSymbol(path, `id-${fileIndex}-${symbolIndex}`, `symbol_${symbolIndex}`, symbolIndex + 1, symbolIndex + 1, `hash:${path}`),
       qualifiedName: `qualified_${fileIndex}_${symbolIndex}_${'q'.repeat(238)}`,
     }))
-    return { path, text: Array.from({ length: 180 }, (_, i) => `const row${i} = ${i}`).join('\n'), symbols }
+    return { path, text: Array.from({ length: count }, (_, i) => `const row${i} = ${i}`).join('\n'), symbols }
   })
   let payloadBytes = 0
-  let catalogueFacts: Array<{ symbolCatalogueTotal: number; symbolCatalogueOffered: number; symbolCatalogueOmitted: number; symbolCatalogueTruncatedNames: number; symbolCatalogueIncomplete: boolean }> = []
+  let catalogueFacts: Array<{ path: string; symbolCatalogueTotal: number; symbolCatalogueOffered: number; symbolCatalogueOmitted: number; symbolCatalogueTruncatedNames: number; symbolCatalogueIncomplete: boolean }> = []
   const h = harness({ files, decide: async ({ state, questions }) => {
     payloadBytes = Math.max(payloadBytes, Buffer.byteLength(JSON.stringify({ state, questions })))
     if (questions.some((q) => q.type === 'noul')) {
       catalogueFacts = Object.values((state as { files: Record<string, typeof catalogueFacts[number]> }).files)
     }
-    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul' ? { type: 'noul', noul: 0.9 } : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : 'implementation' }]))
+    const candidateState = state as { questions?: Record<string, { symbols?: Record<string, unknown> }> }
+    const answers = Object.fromEntries(questions.map((question) => [question.id, question.type === 'noul'
+      ? { type: 'noul', noul: 0.9 }
+      : { type: 'choice', choice: question.id === 'taskIntent' ? 'implement_change' : question.id === 'sourceScope' ? 'implementation'
+        : Object.keys(candidateState.questions?.[question.id]?.symbols ?? {})[0] ?? 'none' }]))
     return { requestId: null, model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers, usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
   } })
   const result = await createReuseContext({ index: h.index, decisions: h.decisions }).getReuseContext({ root: '/repo', query: 'inspect the catalogues' })
@@ -352,6 +569,16 @@ test('large file catalogue compaction reports total, offered, omitted, and clipp
   assert.ok(catalogueFacts.some((item) => item.symbolCatalogueOmitted > 0))
   assert.ok(catalogueFacts.every((item) => item.symbolCatalogueOffered + item.symbolCatalogueOmitted === item.symbolCatalogueTotal))
   assert.ok(catalogueFacts.every((item) => item.symbolCatalogueTruncatedNames > 0 && item.symbolCatalogueIncomplete))
+  const fileNoulFacts = catalogueFacts.find((item) => item.path === 'src/catalogue-0.ts')!
+  const returnedFileFacts = result.candidates.files.find((item) => item.path === fileNoulFacts.path)!
+  assert.deepEqual({ total: returnedFileFacts.symbolCatalogueTotal, offered: returnedFileFacts.symbolCatalogueOffered,
+    omitted: returnedFileFacts.symbolCatalogueOmitted, incomplete: returnedFileFacts.symbolCatalogueIncomplete },
+  { total: fileNoulFacts.symbolCatalogueTotal, offered: fileNoulFacts.symbolCatalogueOffered,
+    omitted: fileNoulFacts.symbolCatalogueOmitted, incomplete: fileNoulFacts.symbolCatalogueIncomplete })
+  const selectionFacts = result.symbolSelection?.files.find((item) => item.path === fileNoulFacts.path)!
+  assert.equal(selectionFacts.sourceSymbolsObserved, 215)
+  assert.equal(selectionFacts.sourcePagesRead, 3)
+  assert.equal(selectionFacts.choiceSymbolsAssessed, 215)
   assert.ok(result.selection.unassessed.length >= 0)
 })
 
@@ -412,5 +639,48 @@ test('caller cancellation waits for the physical Jev promise to settle', async (
   assert.equal(settled, false)
   release()
   await assert.rejects(running, (error) => error === cancellation)
+  await reuse.close()
+})
+
+test('cancellation during a later symbol page joins Jev work and publishes no selection', async () => {
+  const path = 'src/paged.ts'
+  const symbols = Array.from({ length: 100 }, (_, index) => makeSymbol(path, `cancel-${index}`, `cancelTarget${index}`, index + 1, index + 1, `hash:${path}`))
+  let markEntered!: () => void
+  let release!: () => void
+  const entered = new Promise<void>((resolve) => { markEntered = resolve })
+  const physical = new Promise<void>((resolve) => { release = resolve })
+  const h = harness({ files: [{ path, text: Array.from({ length: 100 }, (_, index) => `function cancelTarget${index}() { return ${index} }`).join('\n'), symbols }],
+    decide: async ({ state, questions }) => {
+      if (questions.some((question) => question.id === 'symbol_0_1')) {
+        markEntered()
+        await physical
+      }
+      const candidates = state as { questions?: Record<string, { symbols?: Record<string, unknown> }>; candidates?: Record<string, unknown> }
+      const answers = Object.fromEntries(questions.map((question) => {
+        if (question.type === 'noul') return [question.id, { type: 'noul', noul: 0.9 }]
+        if (question.id === 'taskIntent') return [question.id, { type: 'choice', choice: 'implement_change' }]
+        if (question.id === 'sourceScope') return [question.id, { type: 'choice', choice: 'implementation' }]
+        return [question.id, { type: 'choice', choice: Object.keys(candidates.questions?.[question.id]?.symbols ?? candidates.candidates ?? {})[0] ?? 'none' }]
+      }))
+      return { requestId: 'cancel-page', model: 'typesafe/jev-1.14', provider: 'TypeSafe', answers,
+        usage: { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null } }
+    } })
+  const readSource = h.index.readSource.bind(h.index)
+  h.index.readSource = (input) => readSource({ ...input, signal: undefined })
+  const reuse = createReuseContext({ index: h.index, decisions: h.decisions })
+  const controller = new AbortController()
+  const cancellation = new Error('cancel second page')
+  const running = reuse.getReuseContext({ root: '/repo', query: 'extend cancellation handling', signal: controller.signal })
+  await entered
+  let settled = false
+  void running.finally(() => { settled = true }).catch(() => undefined)
+  controller.abort(cancellation)
+  const readsAtCancellation = h.counts.readCalls
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.equal(settled, false)
+  release()
+  await assert.rejects(running, (error) => error === cancellation)
+  assert.equal(h.counts.decisionCalls, 4)
+  assert.equal(h.counts.readCalls, readsAtCancellation)
   await reuse.close()
 })

@@ -114,6 +114,11 @@ export function compactReuseContext(rootId: string, result: ReuseContextResult) 
       omissions: result.omissions,
       continuation: result.continuation.map((entry) => ({
         ...entry,
+        ...(entry.cursor !== undefined || entry.symbolId !== undefined || entry.reason === 'symbol-continuation-omitted' || entry.reason === 'positive-file-cap'
+          ? { findCodeSymbolsRequest: { rootId, path: entry.path, sourceKind: 'implementation',
+              ...(entry.cursor !== undefined ? { cursor: entry.cursor, limit: 100 }
+                : entry.symbolId !== undefined ? { symbolId: entry.symbolId } : { limit: 100 }) } }
+          : {}),
         ...(entry.lineStart !== undefined && entry.lineEnd !== undefined
           ? {
               readSourceRequest: {
@@ -126,6 +131,7 @@ export function compactReuseContext(rootId: string, result: ReuseContextResult) 
             }
           : {}),
       })),
+      symbolSelection: result.symbolSelection ?? null,
       logical: logical
         ? {
             state: logical.state,

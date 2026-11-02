@@ -5,6 +5,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createMcpHandler } from '@modelcontextprotocol/server'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import type { ReuseContextResult } from '../../src/context/reuse-types.js'
+import { findCodeSymbolsRequest, readRequest } from '../../src/runtime/requests.js'
 import { compactReuseContext } from '../../src/mcp/reuse-presentation.js'
 import { createSearchMcpServer, type SearchMcpRuntime } from '../../src/mcp/server.js'
 
@@ -72,6 +73,9 @@ function resultFixture(): ReuseContextResult {
       symbolAnswers: { 'src/selected.ts': { type: 'choice', choice: 's0', probabilities: { s0: 0.8, none: 0.2 } } as never },
       selected: [{ path: 'src/selected.ts', symbol }], unassessed: [],
     },
+    symbolSelection: { files: [{ path: 'src/selected.ts', sourceSymbolsObserved: 400, choiceSymbolsAssessed: 384,
+      choiceSymbolsUnassessed: 16, sourcePagesRead: 4, choicePagesPlanned: 8, choicePagesAttempted: 8,
+      pageAnswers: [], state: 'selected-partial', continuationCursor: 'symbols-page-4', continuationOmittedCount: 10 }] },
     symbolAnalysis: { state: 'partial', complete: false, coverageTotalFiles: 4, coverageOmittedFiles: 1,
       coverageCounts: { parsed: 2, parseError: 0, unsupported: 1, truncated: 0, error: 0 },
       truncation: { symbols: false, references: false, files: true } },
@@ -80,7 +84,12 @@ function resultFixture(): ReuseContextResult {
     duplicates: { state: 'unsupported', scope: ['src/selected.ts'], reason: 'fixture-unsupported' },
     omissions: ['symbol-analysis-partial'],
     continuation: [{ path: 'src/selected.ts', symbolId: 'symbol-id', lineStart: 12, lineEnd: 212,
-      reason: 'character-budget' }],
+      reason: 'character-budget' }, { path: 'src/selected.ts', cursor: 'symbols-page-4', snapshotId: 'snapshot-1',
+      fileHash: 'source-hash', reason: 'symbol-choice-page-budget' }, { path: 'src/selected.ts', symbolId: 'a'.repeat(64),
+      lineStart: 212, lineEnd: 214, snapshotId: 'snapshot-1', fileHash: 'source-hash', reason: 'symbol-choice-page-budget' },
+      { path: 'src/selected.ts', snapshotId: 'snapshot-1', fileHash: 'source-hash', reason: 'symbol-continuation-omitted' },
+      { path: 'src/omitted.ts', lineStart: 1, lineEnd: 200, snapshotId: 'snapshot-1', fileHash: 'omitted-hash', reason: 'positive-file-cap' },
+      { path: 'src/omitted.ts', cursor: 'tail-page-3', snapshotId: 'snapshot-1', fileHash: 'omitted-hash', reason: 'positive-file-source-tail' }],
   }
 }
 
@@ -116,6 +125,28 @@ test('compact reuse presentation keeps selected source once and preserves identi
   assert.deepEqual(compact.coverage.continuation[0]?.readSourceRequest, {
     rootId: 'repo', path: 'src/selected.ts', lineStart: 12, lineEnd: 211, snapshotId: 'snapshot-1',
   })
+  assert.deepEqual(compact.coverage.continuation[1]?.findCodeSymbolsRequest, {
+    rootId: 'repo', path: 'src/selected.ts', sourceKind: 'implementation', cursor: 'symbols-page-4', limit: 100,
+  })
+  assert.deepEqual(compact.coverage.continuation[2]?.findCodeSymbolsRequest, {
+    rootId: 'repo', path: 'src/selected.ts', sourceKind: 'implementation', symbolId: 'a'.repeat(64),
+  })
+  assert.deepEqual(compact.coverage.continuation[2]?.readSourceRequest, {
+    rootId: 'repo', path: 'src/selected.ts', lineStart: 212, lineEnd: 214, snapshotId: 'snapshot-1',
+  })
+  assert.deepEqual(compact.coverage.continuation[3]?.findCodeSymbolsRequest, {
+    rootId: 'repo', path: 'src/selected.ts', sourceKind: 'implementation', limit: 100,
+  })
+  const positiveRestart = compact.coverage.continuation[4]?.findCodeSymbolsRequest
+  assert.deepEqual(positiveRestart, { rootId: 'repo', path: 'src/omitted.ts', sourceKind: 'implementation', limit: 100 })
+  assert.equal(findCodeSymbolsRequest.safeParse(positiveRestart).success, true)
+  assert.equal(readRequest.safeParse(compact.coverage.continuation[4]?.readSourceRequest).success, true)
+  const positiveTail = compact.coverage.continuation[5]?.findCodeSymbolsRequest
+  assert.deepEqual(positiveTail, { rootId: 'repo', path: 'src/omitted.ts', sourceKind: 'implementation', cursor: 'tail-page-3', limit: 100 })
+  assert.equal(findCodeSymbolsRequest.safeParse(positiveTail).success, true)
+  assert.equal(readRequest.safeParse(compact.coverage.continuation[2]?.readSourceRequest).success, true)
+  assert.equal(compact.coverage.symbolSelection.files[0]?.choiceSymbolsUnassessed, 16)
+  assert.equal(compact.coverage.symbolSelection.files[0]?.continuationOmittedCount, 10)
   assert.deepEqual(original, before)
 })
 
