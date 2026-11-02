@@ -85,6 +85,7 @@ export function createReuseContext(options: ReuseContextOptions) {
           const allSymbols = new Map<string, CodeSymbol>()
           const fileFacts: ReuseFileCandidate[] = []
           const fileEvidence = new Map<string, { range: { lineStart: number; lineEnd: number }; hash: string; text: string; textTruncated: boolean }>()
+          const fileLineCounts = new Map<string, number>()
           const symbolCursors = new Map<string, string | undefined>()
           const symbolPageCounts = new Map<string, number>()
           const symbolAnalysisTruncated = new Map<string, boolean>()
@@ -128,6 +129,7 @@ export function createReuseContext(options: ReuseContextOptions) {
             if (preview.stale || preview.snapshotId !== identity.snapshotId || (preview.fileLineCount !== undefined && preview.lineStart > preview.fileLineCount)) throw new CodeContextError('STALE_SNAPSHOT')
             const expectedHash = facts[0]?.location.fileHash
             if (expectedHash && preview.contentHash !== expectedHash) throw new CodeContextError('STALE_SNAPSHOT')
+            if (preview.fileLineCount !== undefined) fileLineCounts.set(path, preview.fileLineCount)
             fileEvidence.set(path, { range: { lineStart: preview.lineStart, lineEnd: preview.lineEnd }, hash: preview.contentHash,
               text: preview.text.slice(0, 1600), textTruncated: preview.text.length > 1600 })
             const truncatedNames = facts.filter((symbol) => symbol.qualifiedName.length > 240).length
@@ -222,11 +224,13 @@ export function createReuseContext(options: ReuseContextOptions) {
           if (positive.length > selectedFiles.length) omissions.push(`positive-files-omitted:${positive.length - selectedFiles.length}`)
           for (const row of positive.slice(2)) {
             const cursor = symbolCursors.get(row.file.path)
-            const fileHash = fileEvidence.get(row.file.path)?.hash ?? identity.contentHash
-            continuation.push({ path: row.file.path, lineStart: 1, lineEnd: 200, snapshotId: identity.snapshotId,
-              fileHash, reason: 'positive-file-cap' })
+            const fileHash = fileEvidence.get(row.file.path)?.hash
+            const fileLineCount = fileLineCounts.get(row.file.path)
+            continuation.push({ path: row.file.path, lineStart: 1,
+              ...(fileLineCount !== undefined ? { lineEnd: Math.min(fileLineCount, 200), fileLineCount } : {}),
+              snapshotId: identity.snapshotId, ...(fileHash ? { fileHash } : {}), reason: 'positive-file-cap' })
             if (cursor) continuation.push({ path: row.file.path, cursor, snapshotId: identity.snapshotId,
-              fileHash, reason: 'positive-file-source-tail' })
+              ...(fileHash ? { fileHash } : {}), reason: 'positive-file-source-tail' })
           }
 
           const selected: ReuseContextResult['selection']['selected'] = []

@@ -119,13 +119,13 @@ export function compactReuseContext(rootId: string, result: ReuseContextResult) 
               ...(entry.cursor !== undefined ? { cursor: entry.cursor, limit: 100 }
                 : entry.symbolId !== undefined ? { symbolId: entry.symbolId } : { limit: 100 }) } }
           : {}),
-        ...(entry.lineStart !== undefined && entry.lineEnd !== undefined
+        ...(entry.lineStart !== undefined
           ? {
               readSourceRequest: {
                 rootId,
                 path: entry.path,
                 lineStart: entry.lineStart,
-                lineEnd: Math.min(entry.lineEnd, entry.lineStart + 199),
+                ...(entry.lineEnd !== undefined ? { lineEnd: Math.min(entry.lineEnd, entry.lineStart + 199) } : {}),
                 snapshotId: result.identity.snapshotId,
               },
             }

@@ -83,6 +83,14 @@ flowchart TD
  rl --> rm["Отдельно собрать source ranges выбранного символа под budget/deadline; readCoverage может быть partial"]
  ru --> rn["Coverage, omissions и continuation"]
  rm --> rn
+ rf --> rca["Для положительных файлов сверх cap: continuation с 1-й строки snapshot"]
+ rc --> rcb["Preview сохраняет fileLineCount, если adapter его сообщил"]
+ rcb --> rca
+ rca --> rcc{"EOF известен?"}
+ rcc -->|"да"| rcd["read_source до min(fileLineCount, 200)"]
+ rcc -->|"нет: legacy adapter"| rce["read_source без lineEnd; bounded default"]
+ rcd --> rn
+ rce --> rn
  rn --> ro["Вызывающая сторона сверяет evidence и принимает решение"]
 ```
 
@@ -97,6 +105,7 @@ flowchart TD
 | Каталог символов продолжается или анализатор пометил путь `truncated` | Отдельно проверяйте cursor, summary `symbolAnalysis.truncation`/`coverageCounts`, а если path-level детализация доступна — совпадающую запись в массиве `findCodeSymbols.analysis.coverage`; `truncated` с `nextCursor` означает следующую страницу. | `createReuseContext`, `reuse-symbol-selection.ts` |
 | Choice символов неполный или недоступен | `symbolSelection.files[]`, `selection.unassessed`, `omissions` и `continuation` сохраняют счётчики, состояние и следующий ограниченный шаг; `none` не становится выбранным символом. | `reuse-symbol-selection.ts`, `reuse-types.ts` |
 | Покрытие чтения символов или исходников неполное | Ограниченные кандидаты сопровождаются явным состоянием, omissions и continuation. | `createReuseContext`, `reuse-types.ts` |
+| Положительный файл не вошёл в cap | Continuation сохраняет исходный `snapshotId` и hash именно файла. При известном `fileLineCount` диапазон заканчивается на `min(count, 200)`; без count compact `readSourceRequest` не задаёт `lineEnd`, и reader использует bounded default. При смене snapshot/source чтение отказывает. | `createReuseContext`, `compactReuseContext`, `read_source` |
 | Web часть упала, но страницы есть | Partial result и errors по этапам. | `createWebSearch` |
 | Web embedding/rerank provider error | Ошибка сохраняется в `errors`, `partial=true`; lexical passages могут остаться в ответе, поэтому сбой не скрыт. | `web.ts` |
 | Caller отменил shared read | Его ожидание отменяется отдельно; физический fetch не считается завершённым раньше settlement. | `BraveInFlightDocuments` |

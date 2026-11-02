@@ -201,6 +201,15 @@ test('compact projection bounds unselected expansions and discloses omissions wi
   assert.equal(compact.source.sections[0]?.text, sourceText)
 })
 
+test('legacy source continuation keeps EOF unknown and omits readSourceRequest.lineEnd', () => {
+  const original = resultFixture()
+  original.continuation = [{ path: 'src/legacy.ts', lineStart: 1, snapshotId: 'snapshot-1', reason: 'positive-file-cap' }]
+  const compact = compactReuseContext('repo', original)
+  const request = compact.coverage.continuation[0]?.readSourceRequest
+  assert.deepEqual(request, { rootId: 'repo', path: 'src/legacy.ts', lineStart: 1, snapshotId: 'snapshot-1' })
+  assert.equal(readRequest.safeParse(request).success, true)
+})
+
 test('compact source retains the full enclosing selected section and defers unrelated source by exact pointer', () => {
   const original = resultFixture()
   const selected = original.selection.selected[0]!

@@ -71,7 +71,7 @@ export interface ReuseContextResult {
   readCoverage: Array<{ path: string; symbolId: string; fileHash: string; status: 'full' | 'partial' | 'unavailable'; ranges: Array<{ lineStart: number; lineEnd: number }> }>
   duplicates: { state: 'available'; scope: string[]; result: CodeDuplicatesResult } | { state: 'unsupported' | 'unavailable'; scope: string[]; reason: string }
   omissions: string[]
-  continuation: Array<{ path: string; symbolId?: string; lineStart?: number; lineEnd?: number; reason: string; cursor?: string; snapshotId?: string; fileHash?: string }>
+  continuation: Array<{ path: string; symbolId?: string; lineStart?: number; lineEnd?: number; fileLineCount?: number; reason: string; cursor?: string; snapshotId?: string; fileHash?: string }>
 }
 
 export interface ReuseContextOptions {

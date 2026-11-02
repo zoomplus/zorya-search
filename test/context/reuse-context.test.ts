@@ -8,6 +8,8 @@ import { CodeContextError } from '../../src/context/index.js'
 import { OperationClosedError } from '../../src/context/lifecycle.js'
 import { createReuseContext } from '../../src/context/reuse.js'
 import { createCodeIndex } from '../../src/code/index.js'
+import { compactReuseContext } from '../../src/mcp/reuse-presentation.js'
+import { readRequest } from '../../src/runtime/requests.js'
 import { extractCodeSymbols } from '../../src/code/symbol-extraction.js'
 import { openEmbeddedDatabase } from '../../src/storage/embedded.js'
 import type { CodeIndex, CodeSourceIdentity } from '../../src/code/types.js'
@@ -343,6 +345,83 @@ test('binary relevance ties stay unresolved and positive files beyond the cap ar
   const sourceTail = result.continuation.find((item) => item.reason === 'positive-file-source-tail')
   assert.equal(sourceTail?.path, 'src/fourth.ts')
   assert.equal(sourceTail?.cursor, 'page-3')
+})
+
+test('positive-file read continuations fit the actual reader for known source lengths', async () => {
+  const cases = [
+    { name: 'short without final newline', text: Array.from({ length: 57 }, (_, i) => `export const needle${i} = ${i}`).join('\n'), expectedLines: 57 },
+    { name: 'short with final newline', text: `${Array.from({ length: 57 }, (_, i) => `export const needle${i} = ${i}`).join('\n')}\n`, expectedLines: 58 },
+    { name: 'over 200 lines', text: Array.from({ length: 250 }, (_, i) => `export const needle${i} = ${i}`).join('\n'), expectedLines: 250 },
+    { name: 'legacy adapter leaves EOF unknown', text: Array.from({ length: 57 }, (_, i) => `export const needle${i} = ${i}`).join('\n'), expectedLines: 57, legacyAdapter: true },
+  ]
+  for (const example of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'zorya-reuse-continuation-root-'))
+    const data = await mkdtemp(join(tmpdir(), 'zorya-reuse-continuation-db-'))
+    const database = await openEmbeddedDatabase(data)
+    const index = createCodeIndex({ database })
+    const paths = ['a.ts', 'b.ts', 'omitted.ts']
+    const h = harness({ files: paths.map((path) => ({ path, text: path === 'omitted.ts' ? example.text : `export const needle = '${path}'\n` })),
+      omitGraph: true, omitSymbols: true, omitDuplicates: true })
+    let reuse: ReturnType<typeof createReuseContext> | undefined
+    try {
+      await writeFile(join(root, 'a.ts'), 'export const needleA = 1\n')
+      await writeFile(join(root, 'b.ts'), 'export const needleB = 2\n')
+      await writeFile(join(root, 'omitted.ts'), example.text)
+      await index.indexRepository({ root })
+      const status = await index.indexStatus(root)
+      const realIdentity = status.identity!
+      h.index.indexStatus = async () => status
+      h.index.searchCode = async () => ({
+        identity: realIdentity, degraded: false, degradedReason: null,
+        hits: paths.map((path) => ({ id: `hit:${path}`, path, lineStart: 1, lineEnd: 1, symbol: null, language: 'typescript', contentHash: `chunk:${path}`,
+          repoId: realIdentity.repoId, worktreeId: realIdentity.worktreeId, branch: realIdentity.branch, head: realIdentity.head,
+          snapshotId: realIdentity.snapshotId, profileId: null, score: 1, ranking: { mode: 'lexical', lexicalRank: 1, denseRank: null, rerankRank: null } })),
+      })
+      const actualReadSource = index.readSource.bind(index)
+      h.index.readSource = async (input) => {
+        const preview = await actualReadSource(input)
+        if (!example.legacyAdapter) return preview
+        const { fileLineCount: _unknownCount, ...legacyPreview } = preview
+        return legacyPreview
+      }
+      h.index.relatedCode = index.relatedCode.bind(index)
+      reuse = createReuseContext({ index: h.index, decisions: h.decisions })
+      const result = await reuse.getReuseContext({ root, query: 'needle' })
+      const compact = compactReuseContext('repo', result)
+      const continuation = compact.coverage.continuation.find((item) => item.reason === 'positive-file-cap')
+      assert.ok(continuation, JSON.stringify({ candidates: result.candidates.files.map((file) => file.path), assessments: result.selection.fileAssessments, continuations: result.continuation }))
+      const read = continuation.readSourceRequest
+      assert.ok(read, example.name)
+      assert.equal(readRequest.safeParse(read).success, true, example.name)
+      assert.equal(read?.path, 'omitted.ts', example.name)
+      assert.equal(read?.lineStart, 1, example.name)
+      if (example.legacyAdapter) assert.equal(read?.lineEnd, undefined, example.name)
+      else assert.equal(read?.lineEnd, Math.min(example.expectedLines, 200), example.name)
+      if (example.legacyAdapter) assert.equal(continuation.fileLineCount, undefined, example.name)
+      else assert.equal(continuation.fileLineCount, example.expectedLines, example.name)
+      const actual = await index.readSource({ root, path: read!.path, lineStart: read!.lineStart, ...(read?.lineEnd !== undefined ? { lineEnd: read.lineEnd } : {}), snapshotId: read!.snapshotId })
+      assert.equal(actual.fileLineCount, example.expectedLines, example.name)
+      assert.equal(actual.lineEnd, Math.min(example.expectedLines, 200), example.name)
+      assert.equal(continuation.fileHash, actual.contentHash, example.name)
+      await assert.rejects(index.readSource({ root, path: read!.path, lineStart: read!.lineStart, snapshotId: 'stale-snapshot' }),
+        (error: unknown) => (error as { code?: string }).code === 'CODE_INDEX_SNAPSHOT_MISMATCH', example.name)
+      const aborted = new AbortController()
+      aborted.abort()
+      await assert.rejects(index.readSource({ root, path: read!.path, signal: aborted.signal }),
+        (error: unknown) => (error as { name?: string }).name === 'AbortError', example.name)
+      if (example.name === 'short without final newline') {
+        await writeFile(join(root, read!.path), `${example.text}\nsource changed`)
+        await assert.rejects(index.readSource({ root, path: read!.path, lineStart: read!.lineStart,
+          ...(read?.lineEnd !== undefined ? { lineEnd: read.lineEnd } : {}), snapshotId: read!.snapshotId }),
+        (error: unknown) => (error as { code?: string }).code === 'CODE_INDEX_STALE', example.name)
+      }
+    } finally {
+      await reuse?.close()
+      await index.close()
+      await database.close()
+      await Promise.all([rm(root, { recursive: true, force: true }), rm(data, { recursive: true, force: true })])
+    }
+  }
 })
 
 test('selected callback reads through an anonymous wrapper to its verified named method owner', async () => {
