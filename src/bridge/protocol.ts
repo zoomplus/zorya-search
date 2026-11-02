@@ -8,11 +8,14 @@ export const BRIDGE_MAX_FILE_BYTES = 1_000_000
 export const BRIDGE_MAX_TOTAL_BYTES = 50_000_000
 export const BRIDGE_MAX_CHUNK_BYTES = 128_000
 export const BRIDGE_MAX_REQUEST_BYTES = 1_000_000
+export const BRIDGE_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 export const BRIDGE_MAX_CONCURRENT_OPERATIONS = 8
 export const BRIDGE_MAX_WORKSPACES_PER_CLIENT = 8
 export const BRIDGE_MAX_WORKSPACES = 32
 export const BRIDGE_MAX_PENDING_TRANSFERS_PER_CLIENT = 2
 export const BRIDGE_MAX_RETAINED_SNAPSHOTS_PER_WORKSPACE = 2
+export const BRIDGE_MAX_CHUNKS_PER_TRANSFER = 2_048
+export const BRIDGE_MAX_SNAPSHOT_BYTES = 1_000_000_000
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/)
@@ -46,6 +49,12 @@ export type BridgeErrorCode =
   | 'TOTAL_TOO_LARGE'
   | 'FILE_LIMIT_EXCEEDED'
   | 'REQUEST_TOO_LARGE'
+  | 'RESPONSE_TOO_LARGE'
+  | 'WORKSPACE_LIMIT_EXCEEDED'
+  | 'TRANSFER_LIMIT_EXCEEDED'
+  | 'OPERATION_LIMIT_EXCEEDED'
+  | 'BUSY'
+  | 'STORE_INVALID'
   | 'OPERATION_NOT_FOUND'
   | 'CANCELLED'
   | 'UPSTREAM_PROTOCOL_ERROR'
@@ -66,6 +75,8 @@ export const BridgeErrorSchema = z.object({
     'SNAPSHOT_UNAVAILABLE', 'MANIFEST_INVALID', 'MANIFEST_CONFLICT', 'FILE_HASH_MISMATCH',
     'FILE_TOO_LARGE', 'TOTAL_TOO_LARGE', 'FILE_LIMIT_EXCEEDED', 'REQUEST_TOO_LARGE',
     'OPERATION_NOT_FOUND', 'CANCELLED', 'UPSTREAM_PROTOCOL_ERROR', 'CONFIG_INVALID',
+    'RESPONSE_TOO_LARGE', 'WORKSPACE_LIMIT_EXCEEDED', 'TRANSFER_LIMIT_EXCEEDED',
+    'OPERATION_LIMIT_EXCEEDED', 'STORE_INVALID', 'BUSY',
   ]),
   message: z.string().max(2_048).optional(),
   upstream: BridgeUpstreamErrorSchema.optional(),
@@ -235,10 +246,10 @@ const base = {
 
 export const BridgeRequestSchema = z.discriminatedUnion('action', [
   z.object({ ...base, action: z.literal('plan'), baseGeneration: z.number().int().nonnegative(), manifest: BridgeManifestSchema }).strict(),
-  z.object({ ...base, action: z.literal('put'), baseGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256, path: z.string().min(1).max(1_024), contentHash: sha256, offset: z.number().int().nonnegative().max(BRIDGE_MAX_FILE_BYTES), dataBase64: z.string().max(Math.ceil(BRIDGE_MAX_CHUNK_BYTES / 3) * 4) }).strict(),
+  z.object({ ...base, action: z.literal('put'), baseGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256, path: z.string().min(1).max(1_024), contentHash: sha256, expectedBytes: z.number().int().nonnegative().max(BRIDGE_MAX_FILE_BYTES), offset: z.number().int().nonnegative().max(BRIDGE_MAX_FILE_BYTES), dataBase64: z.string().max(Math.ceil(BRIDGE_MAX_CHUNK_BYTES / 3) * 4) }).strict(),
   z.object({ ...base, action: z.literal('commit'), baseGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256 }).strict(),
-  z.object({ ...base, action: z.literal('call'), generation: z.number().int().nonnegative(), expectedManifestHash: sha256, toolName: z.string().min(1).max(128), arguments: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ ...base, action: z.literal('cancel'), targetGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256, targetOperationId: uuid }).strict(),
+  z.object({ ...base, action: z.literal('call'), generation: z.number().int().nonnegative().nullable(), expectedManifestHash: sha256.nullable(), toolName: z.string().min(1).max(128), arguments: z.record(z.string(), z.unknown()) }).strict(),
+  z.object({ ...base, action: z.literal('cancel'), targetGeneration: z.number().int().nonnegative().nullable(), expectedManifestHash: sha256.nullable(), targetOperationId: uuid }).strict(),
   z.object({ ...base, action: z.literal('status') }).strict(),
 ])
 
@@ -248,12 +259,16 @@ export function parseBridgeRequest(input: unknown, options: { allowedDocumentPat
   const parsed = BridgeRequestSchema.safeParse(input)
   if (!parsed.success) throw new BridgeContractError('INVALID_REQUEST')
   let request = parsed.data
+  if (parsed.data.action === 'call' || parsed.data.action === 'cancel') {
+    const generation = parsed.data.action === 'call' ? parsed.data.generation : parsed.data.targetGeneration
+    if ((generation === null) !== (parsed.data.expectedManifestHash === null)) throw new BridgeContractError('INVALID_REQUEST')
+  }
   if (parsed.data.action === 'plan') request = { ...parsed.data, manifest: parseBridgeManifest(parsed.data.manifest, options) } as unknown as BridgeRequest
   if (parsed.data.action === 'put') {
     const chunk = Buffer.from(parsed.data.dataBase64, 'base64')
     if (chunk.length > BRIDGE_MAX_CHUNK_BYTES || chunk.toString('base64') !== parsed.data.dataBase64) throw new BridgeContractError('INVALID_REQUEST')
     if (!chunk.length && (parsed.data.offset !== 0 || parsed.data.contentHash !== createHash('sha256').update(Buffer.alloc(0)).digest('hex'))) throw new BridgeContractError('INVALID_REQUEST')
-    if (parsed.data.offset + chunk.length > BRIDGE_MAX_FILE_BYTES) throw new BridgeContractError('FILE_TOO_LARGE')
+    if (parsed.data.offset + chunk.length > parsed.data.expectedBytes) throw new BridgeContractError('FILE_TOO_LARGE')
     validateBridgePath(parsed.data.path, options)
   }
   let requestBytes: number
@@ -268,12 +283,10 @@ const responseBase = {
   scope: BridgeScopeSchema,
 }
 
-export const BridgeSnapshotProvenanceSchema = z.object({
-  kind: z.literal('analytical_snapshot'),
-  scope: BridgeScopeSchema,
-  generation: z.number().int().nonnegative(),
-  manifestHash: sha256,
-}).strict()
+export const BridgeSnapshotProvenanceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('analytical_snapshot'), scope: BridgeScopeSchema, generation: z.number().int().min(1), manifestHash: sha256 }).strict(),
+  z.object({ kind: z.literal('source_free'), scope: BridgeScopeSchema, projectFilesIncluded: z.literal(false), localVerification: z.literal('not_performed') }).strict(),
+])
 
 export const BridgeMcpCallResultSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -287,8 +300,9 @@ export const BridgeResponseSchema = z.union([
   z.object({ ...responseBase, action: z.literal('plan'), ok: z.literal(true), expectedManifestHash: sha256, generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), uploadId: uuid, alreadyCurrent: z.boolean(), missingFiles: z.array(BridgeManifestFileSchema).max(BRIDGE_MAX_FILES), maxChunkBytes: z.literal(BRIDGE_MAX_CHUNK_BYTES) }).strict(),
   z.object({ ...responseBase, action: z.literal('put'), ok: z.literal(true), baseGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256, path: z.string().min(1).max(1_024), receivedBytes: z.number().int().min(0).max(BRIDGE_MAX_FILE_BYTES), complete: z.boolean() }).strict(),
   z.object({ ...responseBase, action: z.literal('commit'), ok: z.literal(true), expectedManifestHash: sha256, generation: z.number().int().nonnegative(), manifestHash: sha256, provenance: BridgeSnapshotProvenanceSchema }).strict(),
-  z.object({ ...responseBase, action: z.literal('call'), ok: z.literal(true), expectedManifestHash: sha256, generation: z.number().int().nonnegative(), manifestHash: sha256, provenance: BridgeSnapshotProvenanceSchema, result: BridgeMcpCallResultSchema }).strict(),
-  z.object({ ...responseBase, action: z.literal('cancel'), ok: z.literal(true), targetGeneration: z.number().int().nonnegative(), expectedManifestHash: sha256, targetOperationId: uuid, settled: z.boolean() }).strict(),
+  z.object({ ...responseBase, action: z.literal('call'), ok: z.literal(true), expectedManifestHash: sha256, generation: z.number().int().min(1), manifestHash: sha256, provenance: z.object({ kind: z.literal('analytical_snapshot'), scope: BridgeScopeSchema, generation: z.number().int().min(1), manifestHash: sha256 }).strict(), result: BridgeMcpCallResultSchema }).strict(),
+  z.object({ ...responseBase, action: z.literal('call'), ok: z.literal(true), expectedManifestHash: z.null(), generation: z.null(), manifestHash: z.null(), provenance: z.object({ kind: z.literal('source_free'), scope: BridgeScopeSchema, projectFilesIncluded: z.literal(false), localVerification: z.literal('not_performed') }).strict(), result: BridgeMcpCallResultSchema }).strict(),
+  z.object({ ...responseBase, action: z.literal('cancel'), ok: z.literal(true), targetGeneration: z.number().int().nonnegative().nullable(), expectedManifestHash: sha256.nullable(), targetOperationId: uuid, settled: z.boolean() }).strict(),
   z.object({ ...responseBase, action: z.literal('status'), ok: z.literal(true), generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), state: z.enum(['empty', 'ready', 'syncing', 'calling']), activeOperations: z.number().int().min(0).max(BRIDGE_MAX_CONCURRENT_OPERATIONS) }).strict(),
   z.object({ ...responseBase, action: z.enum(['plan', 'put', 'commit', 'call', 'cancel', 'status']), ok: z.literal(false), generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), expectedManifestHash: sha256.nullable(), error: BridgeErrorSchema }).strict(),
 ])
@@ -306,12 +320,11 @@ export function parseBridgeResponse(input: unknown, options: { allowedDocumentPa
   if (parsed.data.action === 'put' && parsed.data.ok) validateBridgePath(parsed.data.path, options)
   if (parsed.data.ok && (parsed.data.action === 'commit' || parsed.data.action === 'call')) {
     const provenance = parsed.data.provenance
-    if (
-      JSON.stringify(provenance.scope) !== JSON.stringify(parsed.data.scope) ||
-      provenance.generation !== parsed.data.generation ||
-      provenance.manifestHash !== parsed.data.manifestHash ||
-      parsed.data.expectedManifestHash !== parsed.data.manifestHash
-    ) throw new BridgeContractError('SCOPE_MISMATCH')
+    if (JSON.stringify(provenance.scope) !== JSON.stringify(parsed.data.scope)) throw new BridgeContractError('SCOPE_MISMATCH')
+    if (provenance.kind === 'analytical_snapshot') {
+      if (parsed.data.action === 'call' && (provenance.generation !== parsed.data.generation || provenance.manifestHash !== parsed.data.manifestHash || parsed.data.expectedManifestHash !== parsed.data.manifestHash)) throw new BridgeContractError('SCOPE_MISMATCH')
+      if (parsed.data.action === 'commit' && (provenance.generation !== parsed.data.generation || provenance.manifestHash !== parsed.data.manifestHash || parsed.data.expectedManifestHash !== parsed.data.manifestHash)) throw new BridgeContractError('SCOPE_MISMATCH')
+    } else if (parsed.data.action !== 'call') throw new BridgeContractError('SCOPE_MISMATCH')
   }
   if (parsed.data.ok && parsed.data.action === 'status') {
     if ((parsed.data.generation === null) !== (parsed.data.manifestHash === null)) throw new BridgeContractError('SNAPSHOT_UNAVAILABLE')

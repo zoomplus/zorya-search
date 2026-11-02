@@ -118,13 +118,14 @@ test('manifest and chunk quotas are enforced before accepting transfer payloads'
     expectedManifestHash: 'a'.repeat(64),
     path: 'src/a.ts',
     contentHash: 'b'.repeat(64),
+    expectedBytes: BRIDGE_MAX_CHUNK_BYTES + 1,
     offset: 0,
     dataBase64: content.toString('base64'),
   }
   assert.ok(content.byteLength > BRIDGE_MAX_CHUNK_BYTES)
   assert.throws(() => parseBridgeRequest(request), BridgeContractError)
   const emptyHash = createHash('sha256').update(Buffer.alloc(0)).digest('hex')
-  assert.equal(parseBridgeRequest({ ...request, contentHash: emptyHash, dataBase64: '' }).action, 'put')
+  assert.equal(parseBridgeRequest({ ...request, contentHash: emptyHash, expectedBytes: 0, dataBase64: '' }).action, 'put')
   assert.throws(() => parseBridgeRequest({ ...request, dataBase64: '' }), BridgeContractError)
   assert.throws(() => validateBridgeFilePayload('src/a.ts', Buffer.from([0xff]), 'a'.repeat(64)), BridgeContractError)
   assert.deepEqual(validateBridgeFilePayload('src/empty.ts', Buffer.alloc(0), emptyHash), {
@@ -193,6 +194,32 @@ test('responses require typed analytical snapshot provenance tied to response sc
     result: { kind: 'tool_result', result: { isError: true, structuredContent: { code: 'source_changed' }, content: [{ type: 'text', text: 'Preserved result payload.' }] } },
   }
   assert.deepEqual((parseBridgeResponse(callResponse) as { result: { result: { structuredContent: unknown } } }).result.result.structuredContent, { code: 'source_changed' })
+})
+
+test('source-free requests and results use an explicit null snapshot pair and unverified provenance', () => {
+  const currentScope = scope()
+  const base = { schemaVersion: 1, operationId: randomUUID(), scope: currentScope, action: 'call', toolName: 'capabilities', arguments: {} }
+  assert.equal(parseBridgeRequest({ ...base, generation: null, expectedManifestHash: null }).action, 'call')
+  assert.throws(() => parseBridgeRequest({ ...base, generation: null, expectedManifestHash: 'a'.repeat(64) }), BridgeContractError)
+  assert.throws(() => parseBridgeRequest({ ...base, generation: 1, expectedManifestHash: null }), BridgeContractError)
+
+  const sourceFree = {
+    schemaVersion: 1,
+    operationId: base.operationId,
+    scope: currentScope,
+    action: 'call',
+    ok: true,
+    expectedManifestHash: null,
+    generation: null,
+    manifestHash: null,
+    provenance: { kind: 'source_free', scope: currentScope, projectFilesIncluded: false, localVerification: 'not_performed' },
+    result: { kind: 'tool_result', result: { structuredContent: { projectFilesIncluded: false } } },
+  }
+  assert.equal(parseBridgeResponse(sourceFree).action, 'call')
+  assert.throws(() => parseBridgeResponse({ ...sourceFree, provenance: { ...sourceFree.provenance, scope: { ...currentScope, conversationId: randomUUID() } } }), BridgeContractError)
+  const cancelBase = { schemaVersion: 1, operationId: randomUUID(), scope: currentScope, action: 'cancel', targetOperationId: randomUUID() }
+  assert.equal(parseBridgeRequest({ ...cancelBase, targetGeneration: null, expectedManifestHash: null }).action, 'cancel')
+  assert.throws(() => parseBridgeRequest({ ...cancelBase, targetGeneration: null, expectedManifestHash: 'b'.repeat(64) }), BridgeContractError)
 })
 
 test('server config requires explicit HTTPS resource and rejects unsafe paths and unknown settings', async () => {
