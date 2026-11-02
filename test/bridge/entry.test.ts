@@ -5,12 +5,11 @@ import { once } from 'node:events'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { PACKAGE_VERSION } from '../../src/package-version.js'
 
 const entry = resolve('src/bridge/entry.ts')
-const tsxLoader = fileURLToPath(import.meta.resolve('tsx'))
+const tsxLoader = import.meta.resolve('tsx')
 
 function run(args: readonly string[]) {
   return spawnSync(process.execPath, ['--import', tsxLoader, entry, ...args], { encoding: 'utf8', timeout: 10_000 })

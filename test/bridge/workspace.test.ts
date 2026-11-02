@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import test from 'node:test'
 import { bindCurrentWorkspace } from '../../src/bridge/workspace.js'
 import { BridgeContractError } from '../../src/bridge/protocol.js'
@@ -21,7 +21,9 @@ async function workspace() {
 test.afterEach(async () => {
   const current = process.cwd()
   const temporary = dirs.splice(0)
-  if (temporary.includes(current)) process.chdir(tmpdir())
+  const canonicalCurrent = await realpath(current)
+  const canonicalTemporary = await Promise.all(temporary.map((path) => realpath(path)))
+  if (canonicalTemporary.includes(canonicalCurrent)) process.chdir(tmpdir())
   await Promise.all(temporary.map((path) => rm(path, { recursive: true, force: true })))
 })
 
@@ -163,7 +165,7 @@ test('actual current working directory is used as the workspace root', async () 
   process.chdir(root)
   try {
     const binding = await bindCurrentWorkspace({ clientInstanceId, call })
-    assert.equal(binding.canonicalPath, resolve(root))
+    assert.equal(binding.canonicalPath, await realpath(root))
   } finally {
     process.chdir(prior)
   }

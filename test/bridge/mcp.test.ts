@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -192,7 +192,7 @@ test('index operation synchronizes first then forwards the original tool argumen
   const bridge = fakeClient({
     synchronize: async ({ workspace, snapshot }) => {
       snapshotHash = snapshot.manifest.manifestHash
-      assert.equal(workspace.canonicalPath, cwd)
+      assert.equal(workspace.canonicalPath, await realpath(cwd))
       return { scope: snapshot.scope, generation: 3, manifestHash: snapshotHash, alreadyCurrent: false, operationId: randomUUID() }
     },
     request: async (request) => {
@@ -249,7 +249,7 @@ test('snapshot reads require a current local manifest and preserve nested result
     assert.equal(bridgeProvenance.origin, 'bound_current_workspace')
     assert.equal(bridgeProvenance.localVerification, 'manifest_matched')
     assert.equal(bridgeProvenance.localManifestHash, hash)
-    assert.equal(process.cwd(), cwd)
+    assert.equal(await realpath(process.cwd()), await realpath(cwd))
   } finally { await client.close(); await handle.close() }
 })
 
