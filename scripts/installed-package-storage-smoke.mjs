@@ -2,13 +2,30 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { realpath as realpathAsync } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
-const consumer = realpathSync(mkdtempSync(join(tmpdir(), 'zorya-search-installed-storage-')))
+const consumerInput = mkdtempSync(join(tmpdir(), 'zorya-search-installed-storage-'))
+const jsResolvedConsumer = realpathSync(consumerInput)
+const nativeResolvedConsumer = realpathSync.native(consumerInput)
+const consumer = await realpathAsync(consumerInput)
+const hasWindowsShortPathComponent = (value) => /(?:^|[\\/])[^\\/]{1,6}~\d+(?:[\\/]|$)/iu.test(value)
+console.log(JSON.stringify({
+  event: 'installed_smoke_temp_root_resolution',
+  platform: process.platform,
+  inputHasShortPathComponent: hasWindowsShortPathComponent(consumerInput),
+  jsRealpathHasShortPathComponent: hasWindowsShortPathComponent(jsResolvedConsumer),
+  nativeRealpathHasShortPathComponent: hasWindowsShortPathComponent(nativeResolvedConsumer),
+  asyncRealpathMatchesNative: consumer === nativeResolvedConsumer,
+}))
+if (consumer !== nativeResolvedConsumer) {
+  rmSync(consumerInput, { recursive: true, force: true })
+  throw new Error('INSTALLED_SMOKE_TEMP_ROOT_CANONICALIZATION_MISMATCH')
+}
 const buildOutput = join(repository, 'dist')
 const requiredStoragePackages = {
   '@electric-sql/pglite': '0.5.14',
