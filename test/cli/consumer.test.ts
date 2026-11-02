@@ -504,6 +504,48 @@ test(
         await realpath(config),
       ]);
       assert.equal(clientConfig.credentialsIncluded, false);
+      r = await run(["client-config", "--result-presentation", "structured", ...common]);
+      assert.equal(r.code, 0, r.err);
+      const structuredClientConfig = JSON.parse(r.out);
+      assert.deepEqual(structuredClientConfig.installed.args, [
+        entry,
+        "mcp",
+        "--config",
+        await realpath(config),
+        "--result-presentation",
+        "structured",
+      ]);
+      assert.deepEqual(structuredClientConfig.registry.args.slice(-2), [
+        "--result-presentation",
+        "structured",
+      ]);
+      assert.deepEqual(structuredClientConfig.installedCodex.args.slice(-6), [
+        entry,
+        "mcp",
+        "--config",
+        await realpath(config),
+        "--result-presentation",
+        "structured",
+      ]);
+      assert.deepEqual(structuredClientConfig.registryCodex.args.slice(-5), [
+        "mcp",
+        "--config",
+        await realpath(config),
+        "--result-presentation",
+        "structured",
+      ]);
+      r = await run(["client-config", "--result-presentation", "invalid", ...common]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /MCP_RESULT_PRESENTATION_INVALID/u);
+      r = await run(["mcp", "--result-presentation", "invalid", ...common]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /MCP_RESULT_PRESENTATION_INVALID/u);
+      r = await run(["mcp", "--result-presentation", ...common]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /MCP_RESULT_PRESENTATION_INVALID/u);
+      r = await run(["search", "--result-presentation", "structured", ...common]);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /OPTION_UNKNOWN:result-presentation/u);
       const coldClient = new Client(
         { name: "cold-mcp", version: "1.0.0" },
         { versionNegotiation: { mode: "auto" } },

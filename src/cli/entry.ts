@@ -23,6 +23,7 @@ import { createRemoteOAuthAuthorizer, parseRemoteOAuthPolicy, remoteOAuthMetadat
 import { startSearchDaemon } from "../daemon/index.js";
 import { PACKAGE_VERSION } from "../package-version.js";
 import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
+import { parseResultPresentation } from "../mcp/result-presentation.js";
 
 const CLI_VERSION = PACKAGE_VERSION;
 const cliEntryPath = fileURLToPath(import.meta.url);
@@ -52,6 +53,7 @@ const help = `Zorya Search — локальный поиск по коду и и
 Служба слушает только loopback; публичный TLS завершается на настроенном владельцем proxy.
 
 Параметры: --config ПУТЬ, --policy ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
+  mcp и client-config: --result-presentation legacy|structured (по умолчанию legacy)
 
 Для поиска по web задайте модель для текста страниц: --web-embedding-model,
 --web-embedding-dimensions и --web-embedding-env. По умолчанию используется OpenRouter.
@@ -470,11 +472,11 @@ async function main() {
     'text-search': ['config', 'root-id', 'query', 'mode', 'kind', 'limit', 'max-chars'],
     'text-read': ['config', 'root-id', 'path', 'line-start', 'line-end', 'snapshot'],
     "serve-remote": ["config", "policy"],
-    "client-config": ["config"],
+    "client-config": ["config", "result-presentation"],
     doctor: ["config"],
     "root-add": ["config", "root-id", "root", "watch", "watch-interval-ms"],
     service: ["config", "stop"],
-    mcp: ["config"],
+    mcp: ["config", "result-presentation"],
     index: ["config", "root-id", "background"],
     search: ["config", "root-id", "query", "mode"],
     context: ["config", "root-id", "query"],
@@ -486,6 +488,14 @@ async function main() {
       !["help", "version"].includes(key) && !allowed[command]!.includes(key),
   );
   if (unknown) throw new Error(`OPTION_UNKNOWN:${unknown}`);
+  const resultPresentation =
+    command === "mcp" || command === "client-config"
+      ? parseResultPresentation(
+          opts["result-presentation"] === undefined
+            ? "legacy"
+            : opts["result-presentation"],
+        )
+      : undefined;
   if (command === "setup") {
     await setup(opts);
     return;
@@ -537,9 +547,13 @@ async function main() {
     return;
   }
   if (command === "client-config") {
+    const presentationArgs =
+      opts["result-presentation"] === undefined
+        ? []
+        : ["--result-presentation", resultPresentation!];
     const installed = {
       command: process.execPath,
-      args: [cliEntryPath, "mcp", "--config", configPath],
+      args: [cliEntryPath, "mcp", "--config", configPath, ...presentationArgs],
     };
     const registry = {
       command: "npx",
@@ -549,6 +563,7 @@ async function main() {
         "mcp",
         "--config",
         configPath,
+        ...presentationArgs,
       ],
     };
     json({
@@ -664,6 +679,7 @@ async function main() {
     await runSearchMcpStdioProxy(
       new URL(`http://127.0.0.1:${owner.port}/mcp`),
       token,
+      { resultPresentation: resultPresentation! },
     );
     return;
   }

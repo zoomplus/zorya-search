@@ -5,9 +5,15 @@ import { isIP } from 'node:net'
 import { SEARCH_MCP_TOOL_CONTRACTS } from './server.js'
 import { PACKAGE_VERSION } from '../package-version.js'
 import { buildSearchMcpInstructions } from './instructions.js'
+import { parseResultPresentation, presentStructuredResult, type ResultPresentation } from './result-presentation.js'
 
 /** Запускает stdio proxy: PGlite и SearchRuntime остаются у уже работающего daemon. */
-export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string) {
+export async function runSearchMcpStdioProxy(
+  endpoint: URL,
+  bearerToken: string,
+  options?: { resultPresentation?: ResultPresentation },
+) {
+  const resultPresentation = validateOptions(options)
   if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:')
     throw new Error('MCP_ENDPOINT_INVALID')
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
@@ -70,7 +76,8 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
           )
           operations.add(operation)
           try {
-            return await operation
+            const result = await operation
+            return resultPresentation === 'structured' ? presentStructuredResult(result) : result
           } catch {
             return {
               isError: true,
@@ -95,6 +102,26 @@ export async function runSearchMcpStdioProxy(endpoint: URL, bearerToken: string)
   } catch (error) {
     await close()
     throw error
+  }
+}
+
+function validateOptions(options: unknown): ResultPresentation {
+  if (options === undefined) return 'legacy'
+  if (typeof options !== 'object' || options === null || Array.isArray(options))
+    throw new Error('MCP_RESULT_PRESENTATION_INVALID')
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(options)
+    const keys = Reflect.ownKeys(descriptors)
+    if (keys.some((key) => key !== 'resultPresentation'))
+      throw new Error('MCP_RESULT_PRESENTATION_INVALID')
+    const descriptor = descriptors.resultPresentation
+    if (!descriptor) return 'legacy'
+    if (!('value' in descriptor)) throw new Error('MCP_RESULT_PRESENTATION_INVALID')
+    if (descriptor.value === undefined) return 'legacy'
+    return parseResultPresentation(descriptor.value)
+  } catch (error) {
+    if (error instanceof Error && error.message === 'MCP_RESULT_PRESENTATION_INVALID') throw error
+    throw new Error('MCP_RESULT_PRESENTATION_INVALID')
   }
 }
 
