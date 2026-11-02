@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
-import { access, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/client'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { ownerDir, readPrivateFile } from '../../src/cli/files.js'
+import { canonicalConfigPath, ownerDir, readPrivateFile } from '../../src/cli/files.js'
 import { configureSearchCapability } from '../../src/cli/configure.js'
 
 const cliEntry = resolve('src/cli/entry.ts')
@@ -359,6 +359,12 @@ test('built CLI stops and restarts the same owner and preserves the indexed sour
     const initial = await runBuiltCli(['index', '--config', configPath])
     assert.equal(initial.code, 0, initial.stderr)
     const before = await readOwnerIndexStatus(configPath)
+    if (process.platform !== 'win32') {
+      const configAliasDirectory = join(dir, 'config-alias')
+      await symlink(dirname(configPath), configAliasDirectory, 'dir')
+      const aliasBefore = await readOwnerIndexStatus(join(configAliasDirectory, 'runtime.json'))
+      assert.deepEqual(aliasBefore, before)
+    }
     const initialMcp = await readBuiltMcp(configPath)
     assert.equal(initialMcp.visual, false)
     assert.equal(initialMcp.visualStatus, 'not_configured')
@@ -390,7 +396,7 @@ test('built CLI stops and restarts the same owner and preserves the indexed sour
 })
 
 async function readOwnerIndexStatus(configPath: string) {
-  const state = ownerDir(configPath)
+  const state = ownerDir(await canonicalConfigPath(configPath))
   const descriptor = JSON.parse(await readPrivateFile(join(state, 'owner.json'))) as { pid: number; port: number; tokenFile: string }
   assert.ok(Number.isInteger(descriptor.pid))
   const token = (await readPrivateFile(join(state, descriptor.tokenFile))).trim()
