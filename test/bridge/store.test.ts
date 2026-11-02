@@ -9,6 +9,7 @@ import { BridgeContractError, createBridgeManifest, createBridgeScope } from '..
 import { BridgeStore } from '../../src/bridge/store.js'
 
 const clientId = '4d1237be-9821-4b95-9079-b77d935bbf01'
+const clientIdB = 'af4c42a2-b189-4a98-b743-4abca5b59c2d'
 const conversationId = '37cc2038-70ef-41f1-ae10-48cd6d936799'
 const fingerprint = createHash('sha256').update('{}').digest('hex')
 
@@ -32,22 +33,65 @@ async function setup() {
   return { root, dataDir, workspacePath, config, scope, store }
 }
 
-function manifest(entries: Record<string, string>) {
+function manifest(entries: Record<string, string>, allowedDocumentPaths: readonly string[] = []) {
   return createBridgeManifest(Object.entries(entries).map(([path, text]) => {
     const bytes = Buffer.from(text)
     return { path, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.byteLength }
-  }))
+  }), { allowedDocumentPaths })
 }
 
-async function transfer(store: BridgeStore, scope: ReturnType<typeof createBridgeScope>, generation: number, files: Record<string, string>, operationId = randomUUID()) {
-  const next = manifest(files)
-  const plan = await store.plan(scope, operationId, generation, next, fingerprint)
+async function transfer(store: BridgeStore, scope: ReturnType<typeof createBridgeScope>, generation: number, files: Record<string, string>, operationId = randomUUID(), allowedDocumentPaths: readonly string[] = []) {
+  const next = manifest(files, allowedDocumentPaths)
+  const plan = await store.plan(scope, operationId, generation, next, fingerprint, allowedDocumentPaths)
   for (const file of plan.missingFiles) {
     const content = Buffer.from(files[file.path]!)
-    await store.put(scope, operationId, generation, next.manifestHash, file.path, file.sha256, file.bytes, 0, content)
+    await store.put(scope, operationId, generation, next.manifestHash, file.path, file.sha256, file.bytes, 0, content, allowedDocumentPaths)
   }
   return { operationId, next }
 }
+
+test('published document snapshots remain recoverable after permission revocation or client removal', async () => {
+  const state = await setup()
+  let currentStore = state.store
+  try {
+    const clientA = { ...state.config.clients[0]!, allowedDocumentPaths: ['README.md'] }
+    const clientB = { ...state.config.clients[0]!, clientId: clientIdB, tokenSha256: 'b'.repeat(64) }
+    const twoClientConfig = await parseBridgeServerConfig({ ...state.config, clients: [clientA, clientB] }, { allowInsecureLoopbackForTests: true })
+    await currentStore.close()
+    currentStore = await BridgeStore.open(twoClientConfig)
+    const scopeB = createBridgeScope({ clientInstanceId: clientIdB, conversationId, canonicalPath: resolve(state.workspacePath) })
+    const first = await transfer(currentStore, state.scope, 0, { 'README.md': 'retained project docs' }, randomUUID(), ['README.md'])
+    const firstPaths = await currentStore.createSnapshot(state.scope, first.operationId, first.next, ['README.md'])
+    await currentStore.publishSnapshot(state.scope, firstPaths, first.next, fingerprint)
+    await currentStore.removeTransfer(state.scope, first.operationId)
+    const second = await transfer(currentStore, scopeB, 0, { 'src/other.ts': 'other client remains' })
+    const secondPaths = await currentStore.createSnapshot(scopeB, second.operationId, second.next)
+    await currentStore.publishSnapshot(scopeB, secondPaths, second.next, fingerprint)
+    await currentStore.removeTransfer(scopeB, second.operationId)
+    await currentStore.close()
+
+    const revokedConfig = await parseBridgeServerConfig({
+      ...twoClientConfig,
+      clients: [
+        { ...clientA, allowedDocumentPaths: [] },
+        clientB,
+      ],
+    }, { allowInsecureLoopbackForTests: true })
+    currentStore = await BridgeStore.open(revokedConfig)
+    assert.equal((await currentStore.current(state.scope))?.manifestHash, first.next.manifestHash)
+    assert.equal((await readFile(join(state.dataDir, 'clients', clientId, state.scope.workspaceId, 'source', 'README.md'), 'utf8')), 'retained project docs')
+    assert.equal((await currentStore.current(scopeB))?.manifestHash, second.next.manifestHash)
+    await currentStore.close()
+
+    const removedClientConfig = await parseBridgeServerConfig({ ...revokedConfig, clients: [clientB] }, { allowInsecureLoopbackForTests: true })
+    currentStore = await BridgeStore.open(removedClientConfig)
+    assert.equal((await currentStore.current(state.scope))?.manifestHash, first.next.manifestHash)
+    assert.equal((await currentStore.current(scopeB))?.manifestHash, second.next.manifestHash)
+  } finally {
+    await currentStore.close().catch(() => undefined)
+    await rm(state.root, { recursive: true, force: true })
+  }
+})
 
 test('workspace source and persistent data directory keep stable inode across transfer commits and restart', async () => {
   const state = await setup()

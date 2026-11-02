@@ -101,11 +101,25 @@ try {
   assertStoragePackagesAreRegularDependencies()
 
   const entry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'cli', 'entry.js')
+  const bridgeEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'bridge', 'entry.js')
   const appRoot = join(consumer, 'node_modules', 'zorya-search')
   const packageManifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
+  assert.equal(packageManifest.bin?.['zorya-search-bridge'], './dist/bridge/entry.js')
+  for (const path of ['dist/bridge/entry.js', 'dist/bridge/client-api.js', 'dist/bridge/server-api.js'])
+    assert.ok(existsSync(join(appRoot, path)), `${path} must be included in the packed package`)
+  for (const path of ['dist/bridge/client-api.js', 'dist/bridge/server-api.js'])
+    assert.equal(packageManifest.exports?.[`./bridge/${path.includes('client-api') ? 'client' : 'server'}`]?.import, `./${path}`)
   const version = runCli(entry, ['--version']).trim()
   assert.equal(version, packageManifest.version)
   runCli(entry, ['--help'])
+  assert.equal(runCli(bridgeEntry, ['--version']).trim(), packageManifest.version)
+  runCli(bridgeEntry, ['--help'])
+  const bridgeBin = join(consumer, 'node_modules', '.bin', process.platform === 'win32' ? 'zorya-search-bridge.cmd' : 'zorya-search-bridge')
+  assert.ok(existsSync(bridgeBin), 'npm must install the bridge binary link')
+  assert.equal(execFileSync(process.execPath, [npmCli, 'exec', '--offline', '--no', '--', 'zorya-search-bridge', '--version'], {
+    cwd: consumer,
+    encoding: 'utf8',
+  }).trim(), packageManifest.version)
   const clientConfig = JSON.parse(runCli(entry, ['client-config']))
   assert.equal(clientConfig.registry.command, 'npx')
   assert.deepEqual(clientConfig.registry.args, [
@@ -147,6 +161,8 @@ try {
     'zorya-search/visual',
     'zorya-search/runtime',
     'zorya-search/mcp',
+    'zorya-search/bridge/client',
+    'zorya-search/bridge/server',
     'zorya-search/daemon',
   ]
   assert.deepEqual(
@@ -157,6 +173,16 @@ try {
   )
   const importExpression = `for (const name of ${JSON.stringify(publicImports)}) await import(name)`
   execFileSync(process.execPath, ['--input-type=module', '-e', importExpression], {
+    cwd: consumer,
+    stdio: 'inherit',
+  })
+  const clientIsolationLoader = join(consumer, 'client-import-guard.mjs')
+  writeFileSync(clientIsolationLoader, `export async function resolve(specifier, context, nextResolve) {
+    if (/(?:\\/storage\\/|\\/providers\\/|\\/runtime\\/index\\.js$|^pg$|^@electric-sql\\/pglite(?:-pgvector)?$)/u.test(specifier))
+      throw new Error('BRIDGE_CLIENT_IMPORTED_STORAGE_OR_PROVIDER')
+    return nextResolve(specifier, context)
+  }\n`)
+  execFileSync(process.execPath, ['--experimental-loader', clientIsolationLoader, '--input-type=module', '-e', "await import('zorya-search/bridge/client')"], {
     cwd: consumer,
     stdio: 'inherit',
   })

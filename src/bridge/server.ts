@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { createSearchIpAccessPolicy } from '../daemon/ip-access.js'
 import { createCodePathPolicy } from '../code/enumerate.js'
 import { parseBridgeServerConfig, type BridgeServerConfig } from './config.js'
-import { BRIDGE_MAX_CONCURRENT_OPERATIONS, BRIDGE_MAX_RESPONSE_BYTES, BridgeContractError, parseBridgeRequest, type BridgeRequest, type BridgeScope, type BridgeResponse } from './protocol.js'
+import { BRIDGE_MAX_CONCURRENT_OPERATIONS, BRIDGE_MAX_STATUS_OPERATIONS, BRIDGE_MAX_RESPONSE_BYTES, BridgeContractError, parseBridgeRequest, type BridgeRequest, type BridgeScope, type BridgeResponse } from './protocol.js'
 import { BridgeStore, type BridgePublishedSnapshot } from './store.js'
 import { bridgeRuntimeFingerprint, callBridgeTool, hasActiveBridgeIndexJob, openBridgeWorkspaceRuntime } from './runtime.js'
 
@@ -13,6 +13,7 @@ const SOURCE_FREE_TOOLS = new Set([
   'search_web', 'read_web_source', 'classify', 'search_visual_references',
 ])
 const MAX_TRACKED_INDEX_JOBS = 512
+const projectDocumentPath = /\.(?:md|mdx|mdc)$/iu
 type ActiveRequest = { readonly clientId: string; readonly operationId: string; readonly action: BridgeRequest['action']; readonly scope: BridgeScope; readonly generation: number | null; readonly expectedManifestHash: string | null; readonly controller: AbortController; readonly settled: Promise<void> }
 type WorkspaceState = { activeCalls: number; syncing: boolean }
 type RuntimeEntry = { runtime: Awaited<ReturnType<typeof openBridgeWorkspaceRuntime>>; operations: readonly ('read' | 'index' | 'web' | 'classify' | 'visual')[] }
@@ -257,13 +258,13 @@ export async function createBridgeServer(config: BridgeServerConfig, options: { 
       }
 
       if (bridgeRequest.action === 'status') {
-        if (admission.size >= BRIDGE_MAX_CONCURRENT_OPERATIONS + 1) throw new BridgeContractError('OPERATION_LIMIT_EXCEEDED')
+        if (admission.size >= BRIDGE_MAX_STATUS_OPERATIONS) throw new BridgeContractError('OPERATION_LIMIT_EXCEEDED')
         const workspace = workspaceKey(bridgeRequest.scope)
         send(response, {
           schemaVersion: 1, operationId: bridgeRequest.operationId, scope: bridgeRequest.scope,
           action: 'status', ok: true, generation: snapshot?.generation ?? null, manifestHash: snapshot?.manifestHash ?? null,
           state: gate.syncing ? 'syncing' : gate.activeCalls ? 'calling' : snapshot ? 'ready' : 'empty',
-          activeOperations: Math.min(8, [...active.keys()].filter((key) => key.startsWith(`${workspace}/`)).length),
+          activeOperations: [...active.values()].filter((operation) => workspaceKey(operation.scope) === workspace).length,
         })
         return
       }
@@ -358,6 +359,7 @@ export async function createBridgeServer(config: BridgeServerConfig, options: { 
           throw new BridgeContractError('SNAPSHOT_UNAVAILABLE')
         } else {
           if (bridgeRequest.generation !== callSnapshot.generation || bridgeRequest.expectedManifestHash !== callSnapshot.manifestHash) throw new BridgeContractError('STALE_GENERATION')
+          if (callSnapshot.manifest.files.some((file) => projectDocumentPath.test(file.path) && !client!.allowedDocumentPaths?.includes(file.path))) throw new BridgeContractError('WORKSPACE_CHANGED')
           if (callSnapshot.manifest.files.some((file) => exclusions.get(client!.clientId)!(file.path))) throw new BridgeContractError('WORKSPACE_CHANGED')
           await store.verifyPublishedSource(bridgeRequest.scope, callSnapshot)
         }

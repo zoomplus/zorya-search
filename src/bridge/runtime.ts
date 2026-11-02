@@ -4,6 +4,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { createSearchMcpServer } from '../mcp/server.js'
 import { openSearchRuntime, type RuntimeConfig } from '../runtime/index.js'
 import type { BridgeServerConfig } from './config.js'
+import { PACKAGE_VERSION } from '../package-version.js'
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -71,7 +72,7 @@ export async function callBridgeTool(
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createSearchMcpServer(trackedRuntime, { rootIds: ['workspace'], operations }, signal, true)
-  const client = new Client({ name: 'zorya-search-bridge', version: '0.1.11' }, { versionNegotiation: { mode: 'auto' } })
+  const client = new Client({ name: 'zorya-search-bridge', version: PACKAGE_VERSION }, { versionNegotiation: { mode: 'auto' } })
   let failure: unknown
   let result: unknown
   try {

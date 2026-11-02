@@ -1,7 +1,7 @@
 import { lstat, realpath } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { canonicalFuturePath, isSameOrDescendantPath } from '../runtime/path.js'
-import { parseRuntimeConfig, type RuntimeConfig } from '../runtime/config.js'
+import type { RuntimeConfig } from '../runtime/config.js'
 import { createSearchIpAccessPolicy, type SearchIpOperation } from '../daemon/ip-access.js'
 import { BridgeContractError, validateBridgePath } from './protocol.js'
 import { z } from 'zod'
@@ -16,7 +16,7 @@ const ServerClientSchema = z.object({
   clientCidrs: z.array(z.string().min(3).max(128)).min(1).max(256),
   grants: z.array(operation).min(1).max(5),
   allowedDocumentPaths: z.array(z.string().min(1).max(1_024)).max(256).optional(),
-  excludedPaths: z.array(z.string().min(1).max(512)).max(512).optional(),
+  excludedPaths: z.array(z.string().min(1).max(512)).max(128).optional(),
 }).strict()
 
 const RuntimeTemplateInputSchema = z.record(z.string(), z.unknown())
@@ -44,6 +44,8 @@ const ClientConfigSchema = z.object({
   endpoint: z.string().min(1).max(2_048),
   clientId: uuid,
   stateDir: z.string().min(1).max(4_096),
+  allowedDocumentPaths: z.array(z.string().min(1).max(1_024)).max(256).optional(),
+  excludedPaths: z.array(z.string().min(1).max(512)).max(128).optional(),
   credential: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('env'), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/) }).strict(),
     z.object({ kind: z.literal('file'), path: z.string().min(1).max(4_096) }).strict(),
@@ -117,9 +119,10 @@ function validateExclusionPatterns(patterns: readonly string[] | undefined) {
   }
 }
 
-function parseRuntimeTemplate(input: Record<string, unknown> | undefined): BridgeServerConfig['runtimeTemplate'] {
+async function parseRuntimeTemplate(input: Record<string, unknown> | undefined): Promise<BridgeServerConfig['runtimeTemplate']> {
   if (!input) return undefined
   if (['version', 'dataDir', 'roots'].some((key) => Object.hasOwn(input, key))) fail()
+  const { parseRuntimeConfig } = await import('../runtime/config.js')
   let parsed: RuntimeConfig
   try {
     parsed = parseRuntimeConfig({
@@ -157,7 +160,7 @@ export async function parseBridgeServerConfig(
   }
   validateCidrPolicy(['127.0.0.1/32'], parsed.data.trustedProxyCidrs)
   for (const client of parsed.data.clients) validateClientGrant(client)
-  const runtimeTemplate = parseRuntimeTemplate(parsed.data.runtimeTemplate)
+  const runtimeTemplate = await parseRuntimeTemplate(parsed.data.runtimeTemplate)
   let dataDir: string
   try {
     if (!isAbsolute(parsed.data.dataDir)) fail()
@@ -184,6 +187,8 @@ export async function parseBridgeClientConfig(
 ): Promise<BridgeClientConfig> {
   const parsed = ClientConfigSchema.safeParse(input)
   if (!parsed.success) fail()
+  validateDocumentPermission(parsed.data.allowedDocumentPaths)
+  validateExclusionPatterns(parsed.data.excludedPaths)
   const endpoint = parseEndpoint(parsed.data.endpoint, options.allowInsecureLoopbackForTests === true)
   let cwd: string
   let stateDir: string

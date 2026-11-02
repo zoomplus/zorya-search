@@ -362,6 +362,61 @@ test('idle cancel removes an owned pending transfer and configured exclusions fe
   }
 })
 
+test('revoked project documents block source-consuming calls while source-free controls remain available', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zorya-bridge-revoked-doc-'))
+  const dataDir = join(root, 'data')
+  const workspace = join(root, 'workspace')
+  await mkdir(workspace)
+  const base = {
+    schemaVersion: 1,
+    resource: 'https://search.bridge.test/mcp/search',
+    bindHost: '127.0.0.1',
+    port: 0,
+    dataDir,
+    trustedProxyCidrs: [],
+    allowedOrigins: ['https://chatgpt.com'],
+    clients: [{ clientId: clientA, tokenSha256: sha(tokenA), clientCidrs: ['127.0.0.1/32'], grants: ['read', 'index'] }],
+  }
+  const permittedConfig = await parseBridgeServerConfig({ ...base, clients: [{ ...base.clients[0]!, allowedDocumentPaths: ['README.md'] }] })
+  let server: Awaited<ReturnType<typeof createBridgeServer>> | undefined
+  try {
+    server = await createBridgeServer(permittedConfig)
+    const scope = createBridgeScope({ clientInstanceId: clientA, conversationId: conversationA, canonicalPath: resolve(workspace) })
+    const contents = Buffer.from('# Local policy document\n')
+    const doc = { path: 'README.md', sha256: sha(contents), bytes: contents.byteLength }
+    const manifest = createBridgeManifest([doc], { allowedDocumentPaths: ['README.md'] })
+    const operationId = randomUUID()
+    const plan = await post(server.address.port, tokenA, requestBody(scope, operationId, { action: 'plan', baseGeneration: 0, manifest }))
+    assert.equal(plan.body.ok, true)
+    const put = await post(server.address.port, tokenA, requestBody(scope, operationId, {
+      action: 'put', baseGeneration: 0, expectedManifestHash: manifest.manifestHash,
+      path: doc.path, contentHash: doc.sha256, expectedBytes: doc.bytes, offset: 0, dataBase64: contents.toString('base64'),
+    }))
+    assert.equal(put.body.ok, true)
+    const commit = await post(server.address.port, tokenA, requestBody(scope, operationId, {
+      action: 'commit', baseGeneration: 0, expectedManifestHash: manifest.manifestHash,
+    }))
+    assert.equal(commit.body.ok, true)
+    await server.close()
+
+    const revokedConfig = await parseBridgeServerConfig({ ...base, clients: [{ ...base.clients[0]!, allowedDocumentPaths: [] }] })
+    server = await createBridgeServer(revokedConfig)
+    const staleRead = await post(server.address.port, tokenA, requestBody(scope, randomUUID(), {
+      action: 'call', generation: 1, expectedManifestHash: manifest.manifestHash,
+      toolName: 'search_project_text', arguments: { rootId: 'workspace', query: 'policy' },
+    }))
+    assert.equal((staleRead.body.error as Record<string, unknown>).code, 'WORKSPACE_CHANGED')
+    const status = await post(server.address.port, tokenA, requestBody(scope, randomUUID(), {
+      action: 'call', generation: null, expectedManifestHash: null,
+      toolName: 'index_status', arguments: { rootId: 'workspace' },
+    }))
+    assert.equal(status.body.ok, true)
+  } finally {
+    await server?.close().catch(() => undefined)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('client CIDR rejection is independent from the loopback listener and token', async () => {
   const root = await mkdtemp(join(tmpdir(), 'zorya-bridge-cidr-'))
   const client = '4d1237be-9821-4b95-9079-b77d935bbf01'

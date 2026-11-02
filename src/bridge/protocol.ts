@@ -10,11 +10,12 @@ export const BRIDGE_MAX_CHUNK_BYTES = 128_000
 export const BRIDGE_MAX_REQUEST_BYTES = 1_000_000
 export const BRIDGE_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 export const BRIDGE_MAX_CONCURRENT_OPERATIONS = 8
+export const BRIDGE_MAX_STATUS_OPERATIONS = BRIDGE_MAX_CONCURRENT_OPERATIONS + 2
 export const BRIDGE_MAX_WORKSPACES_PER_CLIENT = 8
 export const BRIDGE_MAX_WORKSPACES = 32
 export const BRIDGE_MAX_PENDING_TRANSFERS_PER_CLIENT = 2
 export const BRIDGE_MAX_RETAINED_SNAPSHOTS_PER_WORKSPACE = 2
-export const BRIDGE_MAX_CHUNKS_PER_TRANSFER = 2_048
+export const BRIDGE_MAX_CHUNKS_PER_TRANSFER = 5_391
 export const BRIDGE_MAX_SNAPSHOT_BYTES = 1_000_000_000
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
@@ -303,7 +304,7 @@ export const BridgeResponseSchema = z.union([
   z.object({ ...responseBase, action: z.literal('call'), ok: z.literal(true), expectedManifestHash: sha256, generation: z.number().int().min(1), manifestHash: sha256, provenance: z.object({ kind: z.literal('analytical_snapshot'), scope: BridgeScopeSchema, generation: z.number().int().min(1), manifestHash: sha256 }).strict(), result: BridgeMcpCallResultSchema }).strict(),
   z.object({ ...responseBase, action: z.literal('call'), ok: z.literal(true), expectedManifestHash: z.null(), generation: z.null(), manifestHash: z.null(), provenance: z.object({ kind: z.literal('source_free'), scope: BridgeScopeSchema, projectFilesIncluded: z.literal(false), localVerification: z.literal('not_performed') }).strict(), result: BridgeMcpCallResultSchema }).strict(),
   z.object({ ...responseBase, action: z.literal('cancel'), ok: z.literal(true), targetGeneration: z.number().int().nonnegative().nullable(), expectedManifestHash: sha256.nullable(), targetOperationId: uuid, settled: z.boolean() }).strict(),
-  z.object({ ...responseBase, action: z.literal('status'), ok: z.literal(true), generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), state: z.enum(['empty', 'ready', 'syncing', 'calling']), activeOperations: z.number().int().min(0).max(BRIDGE_MAX_CONCURRENT_OPERATIONS) }).strict(),
+  z.object({ ...responseBase, action: z.literal('status'), ok: z.literal(true), generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), state: z.enum(['empty', 'ready', 'syncing', 'calling']), activeOperations: z.number().int().min(0).max(BRIDGE_MAX_STATUS_OPERATIONS) }).strict(),
   z.object({ ...responseBase, action: z.enum(['plan', 'put', 'commit', 'call', 'cancel', 'status']), ok: z.literal(false), generation: z.number().int().nonnegative().nullable(), manifestHash: sha256.nullable(), expectedManifestHash: sha256.nullable(), error: BridgeErrorSchema }).strict(),
 ])
 

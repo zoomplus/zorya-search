@@ -6,7 +6,9 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import {
   BRIDGE_MAX_CHUNK_BYTES,
+  BRIDGE_MAX_CHUNKS_PER_TRANSFER,
   BRIDGE_MAX_FILE_BYTES,
+  BRIDGE_MAX_STATUS_OPERATIONS,
   BridgeContractError,
   BridgeScopeSchema,
   canonicalManifestBytes,
@@ -101,6 +103,8 @@ test('manifest rejects exact and normalized case collisions while allowing an un
 })
 
 test('manifest and chunk quotas are enforced before accepting transfer payloads', () => {
+  assert.ok(BRIDGE_MAX_CHUNKS_PER_TRANSFER >= 5_000 + Math.ceil(50_000_000 / BRIDGE_MAX_CHUNK_BYTES))
+  assert.equal(BRIDGE_MAX_STATUS_OPERATIONS, 10)
   assert.throws(() => createBridgeManifest(Array.from({ length: 5_001 }, (_, index) => file(`src/${index}.ts`, ''))), BridgeContractError)
   assert.throws(() => createBridgeManifest(Array.from({ length: 51 }, (_, index) => ({
     path: `src/${index}.ts`, sha256: 'a'.repeat(64), bytes: BRIDGE_MAX_FILE_BYTES,
@@ -131,6 +135,9 @@ test('manifest and chunk quotas are enforced before accepting transfer payloads'
   assert.deepEqual(validateBridgeFilePayload('src/empty.ts', Buffer.alloc(0), emptyHash), {
     path: 'src/empty.ts', sha256: emptyHash, bytes: 0,
   })
+  const statusBase = { schemaVersion: 1, operationId: randomUUID(), scope: scope(), action: 'status', ok: true, generation: null, manifestHash: null, state: 'empty' }
+  assert.equal(parseBridgeResponse({ ...statusBase, activeOperations: 10 }).action, 'status')
+  assert.throws(() => parseBridgeResponse({ ...statusBase, activeOperations: 11 }), BridgeContractError)
 })
 
 test('file validation checks identity and rejects known secret material as a whole file', () => {
@@ -260,6 +267,7 @@ test('server config rejects invalid CIDRs, duplicate grants, and unpermitted doc
       { ...valid, clients: [{ ...valid.clients[0], clientCidrs: ['0.0.0.0/0'] }] },
       { ...valid, clients: [{ ...valid.clients[0], grants: ['read', 'read'] }] },
       { ...valid, clients: [{ ...valid.clients[0], allowedDocumentPaths: ['../README.md'] }] },
+      { ...valid, clients: [{ ...valid.clients[0], excludedPaths: Array.from({ length: 129 }, (_, index) => `excluded-${index}`) }] },
       { ...valid, trustedProxyCidrs: ['not-a-cidr'] },
       { ...valid, trustedProxyCidrs: ['198.51.100.1/32', '198.51.100.1/32'] },
       { ...valid, trustedProxyCidrs: ['::/0'] },
@@ -291,6 +299,9 @@ test('client config binds local state to cwd and rejects credentials inside work
     const parsed = await parseBridgeClientConfig(base, { cwd: workspace })
     assert.equal(parsed.endpoint, base.endpoint)
     assert.ok(Object.isFrozen(parsed))
+    assert.deepEqual((await parseBridgeClientConfig({ ...base, allowedDocumentPaths: ['docs/guide.mdc'], excludedPaths: ['generated/**'] }, { cwd: workspace })).allowedDocumentPaths, ['docs/guide.mdc'])
+    await assert.rejects(parseBridgeClientConfig({ ...base, allowedDocumentPaths: ['../private.mdc'] }, { cwd: workspace }), BridgeContractError)
+    await assert.rejects(parseBridgeClientConfig({ ...base, excludedPaths: Array.from({ length: 129 }, (_, index) => `excluded-${index}`) }, { cwd: workspace }), BridgeContractError)
     const stateCredential = join(outside, 'state', 'credential')
     await writeFile(stateCredential, 'state-owned-token')
     await chmod(stateCredential, 0o600)

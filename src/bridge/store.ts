@@ -357,7 +357,7 @@ export class BridgeStore {
       invalidStore()
     }
     if (!info!.isFile() || info!.isSymbolicLink()) invalidStore()
-    const snapshot = parseSnapshot(await readJson(pointerPath), this.documentsFor(scope.clientInstanceId))
+    const snapshot = parseSnapshot(await readJson(pointerPath))
     await assertDirectoryExists(join(this.workspacePath(scope), 'source'))
     await assertDirectoryExists(join(this.workspacePath(scope), 'data'))
     return snapshot
@@ -1006,7 +1006,16 @@ function parseTransfer(input: unknown, allowedDocumentPaths: readonly string[]):
   })
 }
 
-function parseSnapshot(input: unknown, allowedDocumentPaths: readonly string[]): BridgePublishedSnapshot {
+function historicalDocumentPaths(input: unknown): string[] {
+  if (!plainObject(input) || !Array.isArray(input.files)) return []
+  return input.files.flatMap((entry) =>
+    plainObject(entry) && typeof entry.path === 'string' && /\.(?:md|mdx|mdc)$/iu.test(entry.path)
+      ? [entry.path]
+      : [],
+  )
+}
+
+function parseSnapshot(input: unknown): BridgePublishedSnapshot {
   if (
     !plainObject(input) || input.schemaVersion !== STORE_SCHEMA_VERSION ||
     !Number.isSafeInteger(input.generation) || (input.generation as number) < 1 ||
@@ -1014,7 +1023,9 @@ function parseSnapshot(input: unknown, allowedDocumentPaths: readonly string[]):
     typeof input.runtimeFingerprint !== 'string' || !/^[0-9a-f]{64}$/u.test(input.runtimeFingerprint) ||
     typeof input.createdAt !== 'string'
   ) invalidStore()
-  const manifest = parseBridgeManifest(input.manifest, { allowedDocumentPaths })
+  // Published manifests outlive the client policy that authorized them. Validate
+  // their document paths structurally; active authorization is enforced on calls.
+  const manifest = parseBridgeManifest(input.manifest, { allowedDocumentPaths: historicalDocumentPaths(input.manifest) })
   if (manifest.manifestHash !== input.manifestHash) invalidStore()
   return Object.freeze({
     schemaVersion: STORE_SCHEMA_VERSION,
