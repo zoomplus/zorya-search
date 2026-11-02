@@ -13,11 +13,13 @@ import {
   isLegacyRequest,
 } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport, toNodeHandler } from '@modelcontextprotocol/node'
-import { openSearchRuntime, openSearchRuntimeFromFile } from '../runtime/index.js'
+import { loadRuntimeConfig, openSearchRuntime, openSearchRuntimeFromFile } from '../runtime/index.js'
 import type { RuntimeOptions } from '../runtime/index.js'
 import { createSearchMcpServer, requiredOperationsForTool, type SearchMcpAccess } from '../mcp/server.js'
 import { hostAllowed, originAllowed, parseBearer } from './http-policy.js'
 import { normalizeIncomingMessage, readWebRequest } from './http-request.js'
+import { createSearchIpAccessPolicy, parseSearchIpAccessPolicy, type SearchIpAccessPolicy } from './ip-access.js'
+import { parseRuntimeConfig } from '../runtime/config.js'
 
 export interface SearchDaemonOptions {
   config?: unknown
@@ -34,6 +36,7 @@ export interface SearchDaemonOptions {
   allowedOrigins?: readonly string[]
   /** Absolute public OAuth resource identity and metadata exposed by remote mode. */
   protectedResource?: { resource: string; issuer: string; scopes: readonly string[]; metadataUrl: string }
+  ipAccessPolicy?: SearchIpAccessPolicy
   path?: string
   maxLegacySessions?: number
   legacyIdleTimeoutMs?: number
@@ -64,6 +67,9 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
   const host = options.host ?? '127.0.0.1'
   const local = host === '127.0.0.1' || host === '::1' || host === 'localhost'
   const remote = options.protectedResource
+  const suppliedIpMode = options.ipAccessPolicy
+  const hasIpMode = suppliedIpMode !== undefined
+  if (hasIpMode && (options.bearerToken !== undefined || options.authorize !== undefined || remote !== undefined)) throw new Error('DAEMON_AUTH_MODE_INVALID')
   let protectedResource: SearchDaemonOptions['protectedResource']
   let allowedHosts = options.allowedHosts
   let allowedOrigins = options.allowedOrigins
@@ -103,10 +109,23 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
   )
     throw new Error('DAEMON_ORIGIN_POLICY_INVALID')
   if (
-    !options.authorize &&
+    !options.authorize && !hasIpMode &&
     (!options.bearerToken || options.bearerToken.length < 32 || options.bearerToken.length > 8192)
   )
     throw new Error('DAEMON_OWNER_TOKEN_REQUIRED')
+  let ipMode: SearchIpAccessPolicy | undefined
+  let ipAccess: ReturnType<typeof createSearchIpAccessPolicy> | undefined
+  if (hasIpMode) {
+    if (!['127.0.0.1', '::1'].includes(host) || (options.path ?? '/mcp') !== '/mcp') throw new Error('DAEMON_IP_POLICY_INVALID')
+    const configured = options.configPath
+      ? (await loadRuntimeConfig(options.configPath)).config
+      : parseRuntimeConfig(options.config)
+    ipMode = parseSearchIpAccessPolicy(suppliedIpMode, configured.roots.map((root) => root.id))
+    if (!options.allowedHosts || options.allowedHosts.length !== 1 || options.allowedHosts[0] !== ipMode.allowedHosts[0] || !options.allowedOrigins || options.allowedOrigins.length !== ipMode.allowedOrigins.length || options.allowedOrigins.some((origin) => !ipMode!.allowedOrigins.includes(origin))) throw new Error('DAEMON_IP_POLICY_INVALID')
+    allowedHosts = ipMode.allowedHosts
+    allowedOrigins = ipMode.allowedOrigins
+    ipAccess = createSearchIpAccessPolicy(ipMode)
+  }
   const runtime = options.configPath
     ? await openSearchRuntimeFromFile(options.configPath, { backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}) })
     : await openSearchRuntime({ backgroundWatchStartup: true, ...(options.runtimeOptions ?? {}), ...(options.configDir ? { configDir: options.configDir } : {}), config: options.config })
@@ -230,70 +249,81 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
           }))
           return
         }
-        const authorization = req.headers.authorization
-        const bearer = parseBearer(authorization)
-        if (!bearer) {
-          res.writeHead(401, { 'www-authenticate': protectedResource ? `Bearer resource_metadata="${protectedResource.metadataUrl}"` : 'Bearer' }).end()
-          return
-        }
         let access: (SearchMcpAccess & { principalId: string }) | undefined
         let insufficientScope: string | undefined
         let permittedScopes: readonly string[] = []
-        try {
-          if (options.authorize) {
-            if (authorizationJobs.size >= maxAuthorizationJobs) {
-              res.writeHead(503).end()
-              return
-            }
-            const authorizationController = new AbortController()
-            const authorizationSignal = AbortSignal.any([
-              requestController.signal,
-              ownerController.signal,
-              authorizationController.signal,
-            ])
-            const job = options.authorize(bearer, authorizationSignal)
-            authorizationJobs.add(job)
-            void job.finally(() => authorizationJobs.delete(job)).catch(() => undefined)
-            let timeout: NodeJS.Timeout | undefined
-            let finishAuthWait: (() => void) | undefined
-            const timed = new Promise<undefined>((resolve) => {
-              const done = () => resolve(undefined)
-              finishAuthWait = () => {
-                requestController.signal.removeEventListener('abort', done)
-                ownerController.signal.removeEventListener('abort', done)
+        if (ipAccess && ipMode) {
+          if (req.headers.authorization !== undefined || !ipAccess.authorize(req)) {
+            res.writeHead(403).end()
+            return
+          }
+          access = snapshotAccess(ipMode, runtime.listRoots().map((root) => root.id), true)
+        } else {
+          const bearer = parseBearer(req.headers.authorization)
+          if (!bearer) {
+            res.writeHead(401, { 'www-authenticate': protectedResource ? `Bearer resource_metadata="${protectedResource.metadataUrl}"` : 'Bearer' }).end()
+            return
+          }
+          try {
+            if (options.authorize) {
+              if (authorizationJobs.size >= maxAuthorizationJobs) {
+                res.writeHead(503).end()
+                return
               }
-              requestController.signal.addEventListener('abort', done, { once: true })
-              ownerController.signal.addEventListener('abort', done, { once: true })
-              timeout = setNodeTimeout(() => {
-                authorizationController.abort(new Error('AUTHORIZATION_DEADLINE'))
-                done()
-              }, 10_000)
-            })
-            try {
-              const authorized = await Promise.race([job, timed])
-              if (authorized && typeof authorized === 'object' && 'kind' in authorized && authorized.kind === 'insufficient_scope' && typeof authorized.scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(authorized.scope)) insufficientScope = authorized.scope
-              else {
-                if (authorized && typeof authorized === 'object' && 'permittedScopes' in authorized && Array.isArray(authorized.permittedScopes) && authorized.permittedScopes.length <= 5 && authorized.permittedScopes.every((scope) => typeof scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(scope))) permittedScopes = Object.freeze([...authorized.permittedScopes])
-                access = snapshotAccess(authorized, runtime.listRoots().map((root) => root.id), true)
+              const authorizationController = new AbortController()
+              const authorizationSignal = AbortSignal.any([
+                requestController.signal,
+                ownerController.signal,
+                authorizationController.signal,
+              ])
+              const job = options.authorize(bearer, authorizationSignal)
+              authorizationJobs.add(job)
+              void job.finally(() => authorizationJobs.delete(job)).catch(() => undefined)
+              let timeout: NodeJS.Timeout | undefined
+              let finishAuthWait: (() => void) | undefined
+              const timed = new Promise<undefined>((resolve) => {
+                const done = () => resolve(undefined)
+                finishAuthWait = () => {
+                  requestController.signal.removeEventListener('abort', done)
+                  ownerController.signal.removeEventListener('abort', done)
+                }
+                requestController.signal.addEventListener('abort', done, { once: true })
+                ownerController.signal.addEventListener('abort', done, { once: true })
+                timeout = setNodeTimeout(() => {
+                  authorizationController.abort(new Error('AUTHORIZATION_DEADLINE'))
+                  done()
+                }, 10_000)
+              })
+              try {
+                const authorized = await Promise.race([job, timed])
+                if (authorized && typeof authorized === 'object' && 'kind' in authorized && authorized.kind === 'insufficient_scope' && typeof authorized.scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(authorized.scope)) insufficientScope = authorized.scope
+                else {
+                  if (authorized && typeof authorized === 'object' && 'permittedScopes' in authorized && Array.isArray(authorized.permittedScopes) && authorized.permittedScopes.length <= 5 && authorized.permittedScopes.every((scope) => typeof scope === 'string' && /^zorya:(read|index|web|classify|visual)$/.test(scope))) permittedScopes = Object.freeze([...authorized.permittedScopes])
+                  access = snapshotAccess(authorized, runtime.listRoots().map((root) => root.id), true)
+                }
+              } finally {
+                if (timeout) clearNodeTimeout(timeout)
+                finishAuthWait?.()
               }
-            } finally {
-              if (timeout) clearNodeTimeout(timeout)
-              finishAuthWait?.()
-            }
-          } else if (bearer && constantTimeEqual(bearer, options.bearerToken!))
-            access = snapshotAccess(
-              localAccess,
-              runtime.listRoots().map((root) => root.id),
-              false,
-            )
-        } catch {
-          access = undefined
+            } else if (constantTimeEqual(bearer, options.bearerToken!))
+              access = snapshotAccess(
+                localAccess,
+                runtime.listRoots().map((root) => root.id),
+                false,
+              )
+          } catch {
+            access = undefined
+          }
         }
         if (closing || requestController.signal.aborted) {
           if (!res.headersSent && !res.destroyed) res.writeHead(closing ? 503 : 499).end()
           return
         }
         if (!access) {
+          if (ipAccess) {
+            res.writeHead(403).end()
+            return
+          }
           if (protectedResource && insufficientScope) {
             res.writeHead(403, { 'www-authenticate': `Bearer resource_metadata="${protectedResource.metadataUrl}", error="insufficient_scope", scope="${insufficientScope}"` }).end()
             return
@@ -348,7 +378,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         }
         if (closing || requestController.signal.aborted) return
         const handler = createMcpHandler(
-          () => createSearchMcpServer(runtime, access!, requestController.signal, Boolean(protectedResource), Boolean(protectedResource)),
+          () => createSearchMcpServer(runtime, access!, requestController.signal, Boolean(protectedResource || ipAccess), Boolean(protectedResource), Boolean(ipAccess)),
           { legacy: 'reject', maxRequestBodySize: 1_048_576 },
         )
         modernHandlers.add(handler)
@@ -429,7 +459,7 @@ export async function startSearchDaemon(options: SearchDaemonOptions) {
         if (transport.sessionId) sessions.delete(transport.sessionId)
       }
       try {
-        await createSearchMcpServer(runtime, access, ownerController.signal, Boolean(protectedResource), Boolean(protectedResource)).connect(transport)
+        await createSearchMcpServer(runtime, access, ownerController.signal, Boolean(protectedResource || ipAccess), Boolean(protectedResource), Boolean(ipAccess)).connect(transport)
         await transport.handleRequest(req, res, body)
       } finally {
         initializing--

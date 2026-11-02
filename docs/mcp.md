@@ -2,7 +2,7 @@
 
 ## Выбор инструментов и предложение настройки владельцу
 
-Этот раздел описывает опубликованный prerelease `v0.1.10`. Пакет `zorya-search@0.1.10` доступен в npm и как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10); npm dist-tag `next` указывает на него, а `latest` остаётся на `0.1.9`. Версия добавляет `setupOptions` и owner CLI `configure`; проверьте фактическую версию установленного сервера.
+Этот раздел описывает опубликованный prerelease `v0.1.10`. Пакет `zorya-search@0.1.10` доступен в npm и как [GitHub prerelease](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10); на дату его публикации 2026-11-02 npm dist-tag `next` указывал на эту версию, а `latest` оставался на `0.1.9`. Версия добавляет `setupOptions` и owner CLI `configure`; проверьте фактическую версию установленного сервера.
 
 MCP initialize содержит компактные инструкции по группам инструментов и не запускает search, indexing, classifier или provider. Имена, schema и descriptions берутся из локальных доверенных контрактов; MCP proxy не копирует враждебную metadata upstream. Caller выбирает только полезную группе текущей задачи: code search/context для кандидатов; symbol search → `symbols[].id` → references/call trace для статических связей; `related_code` для imports/similarity; `find_code_duplicates` для механических кандидатов; project-text для project docs/rules/skills; web discovery, public web read, classification и visual comparison — только когда задача этого требует.
 
@@ -206,6 +206,18 @@ Codex можно настроить как удалённый MCP-клиент �
 Каждый JWT проверяется по JWKS с алгоритмами `RS256` и `ES256`; заголовок `typ` должен быть `at+jwt` или `application/at+jwt` без учёта регистра. Проверяются также issuer, audience и срок действия. Отсутствующий или неверный токен получает `401`; разрешённый subject без подходящего scope получает `403 insufficient_scope`. Затем `sub` сопоставляется с allowlist `grants`, а операции пересекаются с scope токена. Grant определяет `rootIds`; клиент не может расширить их параметрами запроса. Отдельные субъекты получают раздельные principal identity и grants.
 
 На дату этого руководства независимая TLS-квитанция подтверждает daemon + CLI + Codex в двух изолированных сетевых namespace с тестовым issuer. Она проверила PKCE, TLS MCP-чтение, metadata discovery и отказ для неверных token claims, а также права subject/root/operation. Использовались тестовый issuer и контент из фикстур; публичный интернет и настоящий hosted ChatGPT не использовались. Внешний IdP и production deployment владельца остаются его ответственностью и не квалифицированы этой проверкой.
+
+## IP allowlist endpoint (source candidate `v0.1.11`)
+
+Source candidate добавляет `serve-remote-ip --config PATH --policy PATH` как отдельный режим удалённого MCP. В отличие от OAuth режима, он проверяет сетевой адрес по явным CIDR, затем выдаёт одному настроенному `principalId` только перечисленные `rootIds` и `operations`. Корни сверяются с runtime config; разрешённые операции — `read`, `index`, `web`, `classify`, `visual`. Runtime продолжает применять grants и root filtering до вызова capability. Providers и capabilities автоматически не включаются.
+
+Policy обязана содержать строго синтаксически корректные CIDR, непустые `allowedCidrs`, `allowedOrigins`, `rootIds` и `operations`, `principalId`, а также один `allowedHosts`, равный host заданного resource. Resource обязателен и должен быть canonical HTTPS URL без credentials, query или fragment и с непустым путём. Для предполагаемой конфигурации используется `https://startzorya.com/mcp/search`. Для стандартной конфигурации proxy публикует этот внешний адрес и направляет его на loopback `/mcp`. Это адрес предполагаемой настройки, не сведения о фактическом deployment.
+
+Daemon слушает только loopback. Он требует Host точно по resource. Если Origin передан, он должен быть единственным и входить в allowlist; отсутствие Origin допустимо, повторный или неразрешённый Origin отклоняется. Если прямой peer входит в `trustedProxyCidrs`, должен присутствовать ровно один корректный `X-Real-IP`, и его адрес проходит ту же allowlist. Доверяйте только адресам proxy под контролем владельца: forwarded value принимается только при таком peer. Запрос с любым `Authorization` отвергается; IP mode несовместим с bearer/OAuth и комбинированная конфигурация завершается ошибкой. Только в этом явном режиме MCP tools получают `noauth` security metadata. Это не отключает серверные root/operation grants и не утверждает, что клиентский UI или удалённый endpoint прошёл acceptance.
+
+Когда владелец развернул и проверил endpoint, целевой шаг настройки ChatGPT: Plugins → + → Add custom MCP server; Name: Zorya Search; Server URL: https://startzorya.com/mcp/search; Authentication: No authentication; Create. Для этого deployment target профиль должен предоставлять только source read для настроенного Search root, использовать lexical поиск и не содержать provider keys. Эти шаги описывают ожидаемую конфигурацию интерфейса, а не подтверждают его доступность или успешное подключение.
+
+Проверьте наличие `v0.1.11` на странице релиза и в registry до установки. Режим требует реальной настройки внешнего HTTPS proxy и проверки адресов/заголовков в целевой сети; этот source description не подтверждает публикацию, deployment, hosted ChatGPT UI или production acceptance.
 
 ## Исторические проверки baseline
 

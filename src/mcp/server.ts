@@ -254,6 +254,7 @@ export function createSearchMcpServer(
   ownerSignal?: AbortSignal,
   filterUnauthorizedTools = false,
   oauthScopesAdvertised = false,
+  noauthAdvertised = false,
 ) {
   const roots = new Set([...access.rootIds])
   const operationValues = [...access.operations]
@@ -290,8 +291,8 @@ export function createSearchMcpServer(
           description: contract.description,
           inputSchema: contract.schema as unknown as StandardSchemaWithJSON,
           annotations: contract.annotations,
-          ...(oauthScopesAdvertised
-            ? { _meta: { securitySchemes: [{ type: 'oauth2', scopes: requiredOperations.map((operation) => `zorya:${operation}`) }] } }
+          ...(oauthScopesAdvertised || noauthAdvertised
+            ? { _meta: { securitySchemes: oauthScopesAdvertised ? [{ type: 'oauth2', scopes: requiredOperations.map((operation) => `zorya:${operation}`) }] : [{ type: 'noauth' }] } }
             : {}),
         },
         async (input, ctx) => {

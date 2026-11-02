@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.1.11 source candidate
+
+This source candidate adds `serve-remote-ip --config PATH --policy PATH`, an explicit IP/CIDR-allowlisted MCP mode on the loopback daemon. The strict policy binds a canonical public HTTPS resource URL and exact Host, requires allowed origins, and grants a principal explicit roots and operations. Optional trusted proxy CIDRs enable a single `X-Real-IP` value; bearer/OAuth and IP mode cannot be combined. MCP tool metadata advertises `noauth` only in this explicit mode; server-side grants and root filtering remain active. No provider or capability is enabled automatically.
+
+An example public resource address is `https://startzorya.com/mcp/search`, intended to be mapped by an owner-managed HTTPS proxy to loopback `/mcp`. This candidate text does not establish npm/GitHub publication, production deployment, ChatGPT UI support, or production endpoint acceptance. Check the release page and registry for availability.
+
 ## 0.1.10 — 2026-11-02
 
-Published to npm on 2026-11-02 and available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). npm `next` points to `0.1.10`; `latest` intentionally remains `0.1.9`.
+Published to npm on 2026-11-02 and available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). At that publication date, npm `next` pointed to `0.1.10`; `latest` intentionally remained `0.1.9`.
 
 - Add typed capability availability and grant reasons, plus trusted task-specific MCP tool guidance.
 - Add incremental `configure` roles for project text, public web reading, Brave discovery, visual retrieval, code embeddings, project-text embeddings, and Jev classification. Setup asks for consent, keeps secrets in the local hidden terminal or explicit env reference, and never enables providers automatically.

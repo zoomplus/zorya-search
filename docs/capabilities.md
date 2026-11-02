@@ -1,6 +1,6 @@
 # Возможности и границы версий
 
-Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9` и описывает опубликованный prerelease `v0.1.10` пакета `zorya-search`. npm dist-tag `next` указывает на `0.1.10`, а `latest` остаётся на `0.1.9`; релиз опубликован [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10).
+Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9`, описывает опубликованный prerelease `v0.1.10` и отдельно отмечает source candidate `v0.1.11`. На дату публикации 2026-11-02 npm dist-tag `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`; опубликованный prerelease доступен [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Для candidate проверьте страницу релиза и registry.
 
 ## Возможности
 
@@ -20,8 +20,9 @@ Search предоставляет инструменты существующе�
 | SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation |
 | Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
 | Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля |
+| IP/CIDR allowlist для удалённого MCP с явными Host/Origin и principal/root/operation grants | Нет | Нет | Нет | Source candidate `v0.1.11`: CLI `serve-remote-ip`; loopback daemon, optional trusted-proxy `X-Real-IP`; не комбинируется с bearer/OAuth |
 
-Устанавливайте опубликованную версию `zorya-search@0.1.10` явно; команда приведена в [README](../README.md#release-availability). См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
+Для подтверждённой публикации устанавливайте `zorya-search@0.1.10` явно; команда приведена в [README](../README.md#release-availability). Candidate `v0.1.11` не становится доступной по одному этому описанию. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 

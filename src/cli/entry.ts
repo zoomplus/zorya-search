@@ -25,6 +25,7 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "../package-version.js";
 import { JEV_DECISIONS_MODEL } from "../providers/decisions.js";
 import { parseResultPresentation } from "../mcp/result-presentation.js";
 import { configureSearchCapability } from "./configure.js";
+import { parseRemoteIpPolicy } from "../daemon/remote-ip.js";
 
 const CLI_VERSION = PACKAGE_VERSION;
 const cliEntryPath = fileURLToPath(import.meta.url);
@@ -45,6 +46,7 @@ const help = `Zorya Search — локальный поиск по коду и и
   text-read      прочитать диапазон документа (--path ПУТЬ)
   serve          запустить владельца службы в foreground
   serve-remote   запустить OAuth-защищённый HTTP MCP endpoint в foreground
+  serve-remote-ip запустить HTTP MCP endpoint с IP allowlist без bearer/OAuth
   mcp            подключить stdio MCP к общей локальной службе
   client-config  вывести команду подключения Codex и JSON для совместимого клиента
   root-add       добавить разрешённый корень в конфигурацию
@@ -53,6 +55,8 @@ const help = `Zorya Search — локальный поиск по коду и и
 
 Для serve-remote задайте --config ПУТЬ runtime-конфигурации и --policy ПУТЬ JSON-политики.
 Служба слушает только loopback; публичный TLS завершается на настроенном владельцем proxy.
+Для serve-remote-ip задайте --config ПУТЬ и --policy ПУТЬ JSON-политики с CIDR, Host, Origin, principalId, rootIds и operations.
+Политика должна явно задавать публичный HTTPS resource с непустым путём; TLS завершается на настроенном владельцем proxy.
 
 Параметры: --config ПУТЬ, --policy ПУТЬ, --root ПУТЬ, --query ТЕКСТ, --mode lexical|hybrid, --background
   mcp и client-config: --result-presentation legacy|structured (по умолчанию legacy)
@@ -452,6 +456,7 @@ async function main() {
     'text-search': ['config', 'root-id', 'query', 'mode', 'kind', 'limit', 'max-chars'],
     'text-read': ['config', 'root-id', 'path', 'line-start', 'line-end', 'snapshot'],
     "serve-remote": ["config", "policy"],
+    "serve-remote-ip": ["config", "policy"],
     "client-config": ["config", "result-presentation"],
     doctor: ["config"],
     "root-add": ["config", "root-id", "root", "watch", "watch-interval-ms"],
@@ -540,6 +545,33 @@ async function main() {
       });
     } finally {
       try { await daemon.close() } finally { await authorize.close() }
+    }
+    return;
+  }
+  if (command === "serve-remote-ip") {
+    const policyPath = resolve(get(opts, "policy"));
+    const policyStat = await lstat(policyPath).catch(() => undefined);
+    if (!policyStat?.isFile() || policyStat.size > 262_144) throw new Error("REMOTE_POLICY_FILE_INVALID");
+    const loadedRuntime = await readConfig(configPath);
+    const policy = parseRemoteIpPolicy(JSON.parse(await readFile(policyPath, "utf8")), loadedRuntime.config.roots.map((root) => root.id));
+    const daemon = await startSearchDaemon({
+      config: loadedRuntime.config,
+      configDir: loadedRuntime.configDir,
+      host: "127.0.0.1",
+      port: policy.port,
+      allowedHosts: policy.allowedHosts,
+      allowedOrigins: policy.allowedOrigins,
+      ipAccessPolicy: policy,
+    });
+    try {
+      stdout.write(JSON.stringify({ event: "ready", host: daemon.host, port: daemon.port, resource: policy.resource }) + "\n");
+      await new Promise<void>((resolveSignal) => {
+        const stop = () => { void daemon.close().then(resolveSignal, resolveSignal); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+    } finally {
+      await daemon.close();
     }
     return;
   }

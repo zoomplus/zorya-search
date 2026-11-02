@@ -1,6 +1,6 @@
 # CLI Zorya Search
 
-CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Опубликованный prerelease `v0.1.10` добавляет инкрементальную команду `configure` для существующего профиля и поле `mcpReconnectRequired` в её receipt; structured MCP presentation остаётся opt-in, `legacy` — default. npm dist-tag `next` указывает на эту версию, а `latest` остаётся на `0.1.9`. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
+CLI предоставляет команды для локальной настройки, индексации и поиска, а также MCP stdio-вход к общему локальному владельцу базы. Пакет устанавливает исполняемую команду `zorya-search`; после сборки она находится в `dist/cli/entry.js`. Опубликованный prerelease `v0.1.10` добавляет инкрементальную команду `configure` для существующего профиля и поле `mcpReconnectRequired` в её receipt; structured MCP presentation остаётся opt-in, `legacy` — default. На дату её публикации 2026-11-02 npm dist-tag `next` указывал на эту версию, а `latest` оставался на `0.1.9`. Предыдущий Jev/reuse интерфейс описан в [руководстве Jev](jev-classification.md).
 
 ## Быстрый старт
 
@@ -110,8 +110,37 @@ CLI не проверяет provider key сетевым вызовом и не �
 
 Каталог владельца и БД должны располагаться вне индексируемых корней. Не копируйте их в проект. Сохраняйте резервную копию конфигурации и отдельную резервную копию каталога данных; восстановление выполняйте при остановленной службе, проверяя соответствие профиля/корня. CLI не очищает старые индексы и не удаляет неизвестные lock-файлы.
 
-`mcp` подключает существующий локальный MCP-клиент к владельцу службы. `serve-remote --config PATH --policy PATH` (`v0.1.1`) запускает OAuth-защищённый MCP endpoint на loopback; внешний TLS proxy должен опубликовать его по policy resource URL. См. [полную настройку remote OAuth](mcp.md#удалённый-oauth-endpoint-v011). Она требует внешнего OIDC-совместимого провайдера входа, подписывающего JWT access tokens, и не является встроенной ChatGPT авторизацией.
+`mcp` подключает существующий локальный MCP-клиент к владельцу службы. `serve-remote-ip --config PATH --policy PATH` — команда source candidate `v0.1.11` для отдельного IP/CIDR режима; см. раздел ниже. `serve-remote --config PATH --policy PATH` (`v0.1.1`) запускает OAuth-защищённый MCP endpoint на loopback; внешний TLS proxy должен опубликовать его по policy resource URL. См. [полную настройку remote OAuth](mcp.md#удалённый-oauth-endpoint-v011). Она требует внешнего OIDC-совместимого провайдера входа, подписывающего JWT access tokens, и не является встроенной ChatGPT авторизацией.
 
+
+## IP-allowlist MCP (source candidate `v0.1.11`)
+
+Candidate добавляет команду `serve-remote-ip --config PATH --policy PATH`. После подтверждения публикации установите точную версию и запустите владельца:
+
+```sh
+npm install --save-exact zorya-search@0.1.11
+npx --yes zorya-search@0.1.11 serve-remote-ip --config /etc/zorya-search/runtime.json --policy /etc/zorya-search/ip-policy.json
+```
+
+Она читает runtime-конфигурацию и отдельную строгую JSON policy, затем запускает MCP endpoint на `127.0.0.1` с внутренним путём `/mcp`. Policy требует canonical HTTPS `resource` с непустым путём (пример целевого адреса — `https://startzorya.com/mcp/search`), соответствующий единственный `allowedHosts`, непустые `allowedOrigins`, непустой список `allowedCidrs`, `principalId`, подмножество существующих `rootIds` и операции из `read`, `index`, `web`, `classify`, `visual`. `trustedProxyCidrs` обязателен как массив; оставьте его пустым, если backend напрямую видит клиента. Если соединение приходит от доверенного proxy, сервер требует один корректный `X-Real-IP`. Не задавайте широкий trusted CIDR.
+
+Например, это только форма policy; замените значения своей конфигурацией и проверьте её до запуска:
+
+```json
+{
+  "resource": "https://startzorya.com/mcp/search",
+  "allowedHosts": ["startzorya.com"],
+  "allowedCidrs": ["203.0.113.0/24"],
+  "trustedProxyCidrs": [],
+  "allowedOrigins": ["https://client.example"],
+  "principalId": "client-a",
+  "rootIds": ["project"],
+  "operations": ["read"],
+  "port": 18783
+}
+```
+
+В этом явном режиме запросы с заголовком `Authorization` отклоняются; OAuth/bearer mode нельзя включить одновременно. MCP инструменты получают noauth security metadata только в IP режиме, но root и operation grants всё равно применяются сервером. Команда сама не включает providers или capabilities. Внешний proxy должен публиковать предполагаемый resource URL и направлять `/mcp/search` на loopback `/mcp`; код и документация не доказывают production deployment. Проверьте release page и registry для доступности candidate.
 
 ## Удалённая OAuth-служба (`v0.1.1`)
 

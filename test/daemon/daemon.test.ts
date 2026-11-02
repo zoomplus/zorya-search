@@ -198,7 +198,7 @@ test('loopback daemon serves real negotiated MCP clients and isolates root grant
     }
     const modern = await makeClient('auto', alphaToken)
     assert.equal(installedManifest.name, 'zorya-search')
-    assert.equal(installedManifest.version, '0.1.10')
+    assert.equal(installedManifest.version, '0.1.11')
     assert.equal(modern.getServerVersion()?.version, installedManifest.version)
     const listed = await modern.listTools()
     assert.equal(listed.tools.length, 19)
