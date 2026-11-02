@@ -14,13 +14,15 @@ GitHub-аккаунт для прямого скачивания не нужен
 
 ### Linux и macOS
 
-Скачай оба файла с указанной выше страницы и проверь единственную строку checksum:
+Выполняй оба блока в одном терминале, чтобы сохранить переменные. Скачай оба файла с указанной выше страницы и проверь единственную строку checksum:
 
 ```sh
-PACKAGE_TARBALL="$PWD/zorya-search-0.1.11.tgz"
+PROJECT_DIR="$(pwd -P)"
+DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zorya-search-0.1.11.XXXXXX")"
+PACKAGE_TARBALL="$DOWNLOAD_DIR/zorya-search-0.1.11.tgz"
 curl -fL 'https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/zorya-search-0.1.11.tgz' -o "$PACKAGE_TARBALL"
-curl -fL 'https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/SHA256SUMS' -o "$PWD/SHA256SUMS"
-grep '  zorya-search-0.1.11.tgz$' "$PWD/SHA256SUMS" | shasum -a 256 -c -
+curl -fL 'https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/SHA256SUMS' -o "$DOWNLOAD_DIR/SHA256SUMS"
+grep '  zorya-search-0.1.11.tgz$' "$DOWNLOAD_DIR/SHA256SUMS" | (cd "$DOWNLOAD_DIR" && shasum -a 256 -c -)
 ```
 
 После успешной проверки установи пакет в отдельный prefix пользователя и проверь фактическую версию:
@@ -31,17 +33,23 @@ mkdir -p "$NPM_PREFIX"
 npm install --prefix "$NPM_PREFIX" "$PACKAGE_TARBALL"
 SEARCH_CLI="$NPM_PREFIX/node_modules/.bin/zorya-search-local"
 "$SEARCH_CLI" --version
+rm -- "$PACKAGE_TARBALL" "$DOWNLOAD_DIR/SHA256SUMS"
+rmdir -- "$DOWNLOAD_DIR"
+cd "$PROJECT_DIR"
 ```
 
 В Linux вместо `shasum` можно использовать `sha256sum --check -` с той же checksum-строкой. На macOS можно сравнить результат `shasum -a 256 "$PACKAGE_TARBALL"` с опубликованным digest.
 
 ### Windows PowerShell
 
-Скачай asset по проверенной публичной ссылке, затем укажи путь и опубликованный SHA-256:
+Выполняй блоки в одной PowerShell-сессии, чтобы сохранить переменные. Скачай asset по проверенной публичной ссылке и проверь его checksum:
 
 ```powershell
-$PackageTarball = Join-Path $PWD 'zorya-search-0.1.11.tgz'
-$ChecksumFile = Join-Path $PWD 'SHA256SUMS'
+$ProjectDir = (Get-Location).Path
+$DownloadDir = Join-Path $env:TEMP ('zorya-search-0.1.11-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $DownloadDir | Out-Null
+$PackageTarball = Join-Path $DownloadDir 'zorya-search-0.1.11.tgz'
+$ChecksumFile = Join-Path $DownloadDir 'SHA256SUMS'
 $ReleaseBase = 'https://github.com/zoomplus/zorya-search/releases/download/v0.1.11'
 Invoke-WebRequest "$ReleaseBase/zorya-search-0.1.11.tgz" -OutFile $PackageTarball
 Invoke-WebRequest "$ReleaseBase/SHA256SUMS" -OutFile $ChecksumFile
@@ -59,6 +67,9 @@ New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
 npm install --prefix $NpmPrefix $PackageTarball
 $SearchCli = Join-Path $NpmPrefix 'node_modules\.bin\zorya-search-local.cmd'
 & $SearchCli --version
+Remove-Item -LiteralPath $PackageTarball, $ChecksumFile -Force
+Remove-Item -LiteralPath $DownloadDir -Force
+Set-Location -LiteralPath $ProjectDir
 ```
 
 Сравни версию с тем же asset, который ты проверил. Не включай `%LOCALAPPDATA%` в config path: state directory по умолчанию уже находится там. ACL пользовательского каталога должна ограничивать доступ к приватным данным.
@@ -97,7 +108,7 @@ $ConfigPath = Join-Path $env:APPDATA 'Zorya\Search\local.json'
 
 Можно дать агенту один запрос на установку и проверку. Адреса ниже закреплены за версией; агент должен сначала скачать checksum-файл и подтвердить доступность обоих assets:
 
-> Установи `zorya-search-local` версии `0.1.11` из публичного архива https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/zorya-search-0.1.11.tgz. Сначала загрузи SHA256SUMS с https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/SHA256SUMS, проверь доступность обоих файлов и SHA-256 архива; при 404 или несовпадении остановись. Установи архив в отдельный пользовательский npm prefix без общей global-установки. Создай config через `zorya-search-local setup --config <PRIVATE_CONFIG_PATH>` вне проекта; запусти `client-config`, сохрани копию активного Codex config.toml и добавь только `[mcp_servers.zorya-search-local]`, сохранив остальные записи и настройки. Не меняй model, approval, sandbox, provider profile или файлы проекта. Перезапусти Codex из текущей папки, вызови `doctor` и `codex mcp list`, затем проверь реальный Search MCP через `capabilities`, `search_code` и `read_source`: сообщи относительный source path, snapshot/workspace identity и SHA-256 прочитанного файла, не цитируя содержимое. Создай две временные Git fixture-папки вне проекта с одинаковым `src/same.ts`; закоммить начальное состояние, измени tracked файл без commit, добавь untracked файл и удали другой tracked файл. Проверь поиск/чтение в обеих папках через `-C`, сравни каждый результат с заранее известным локальным hash и проверь отсутствие межпапочного смешения. Затем внеси ещё одну незакоммиченную правку и подтверди обновление snapshot без ручного index-вызова. Удали только созданные для проверки fixture-файлы и принадлежащие тесту owner-процессы после подтверждённой остановки. Верни версию, реальные MCP результаты и hashes, workspace identities и точные файлы конфигурации, которые изменил.
+> Установи `zorya-search-local` версии `0.1.11` из публичного архива https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/zorya-search-0.1.11.tgz. Сначала загрузи SHA256SUMS с https://github.com/zoomplus/zorya-search/releases/download/v0.1.11/SHA256SUMS, проверь доступность обоих файлов и SHA-256 архива; при 404 или несовпадении остановись. Установи архив в отдельный пользовательский npm prefix без общей global-установки. Выбери приватный config path вне workspace (например, `~/.config/zorya-search/local.json` на POSIX или `%APPDATA%\Zorya\Search\local.json` в PowerShell); если такой config уже есть, сначала проверь, что он принадлежит этому устройству и безопасен для повторного использования, иначе создай новый через `zorya-search-local setup`. Запусти `client-config`, сохрани копию активного Codex config.toml и добавь только `[mcp_servers.zorya-search-local]`, сохранив остальные записи и настройки. Не меняй model, approval, sandbox, provider profile или реальные файлы проекта. Перезапусти Codex из текущей папки, вызови `doctor` и `codex mcp list`, затем проверь реальный Search MCP через `capabilities`, `search_code` и `read_source`: сообщи относительный source path, snapshot/workspace identity и SHA-256 прочитанного файла, не цитируя содержимое. Создай две временные Git fixture-папки вне проекта с одинаковым `src/same.ts`; закоммить начальное состояние, измени tracked файл без commit, добавь untracked файл и удали другой tracked файл. Проверь поиск/чтение в обеих папках через `-C`, сравни каждый результат с заранее известным локальным hash и проверь отсутствие межпапочного смешения. Затем внеси ещё одну незакоммиченную правку и подтверди обновление snapshot без ручного index-вызова. Удали только созданные для проверки fixture-файлы и принадлежащие тесту owner-процессы после подтверждённой остановки. Верни версию, реальные MCP результаты и hashes, workspace identities и точные конфигурационные файлы, которые изменил.
 
 ## Проверка двух папок и незакоммиченных правок
 
