@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -15,7 +16,9 @@ const requiredStoragePackages = {
   pg: '8.16.3',
 }
 let ownerMayBeRunning = false
+let localOwnerMayBeRunning = false
 let buildOutputOwned = false
+let preserveConsumer = false
 
 function findNpmCli() {
   const candidates = [process.env.npm_execpath]
@@ -48,9 +51,9 @@ function runNpm(args) {
   })
 }
 
-function runCli(entry, args) {
+function runCli(entry, args, cwd = consumer) {
   return execFileSync(process.execPath, [entry, ...args], {
-    cwd: consumer,
+    cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   })
@@ -102,9 +105,13 @@ try {
 
   const entry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'cli', 'entry.js')
   const bridgeEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'bridge', 'entry.js')
+  const localEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'local', 'entry.js')
   const appRoot = join(consumer, 'node_modules', 'zorya-search')
   const packageManifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
   assert.equal(packageManifest.bin?.['zorya-search-bridge'], './dist/bridge/entry.js')
+  assert.equal(packageManifest.bin?.['zorya-search-local'], './dist/local/entry.js')
+  for (const path of ['docs/local-workspace.md', 'docs/install-local-agent.md'])
+    assert.ok(existsSync(join(appRoot, path)), `${path} must be included in the packed package`)
   for (const path of ['dist/bridge/entry.js', 'dist/bridge/client-api.js', 'dist/bridge/server-api.js'])
     assert.ok(existsSync(join(appRoot, path)), `${path} must be included in the packed package`)
   for (const path of ['dist/bridge/client-api.js', 'dist/bridge/server-api.js'])
@@ -120,6 +127,12 @@ try {
     cwd: consumer,
     encoding: 'utf8',
   }).trim(), packageManifest.version)
+  assert.equal(execFileSync(process.execPath, [npmCli, 'exec', '--offline', '--no', '--', 'zorya-search-local', '--version'], {
+    cwd: consumer,
+    encoding: 'utf8',
+  }).trim(), packageManifest.version)
+  assert.equal(runCli(localEntry, ['--version']).trim(), packageManifest.version)
+  runCli(localEntry, ['--help'])
   const clientConfig = JSON.parse(runCli(entry, ['client-config']))
   assert.equal(clientConfig.registry.command, 'npx')
   assert.deepEqual(clientConfig.registry.args, [
@@ -222,7 +235,88 @@ try {
   runNpm(['ci', '--omit=optional', '--no-audit', '--no-fund'])
   assertStoragePackagesAreRegularDependencies()
   exerciseInstalledStorage()
+
+  const localRoot = join(consumer, 'local-workspace')
+  const localConfigDir = join(consumer, 'local-config')
+  const localConfig = join(localConfigDir, 'client.json')
+  const localState = join(consumer, 'local-state')
+  mkdirSync(localRoot)
+  mkdirSync(localConfigDir, { mode: 0o700 })
+  const localSource = 'export const localSmokeNeedle = "zorya-installed-local-smoke-needle"\n'
+  writeFileSync(join(localRoot, 'local-smoke.ts'), localSource)
+  runCli(localEntry, ['setup', '--config', localConfig], localRoot)
+  const localSettings = JSON.parse(readFileSync(localConfig, 'utf8'))
+  localSettings.stateDir = localState
+  writeFileSync(localConfig, `${JSON.stringify(localSettings)}\n`)
+  chmodSync(localConfig, 0o600)
+  assert.equal(JSON.parse(runCli(localEntry, ['doctor', '--config', localConfig], localRoot)).owner, 'missing')
+  const localDescriptors = JSON.parse(runCli(localEntry, ['client-config', '--config', localConfig], localRoot))
+  assert.equal(localDescriptors.generic.mcpServers['zorya-search-local'].args.at(-3), 'mcp')
+  assert.equal(localDescriptors.generic.mcpServers['zorya-search-local'].args.at(-2), '--config')
+  assert.equal(localDescriptors.generic.mcpServers['zorya-search-local'].args.at(-1), localConfig)
+
+  const requireInstalled = createRequire(join(appRoot, 'package.json'))
+  const [installedClient, installedStdio] = await Promise.all([
+    import(pathToFileURL(requireInstalled.resolve('@modelcontextprotocol/client')).href),
+    import(pathToFileURL(requireInstalled.resolve('@modelcontextprotocol/client/stdio')).href),
+  ])
+  const LocalClient = installedClient.Client
+  const StdioClientTransport = installedStdio.StdioClientTransport
+  const localClient = new LocalClient({ name: 'zorya-installed-local-smoke', version: packageManifest.version })
+  const localTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: [localEntry, 'mcp', '--config', localConfig],
+    cwd: localRoot,
+    env: { ...process.env },
+    stderr: 'pipe',
+  })
+  let localStderr = ''
+  localTransport.stderr?.setEncoding('utf8').on('data', (chunk) => { localStderr += chunk })
+  try {
+    localOwnerMayBeRunning = true
+    await localClient.connect(localTransport)
+    const conversationId = randomUUID()
+    const nativeMeta = { 'x-codex-turn-metadata': { thread_id: conversationId }, threadId: conversationId }
+    const capabilities = await localClient.callTool({ name: 'capabilities', arguments: {}, _meta: nativeMeta })
+    assert.equal(capabilities.isError, undefined, localStderr)
+    const searched = await localClient.callTool({
+      name: 'search_code',
+      arguments: { rootId: 'workspace', query: 'zorya-installed-local-smoke-needle', mode: 'lexical' },
+      _meta: nativeMeta,
+    })
+    assert.equal(searched.isError, undefined, localStderr)
+    const searchData = searched.structuredContent
+    assert.equal(searchData.hits?.[0]?.path, 'local-smoke.ts')
+    const snapshotId = searchData.identity?.snapshotId
+    assert.equal(typeof snapshotId, 'string')
+    const read = await localClient.callTool({
+      name: 'read_source',
+      arguments: { rootId: 'workspace', path: 'local-smoke.ts', snapshotId },
+      _meta: nativeMeta,
+    })
+    assert.equal(read.isError, undefined, localStderr)
+    assert.equal(read.structuredContent.text, localSource)
+    assert.equal(read.structuredContent.contentHash, createHash('sha256').update(localSource, 'utf8').digest('hex'))
+    assert.equal(read.structuredContent.snapshotId, snapshotId)
+    assert.equal(read._meta['zorya-search/local'].conversationId, conversationId)
+    assert.equal(read._meta['zorya-search/local'].origin, 'current_local_workspace')
+  } finally {
+    await localClient.close().catch(() => undefined)
+  }
+  runCli(localEntry, ['stop', '--config', localConfig], localRoot)
+  localOwnerMayBeRunning = false
 } finally {
+  if (localOwnerMayBeRunning) {
+    const localEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'local', 'entry.js')
+    try {
+      runCli(localEntry, ['stop', '--config', join(consumer, 'local-config', 'client.json')], join(consumer, 'local-workspace'))
+      localOwnerMayBeRunning = false
+    } catch (error) {
+      preserveConsumer = true
+      console.error(`Smoke local owner shutdown was not confirmed; retaining ${consumer}`)
+      throw new Error(`SMOKE_LOCAL_OWNER_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
+    }
+  }
   if (ownerMayBeRunning) {
     const installedEntry = join(consumer, 'node_modules', 'zorya-search', 'dist', 'cli', 'entry.js')
     try {
@@ -234,7 +328,7 @@ try {
       throw new Error(`SMOKE_SERVICE_SHUTDOWN_UNCONFIRMED:${consumer}`, { cause: error })
     }
   }
-  rmSync(consumer, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  if (!preserveConsumer) rmSync(consumer, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   if (buildOutputOwned)
     rmSync(buildOutput, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }

@@ -47,6 +47,8 @@
     "docs/jev-classification.md",
     "docs/mcp-result-presentation.md",
     "docs/workspace-bridge.md",
+    "docs/local-workspace.md",
+    "docs/install-local-agent.md",
     "src/**/README.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -145,7 +147,8 @@
   },
   "bin": {
     "zorya-search": "./dist/cli/entry.js",
-    "zorya-search-bridge": "./dist/bridge/entry.js"
+    "zorya-search-bridge": "./dist/bridge/entry.js",
+    "zorya-search-local": "./dist/local/entry.js"
   },
   "repository": {
     "type": "git",

@@ -132,11 +132,12 @@ test('serve emits its actual loopback endpoint as a ready event and shuts down o
     assert.ok(Number.isInteger(event.port) && event.port > 0)
     assert.equal(stderr, '')
     child.kill('SIGTERM')
-    const [exitCode] = await once(child, 'exit') as [number | null]
-    assert.equal(exitCode, 0, stderr)
+    const [exitCode, exitSignal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
+    if (process.platform === 'win32') assert.equal(exitSignal, 'SIGTERM', stderr)
+    else assert.equal(exitCode, 0, stderr)
     assert.match(stdout, /"event":"ready"/u)
   } finally {
-    if (child?.exitCode === null) {
+    if (child?.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL')
       await Promise.race([once(child, 'exit'), new Promise((resolveWait) => setTimeout(resolveWait, 2_000))])
     }
