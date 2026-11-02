@@ -65,8 +65,9 @@ function stopOwnedService(entry, config) {
 function assertStoragePackagesAreRegularDependencies() {
   const appRoot = join(consumer, 'node_modules', 'zorya-search')
   const manifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
+  const sourceManifest = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8'))
   assert.equal(manifest.name, 'zorya-search')
-  assert.equal(manifest.version, '0.1.9')
+  assert.equal(manifest.version, sourceManifest.version)
   const requireFromSearch = createRequire(join(appRoot, 'package.json'))
   for (const [name, version] of Object.entries(requiredStoragePackages)) {
     assert.equal(manifest.dependencies?.[name], version, `${name} must be pinned as a regular dependency`)
