@@ -1,25 +1,25 @@
 # Начало работы с Zorya Search
 
-Это краткое руководство описывает source/package version `v0.1.9` с unscoped именем пакета `zorya-search`. Меняются только package identity и упаковка; runtime, API, CLI behavior, зависимости и defaults сохраняют `v0.1.8`, включая opt-in structured presentation MCP stdio с `legacy` по умолчанию. Перед установкой проверь, что release page и registry содержат точные tag и npm version.
+Это краткое руководство использует пакет `zorya-search@0.1.11`. Перед установкой проверьте точную версию и доступный asset на странице релиза и в npm registry. Для local Codex workspace bridge и конфигурации отдельного private server см. [workspace bridge guide](workspace-bridge.md).
 
 ## 1. Установи пакет preview
 
-Нужна Node.js `>=20.19.0`. После проверки точного tag `v0.1.9` и версии в registry установи пакет в проект, который будет владеть Search:
+Нужна Node.js `>=20.19.0`. После проверки версии `0.1.11` в registry установите пакет в проект, который будет владеть Search:
 
 ```sh
-npm install --save-exact zorya-search@0.1.9
+npm install --save-exact zorya-search@0.1.11
 npm ls zorya-search --depth=0
 ```
 
-Запускай эти version-pinned примеры только после проверки точного tag и версии в registry. Исторический архив `v0.1.8` сохраняет прежнее имя пакета; см. changelog.
+Запускайте version-pinned команды только после проверки версии в registry. Исторический архив `v0.1.8` сохраняет прежнее имя пакета; см. changelog.
 
 ## 2. Создай runtime config
 
 Для локального lexical поиска по коду и project-text выбери этот вариант первичного `setup`:
 
 ```sh
-npx --yes zorya-search@0.1.9 setup --root .
-npx --yes zorya-search@0.1.9 client-config
+npx --yes zorya-search@0.1.11 setup --root .
+npx --yes zorya-search@0.1.11 client-config
 ```
 
 Новый `setup` без provider flags создаёт `projectText: {}`: лексический поиск по коду и проектному тексту остаётся локальным, без моделей и облачных запросов. `client-config` только печатает варианты и не регистрирует клиента.
@@ -72,4 +72,4 @@ npm exec -- zorya-search client-config --result-presentation structured
 
 Brave discovery требует `--web-env`; чтение известного публичного URL использует отдельный web reader и `web` grant, без ключа Brave. `additionalQueries` выбирает вызывающая сторона, Search не генерирует их. Code, text, web, classifier и visual profiles независимы.
 
-Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации и локального владельца, не provider health. Удалённый MCP требует инфраструктуру владельца, HTTPS proxy и OAuth issuer; это не hosted-сервис Search. Подробности: [MCP](mcp.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).
+Doctor показывает `providerProbed: false` и `providerProbe: 'not-run'`: это проверка конфигурации и локального владельца, не provider health. Удалённый MCP требует инфраструктуру владельца и HTTPS proxy; OAuth mode также требует внешний issuer, а IP/CIDR mode требует явную policy. Подробности: [MCP](mcp.md), [CLI](cli.md), [workspace bridge](workspace-bridge.md), [project text и web discovery](project-text.md), [Jev](jev-classification.md) и [профили Voyage](voyage-profiles.md).

@@ -1,28 +1,29 @@
 # Возможности и границы версий
 
-Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.9`, описывает опубликованный prerelease `v0.1.10` и отдельно отмечает source candidate `v0.1.11`. На дату публикации 2026-11-02 npm dist-tag `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`; опубликованный prerelease доступен [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Для candidate проверьте страницу релиза и registry.
+Матрица сохраняет исторические поверхности `v0.1.6`–`v0.1.10` и описывает функции `v0.1.11`. На дату публикации `v0.1.10`, 2026-11-02, npm dist-tag `next` указывал на `0.1.10`, а `latest` оставался на `0.1.9`; prerelease доступен [на GitHub](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). Для установки проверяйте точную версию и asset на странице релиза и в registry.
 
 ## Возможности
 
 Search предоставляет инструменты существующей вызывающей стороне. Он не запускает собственных PM/Dev/QA-агентов, не меняет модель, prompt, память или workflow клиента, не исполняет найденные инструкции и не редактирует source.
 
-| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Опубликованный prerelease `v0.1.10` |
-| --- | --- | --- | --- |
-| Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да |
-| Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка кандидата | Да |
-| Точный поиск символов, статические references, ограниченный call/construct trace | Нет | Да | Да |
-| Необязательный `includeLogical` для доказанных статических связей | Нет | Да, выключен по умолчанию | Да |
-| Отдельный project-text index для `documentation`, `rules`, `skills` | Нет | Да, только при явном `projectText` config | Да |
-| Brave web discovery и чтение публичных страниц | Да | Да | Да |
-| Несколько discovery queries от вызывающей стороны | Нет | Да, до семи дополнительных запросов; Search их не формирует | Да |
-| Jev-backed classification и reuse context | Частично: существующая классификация | Да, shared Jev Decisions port; reuse opt-in | Да |
-| Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса | Да |
-| SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation |
-| Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` |
-| Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля |
-| IP/CIDR allowlist для удалённого MCP с явными Host/Origin и principal/root/operation grants | Нет | Нет | Нет | Source candidate `v0.1.11`: CLI `serve-remote-ip`; loopback daemon, optional trusted-proxy `X-Real-IP`; не комбинируется с bearer/OAuth |
+| Capability | Исторический архив `v0.1.6` | Историческая публикация `v0.1.7` | Историческая публикация `v0.1.10` | `v0.1.11` |
+| --- | --- | --- | --- | --- |
+| Кодовый поиск, чтение актуальных source ranges, ограниченный контекст | Да | Да | Да | Да |
+| Кандидаты дубликатов по точным и переименованным телам | Да | Да; это существующая возможность, не новинка релиза | Да | Да |
+| Точный поиск символов, статические references, ограниченный call/construct trace | Нет | Да | Да | Да |
+| Необязательный `includeLogical` для доказанных статических связей | Нет | Да, выключен по умолчанию | Да | Да |
+| Отдельный project-text index для `documentation`, `rules`, `skills` | Нет | Да, только при явном `projectText` config | Да | Да |
+| Brave web discovery и чтение публичных страниц | Да | Да | Да | Да |
+| Несколько discovery queries от вызывающей стороны | Нет | Да, до семи дополнительных запросов; Search их не формирует | Да | Да |
+| Jev-backed classification и reuse context | Частично: существующая классификация | Да, shared Jev Decisions port; reuse opt-in | Да | Да |
+| Bounded source-read recovery для неверного EOF range | Нет | Да, подсказка следующего identity-bound запроса | Да | Да |
+| SDK, CLI и локальный/remote MCP | Да | Да; регистрация и remote hosting остаются действиями владельца | То же; плюс opt-in CLI stdio result presentation | Да |
+| Structured presentation для локального MCP stdio | Нет | Нет | Да через `mcp`/`client-config --result-presentation structured`; default `legacy` | Да |
+| Typed availability/grant states, trusted task-specific guidance и consent-based incremental setup для семи ролей | Нет | Нет | Да; setup локальный для owner, требует reconnect после изменения профиля | Да |
+| IP/CIDR allowlist для удалённого MCP с явными Host/Origin и principal/root/operation grants | Нет | Нет | Нет | Да через `serve-remote-ip`; loopback daemon, optional trusted-proxy `X-Real-IP`; не комбинируется с bearer/OAuth |
+| Локальный Codex workspace bridge с явной передачей байтов и существующими MCP контрактами | Нет | Нет | Нет | Да; machine credential и client/CIDR policy для частного сервера |
 
-Для подтверждённой публикации устанавливайте `zorya-search@0.1.10` явно; команда приведена в [README](../README.md#release-availability). Candidate `v0.1.11` не становится доступной по одному этому описанию. См. [changelog](../CHANGELOG.md) и [исторический guide presentation](mcp-result-presentation.md).
+Для установки `v0.1.11` проверьте точный tag и package version в [registry и release assets](../README.md#release-availability). Таблица описывает интерфейсы версии, а не состояние сервиса или поддержку конкретного hosted клиента. См. [changelog](../CHANGELOG.md) и [guide presentation](mcp-result-presentation.md).
 
 ## Поиск по коду и структурные данные
 

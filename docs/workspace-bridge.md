@@ -1,6 +1,6 @@
 # Локальный bridge рабочего пространства
 
-> **Статус:** это описание source candidate `v0.1.11`. Кандидат не опубликован и не развёрнут. Публичный web-only target `https://startzorya.com/mcp/search` и частный workspace target `https://startzorya.com/mcp/search/workspace` — предполагаемые значения конфигурации, а не работающие адреса.
+`zorya-search@0.1.11` включает локальный workspace bridge и отдельный IP/CIDR режим удалённого MCP. Перед установкой проверьте точную версию и asset на странице релиза и в npm registry; фактическую доступность service endpoints подтвердит их владелец. Настроенный публичный target `https://startzorya.com/mcp/search` ограничен web-only доступом. Частный workspace target — `https://startzorya.com/mcp/search/workspace`.
 
 Bridge добавляет локальный stdio MCP-клиент к существующему Search через отдельный HTTPS endpoint владельца. Он сохраняет MCP-инструменты и их контракты Search; меняется транспорт и способ привязки проекта. Обычный ChatGPT не получает доступ к файлам компьютера и не получает копию частного проекта. Публичный web-only MCP target изолирован от частного workspace target.
 
@@ -11,7 +11,7 @@ Bridge добавляет локальный stdio MCP-клиент к суще�
 - Обычный ChatGPT не подключается к локальному bridge и не видит workspace-файлы. Если владелец отдельно настроит публичный endpoint, для него предполагается только keyless `web:{}` runtime profile и `web` grant: существующие публичные web-source инструменты, без `read`/`index` grants, project roots или данных проекта.
 - Частный workspace endpoint предполагает отдельные client ID, machine credential и CIDR allowlist. Он не реализует login, signup, OAuth или регистрацию пользователя. Профили provider и их ключи остаются на стороне Search runtime и не копируются клиенту.
 
-Внешние адреса выше требуют настройки владельцем TLS proxy и точного `resource`/Host. `serve` сам слушает только loopback; команда не создаёт публичный адрес, сертификат или proxy. Отдельный target не означает, что он развернут или доступен.
+Внешние адреса требуют настроенного владельцем TLS proxy и точного `resource`/Host. `zorya-search-bridge serve` сам слушает только loopback и всегда требует machine credential и явную client/CIDR policy; `web` grant не делает этот private режим анонимным. Публичный endpoint настраивается отдельно через `zorya-search serve-remote-ip`, с `web:{}` runtime profile и только `operations: ["web"]`; для этой конфигурации используется внутренний пустой root, без доступа к project files, `read` или `index` grants. Команда `serve` не создаёт внешний адрес, сертификат или proxy.
 
 ## Поток данных
 
@@ -31,7 +31,7 @@ Conversation identity также ограничивает контроль фо�
 
 ## Установка и клиентская конфигурация
 
-Требуется Node.js `>=20.19.0`. Команды относятся к source candidate и пока не устанавливаются из опубликованного npm-релиза. До публикации запускайте собранный entry-файл. После фактической публикации версии `0.1.11` и её проверки в registry установите её и зарегистрируйте stdio MCP:
+Требуется Node.js `>=20.19.0`. После проверки версии `0.1.11` в registry установите её и зарегистрируйте stdio MCP:
 
 ```sh
 npm install -g zorya-search@0.1.11
@@ -40,7 +40,7 @@ codex mcp add zorya-search-bridge -- zorya-search-bridge mcp --config /absolute/
 codex mcp list
 ```
 
-Если установка выполняется до доступности версии в registry, не используйте эту команду как подтверждение публикации: можно запустить собранный `entry.js` через `node /absolute/path/to/zorya-search/dist/bridge/entry.js ...`. `--config PATH` обязателен для `mcp`, `client-config` и `serve`. `client-config` проверяет конфигурацию и печатает generic MCP JSON, Codex TOML и descriptors для registry `npx --yes --package zorya-search@<package-version> zorya-search-bridge mcp --config PATH` и абсолютного Node.js entry текущей установки. Для Codex TOML скопируйте `codexToml` или `codexInstalledToml` в `~/.codex/config.toml`; при env credential используйте сгенерированный TOML, который передаёт только имя переменной через `env_vars`. Descriptor включает `startup_timeout_sec = 30` и `tool_timeout_sec = 900`, но не добавляет `cwd`, настройки модели, sandbox/approval или автоматическое разрешение. Не передавайте секрет через `codex mcp add --env`: используйте private credential file или выводимый TOML с именем env-переменной.
+`--config PATH` обязателен для `mcp`, `client-config` и `serve`. `client-config` проверяет конфигурацию и печатает generic MCP JSON, Codex TOML и descriptors для registry `npx --yes --package zorya-search@<package-version> zorya-search-bridge mcp --config PATH` и абсолютного Node.js entry текущей установки. Для Codex TOML добавьте соответствующий `mcp_servers` блок из `codexToml` или `codexInstalledToml` в существующий `~/.codex/config.toml`, сохранив остальные настройки; при env credential используйте сгенерированный TOML, который передаёт только имя переменной через `env_vars`. Descriptor включает `startup_timeout_sec = 30` и `tool_timeout_sec = 900`, но не добавляет `cwd`, настройки модели, sandbox/approval или правила подтверждения. `client-config` только выводит варианты: он не меняет текущие настройки Codex и не выдаёт разрешения инструментам. Не передавайте секрет через `codex mcp add --env`; используйте private credential file или TOML с именем env-переменной. Явные операции `index_repository`, `start_indexing`, `index_code_symbols` и `index_project_text` могут требовать разрешения в MCP policy клиента; пользователь управляет такими разрешениями согласно своей политике безопасности.
 
 Пример client config; замените endpoint, UUID и локальные пути значениями вашей установки:
 
@@ -64,7 +64,21 @@ codex mcp list
 node --input-type=module -e 'import { randomBytes, createHash } from "node:crypto"; import { writeFileSync } from "node:fs"; const token = randomBytes(32).toString("base64url"); writeFileSync(process.argv[1], token, { flag: "wx", mode: 0o600 }); console.log(createHash("sha256").update(token).digest("hex"));' /absolute/private/path/bridge-token
 ```
 
-Не открывайте, не печатайте и не передавайте raw credential в prompt, аргументах MCP или логе. На Windows установите эквивалентный ACL только для нужного пользователя; POSIX `mode` сам по себе не задаёт Windows permissions.
+Не открывайте, не печатайте и не передавайте raw credential в prompt, аргументах MCP или логе. На Windows пример локальных путей может выглядеть так:
+
+```json
+{
+  "schemaVersion": 1,
+  "endpoint": "https://startzorya.com/mcp/search/workspace",
+  "clientId": "<stable-client-uuid-for-this-device>",
+  "stateDir": "C:\\Users\\Alice\\AppData\\Local\\Zorya\\bridge-state",
+  "credential": { "kind": "file", "path": "C:\\Users\\Alice\\AppData\\Roaming\\Zorya\\bridge-token" },
+  "allowedDocumentPaths": [],
+  "excludedPaths": []
+}
+```
+
+Замените `Alice` и UUID своими значениями. Ограничьте ACL config, credential и state directory выбранной учётной записью Windows и администраторами, которым вы доверяете; проверьте ACL средствами Windows. POSIX `mode` сам по себе не задаёт Windows permissions.
 
 Без `allowedDocumentPaths` документы не передаются. Для документации, `.md`, `.mdx`, `.mdc` и разрешённых `.cursor/rules` путей задайте явный список; исходники кода остаются отдельными от project-text индекса. `excludedPaths` — дополнительные механические исключения, максимум 128 значений. Не добавляйте в allowlist секреты или настройки credentials. Известные secret patterns блокируются отдельно, но эта проверка не является полной гарантией обнаружения всех секретов.
 
@@ -100,4 +114,4 @@ node --input-type=module -e 'import { randomBytes, createHash } from "node:crypt
 
 Максимум одной передачи: 5 000 файлов, 1 000 000 байт на файл, 50 000 000 байт суммарно, 128 000 байт на chunk и до 5 391 chunks. Превышение лимитов или изменение исходников приводит к отказу; partial corpus не выдаётся как актуальный snapshot. Сам отзыв прежнего document allowlist не удаляет уже опубликованные server-side данные, и сохранённое состояние восстанавливается после перезапуска; текущие source-consuming calls для отозванных путей откажут. При следующей явной синхронизации опубликованное дерево может быть заменено актуальным разрешённым набором; это не обещание хранить историю snapshots. Центральный source mirror и база Search — данные сервера; bridge только читает текущую рабочую копию и не редактирует файлы проекта.
 
-Нативная проверка охватывала только Linux `codex-cli 0.163.0`: в двух изолированных запусках `-C` задавал различные cwd дочернему MCP процессу, а per-call native thread metadata приходила в настоящем `tools/call`. `roots/list` в проверенном клиенте не поддерживался. Это не подтверждает Codex Desktop, другие версии, Windows/macOS или поведение реального spawned subagent. Локальная компонентная фикстура связала MCP adapter, HTTP client, реальный HTTP server и PGlite; она не проверяла TLS proxy, production service или удалённый пользовательский deployment.
+Совместимость с MCP host зависит от его версии и локальной политики запуска. Конфигурация bridge не фиксирует `cwd`: запускайте клиент с выбранным workspace как текущим каталогом (для CLI-клиента используйте его штатный механизм выбора каталога, например `-C`). Перед рабочим использованием отдельно проверьте нужную ОС и MCP host; успех unit/component fixtures не подтверждает Windows, macOS, Codex Desktop, TLS proxy или удалённый deployment.

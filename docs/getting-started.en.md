@@ -1,25 +1,25 @@
 # Getting started with Zorya Search
 
-This guide describes source/package version `v0.1.9` with the unscoped package name `zorya-search`. The change is package identity and packaging only; it retains the `v0.1.8` runtime, APIs, CLI behavior, dependencies, and defaults, including opt-in structured MCP stdio presentation with `legacy` as default. Before installing, verify that the release page and npm registry list the exact `v0.1.9` tag and package version.
+This guide uses `zorya-search@0.1.11`. Before installing, check the exact version and available asset on the release page and in the npm registry. For the local Codex workspace bridge and its separate private server configuration, see the [workspace bridge guide](workspace-bridge.md).
 
 ## 1. Install the preview package
 
-Use Node.js `>=20.19.0`. After verifying the exact `v0.1.9` tag and registry version, install it in the project that will own Search:
+Use Node.js `>=20.19.0`. After verifying version `0.1.11` in the registry, install it in the project that will own Search:
 
 ```sh
-npm install --save-exact zorya-search@0.1.9
+npm install --save-exact zorya-search@0.1.11
 npm ls zorya-search --depth=0
 ```
 
-Run these pinned examples only after verifying the exact release tag and registry version. The historical `v0.1.8` archive retains its previous package identity; see the changelog.
+Run pinned commands only after verifying the registry version. The historical `v0.1.8` archive retains its previous package identity; see the changelog.
 
 ## 2. Create a runtime config
 
 For local lexical code search and project-text, choose this initial `setup` option:
 
 ```sh
-npx --yes zorya-search@0.1.9 setup --root .
-npx --yes zorya-search@0.1.9 client-config
+npx --yes zorya-search@0.1.11 setup --root .
+npx --yes zorya-search@0.1.11 client-config
 ```
 
 New `setup` without provider flags creates `projectText: {}`: lexical code and project-text search stay local, with no models or cloud requests. `client-config` only prints examples and does not register a client.
@@ -72,4 +72,4 @@ The earlier [`v0.1.7` release](https://github.com/zoomplus/zorya-search/releases
 
 Brave discovery requires `--web-env`; reading a known public URL uses the separate web reader and `web` grant, not the Brave key. `additionalQueries` is supplied by the caller; Search does not generate it. Code, project-text, web, classifier, and visual profiles are independent.
 
-Doctor reports `providerProbed: false` and `providerProbe: 'not-run'`: it checks configuration and local owner status, not provider health. Remote MCP requires infrastructure you operate, an HTTPS proxy, and an OAuth issuer; Search is not a hosted service. See [MCP](mcp.md), [project text and web discovery](project-text.md), [Jev](jev-classification.md), and [Voyage profiles](voyage-profiles.md) for details.
+Doctor reports `providerProbed: false` and `providerProbe: 'not-run'`: it checks configuration and local owner status, not provider health. Remote MCP requires infrastructure you operate and an HTTPS proxy; OAuth mode also requires an external issuer, while IP/CIDR mode requires an explicit policy. See [MCP](mcp.md), [CLI](cli.md), [workspace bridge](workspace-bridge.md), [project text and web discovery](project-text.md), [Jev](jev-classification.md), and [Voyage profiles](voyage-profiles.md) for details.

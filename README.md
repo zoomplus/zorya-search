@@ -18,32 +18,32 @@ Zorya Search lets an existing application or agent search an approved repository
 | Inspect structure | Exact symbol lookup, static references and call tracing, duplicate candidates, and opt-in logical context. Static evidence does not establish runtime behavior. |
 | Search project guidance | A separate, opt-in project-text index for documentation, rules, and skills. It does not share the code or knowledge namespace. |
 | Find public sources | Caller-selected Brave discovery queries and bounded page reading, when configured. Search does not generate extra queries. |
-| Integrate with a client | Node.js SDK, local stdio/loopback MCP, or an owner-hosted remote MCP endpoint with separately configured OAuth. |
+| Integrate with a client | Node.js SDK, local stdio/loopback MCP, public web-only remote MCP, or the private local Codex workspace bridge. |
 
 The code path is lexical unless the owner enables an embedding profile. Optional presets include code `voyageai/voyage-code-4` (1024 dimensions) with `voyageai/rerank-2.5-lite`, project text `voyageai/voyage-4-large` with separate document/query roles, and independent visual `voyageai/voyage-multimodal-3.5`. These are opt-in configurations, not defaults. Reranking only reorders candidates. Classification and reuse context use the pinned Jev model `typesafe/jev-1.14`; unsupported classifier models are rejected rather than silently substituted.
 
 ## Release availability
 
-Version **`0.1.10`** of `zorya-search` was published on npm on 2026-11-02 and is available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). At its 2026-11-02 publication, npm `next` pointed to `0.1.10` and `latest` intentionally remained `0.1.9`. This release adds trusted MCP capability availability and task-specific tool guidance, plus a consent-based `configure` command for seven independent roles. Agents can offer owner setup only when a needed capability is not configured; they do not enable it automatically or replace the caller. Public URL reading and local project-text lexical search need no provider key. Brave discovery uses a Brave Search key; Voyage and Jev model presets use an OpenRouter key. After a profile change, reconnect the MCP client and refresh its tool list and capabilities. Configure does not probe providers; restarting an already watch-enabled owner can resume its existing indexing policy. See the [MCP](docs/mcp.md), [CLI](docs/cli.md), and [client guidance](docs/agent-clients.md) guides for safe setup and limits.
+Version `0.1.10` was published on npm on 2026-11-02 and is available as the GitHub prerelease [`v0.1.10`](https://github.com/zoomplus/zorya-search/releases/tag/v0.1.10). At that publication date, npm `next` pointed to `0.1.10` and `latest` intentionally remained `0.1.9`. It added trusted MCP capability availability and task-specific tool guidance, plus a consent-based `configure` command for seven independent roles. Agents can offer owner setup only when a needed capability is not configured; they do not enable it automatically or replace the caller. Public URL reading and local project-text lexical search need no provider key. Brave discovery uses a Brave Search key; Voyage and Jev model presets use an OpenRouter key. After a profile change, reconnect the MCP client and refresh its tool list and capabilities. Configure does not probe providers; restarting an already watch-enabled owner can resume its existing indexing policy. See the [MCP](docs/mcp.md), [CLI](docs/cli.md), and [client guidance](docs/agent-clients.md) guides for safe setup and limits.
 
-Source candidate `v0.1.11` adds an explicit IP/CIDR allowlist mode for a remote MCP endpoint via `serve-remote-ip`. The daemon stays on loopback; the owner configures the HTTPS proxy, exact Host and Origin values, trusted proxy CIDRs if used, and principal/root/operation grants. This mode is separate from OAuth and rejects requests that also carry Authorization. The intended public target `https://startzorya.com/mcp/search` is web-only, with no project roots/data or project read/index grants; it is a configuration target, not evidence of a deployed endpoint. Check the release page and registry for availability. See the [MCP](docs/mcp.md) and [CLI](docs/cli.md) guides.
+Version `0.1.11` adds an explicit IP/CIDR allowlist mode for remote MCP via `serve-remote-ip`. The daemon stays on loopback; the owner configures the HTTPS proxy, exact Host and Origin values, trusted proxy CIDRs if used, and principal/root/operation grants. This mode is separate from OAuth and rejects requests that also carry Authorization. The configured public target `https://startzorya.com/mcp/search` is restricted to public web-source tools and a `web:{}` runtime profile with the `web` grant; it has no project files or project read/index grants. Check the release page and registry for version availability, and confirm service availability with its operator. See the [MCP](docs/mcp.md) and [CLI](docs/cli.md) guides.
 
-The same source candidate adds `zorya-search-bridge`, a local Codex stdio adapter for explicit workspace transfers to a separately configured private Search server. It does not change Search tools or grant ordinary ChatGPT access to local project files. The public web-only target `https://startzorya.com/mcp/search` and private workspace target `https://startzorya.com/mcp/search/workspace` are configuration targets only; neither is presented as deployed. See the [workspace bridge guide](docs/workspace-bridge.md). This candidate is not yet published to npm or GitHub.
+The same version adds `zorya-search-bridge`, a local Codex stdio adapter for explicit workspace transfers to a separately configured private Search server at `https://startzorya.com/mcp/search/workspace`. It preserves the existing Search tools and does not give ordinary ChatGPT access to local project files. The private server requires machine credentials and explicit client/CIDR grants. See the [workspace bridge guide](docs/workspace-bridge.md).
 
-These version-pinned commands install the published `0.1.10` release. They require Node.js `>=20.19.0`; see the [English](docs/getting-started.en.md) and [Russian](docs/getting-started.md) quickstarts.
+The version-pinned commands below use `0.1.11`; check the npm registry and release page for current availability before installing. They require Node.js `>=20.19.0`; see the [English](docs/getting-started.en.md) and [Russian](docs/getting-started.md) quickstarts.
 
 Install the exact version and create a first profile:
 
 ```sh
-npm install --save-exact zorya-search@0.1.10
-npx --yes zorya-search@0.1.10 setup --root .
-npx --yes zorya-search@0.1.10 client-config
+npm install --save-exact zorya-search@0.1.11
+npx --yes zorya-search@0.1.11 setup --root .
+npx --yes zorya-search@0.1.11 client-config
 ```
 
 `client-config` prints MCP registration instructions; it does not install or register the server in a client. The owner registers the chosen entry and grants access. Indexing is explicit unless the owner enables watch.
 ## SDK example
 
-This example uses lexical SDK APIs available in `zorya-search@0.1.10`, with source verification and duplicate candidates. Import from `zorya-search` and its subpaths. Keep the database outside the indexed repository.
+This example uses lexical SDK APIs available in `zorya-search@0.1.11`, with source verification and duplicate candidates. Import from `zorya-search` and its subpaths. Keep the database outside the indexed repository.
 
 ```js
 import { openEmbeddedDatabase } from 'zorya-search'
@@ -75,7 +75,7 @@ The lexical example makes no embedding-provider call. Search returns candidates;
 - [SDK](docs/sdk.md) · [CLI](docs/cli.md) · [MCP](docs/mcp.md)
 - [Project text and web discovery](docs/project-text.md)
 - [Agent client guidance](docs/agent-clients.md)
-- [Local workspace bridge source candidate](docs/workspace-bridge.md)
+- [Local workspace bridge](docs/workspace-bridge.md)
 - [Architecture](docs/architecture.md) · [Service flows](docs/service-flows.md)
 - [Jev classification and reuse](docs/jev-classification.md) · [Voyage profiles](docs/voyage-profiles.md)
 - [MCP result presentation and native evidence](docs/mcp-result-presentation.md)
