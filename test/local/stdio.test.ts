@@ -473,6 +473,7 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
       } catch { cleanupSafe = false }
     }
     process.chdir(originalCwd)
+    if (owners.size !== fixtures.length) cleanupSafe = false
     if (!frontendCleanupConfirmed) cleanupSafe = false
     if (cleanupSafe) await rm(parent, { recursive: true, force: true })
     else throw new Error(`LOCAL_GIT_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownersObserved: owners.size === fixtures.length, ownersDead: owners.size === fixtures.length && [...owners.values()].every((pid) => !processIsAlive(pid)) })}`)
