@@ -19,6 +19,44 @@ const entry = fileURLToPath(new URL('../../src/local/entry.ts', import.meta.url)
 const conversationOne = 'c19b5bf1-7dde-477c-a41e-048d829cdf04'
 const conversationTwo = 'd19b5bf1-7dde-477c-a41e-048d829cdf04'
 
+type TrackedStdioClient = {
+  client: Client
+  transport: StdioClientTransport
+  frontendPid?: number
+  stderr: () => string
+}
+
+function captureFrontendPid(transport: StdioClientTransport): number {
+  const pid = transport.pid
+  assert.ok(Number.isSafeInteger(pid) && pid! > 0, 'stdio frontend PID was unavailable before close')
+  return pid!
+}
+
+async function waitForDefinitelyDead(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  do {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH'
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+  } while (Date.now() < deadline)
+  return false
+}
+
+async function closeTrackedClient(record: TrackedStdioClient): Promise<void> {
+  const transportPid = record.transport.pid
+  const pid = record.frontendPid ?? (Number.isSafeInteger(transportPid) && transportPid! > 0 ? transportPid : undefined)
+  if (pid !== undefined) record.frontendPid = pid
+  let closeFailed = false
+  try { await record.client.close() } catch { closeFailed = true }
+  const frontendDead = pid !== undefined && await waitForDefinitelyDead(pid, 5_000)
+  if (closeFailed || pid === undefined || !frontendDead) {
+    throw new Error(`LOCAL_STDIO_FRONTEND_CLEANUP_UNCONFIRMED:${JSON.stringify({ closeFailed, pidObserved: pid !== undefined, frontendDead })}`)
+  }
+}
+
 function callMeta(threadId: string) {
   return { 'x-codex-turn-metadata': { thread_id: threadId }, threadId }
 }
@@ -222,7 +260,7 @@ test('two stdio clients share one detached workspace owner and retain separate n
   const config = { schemaVersion: 1, clientId: '741c63e3-edec-4868-b9ab-4ca4de737eba', stateDir, runtime: {} }
   await writeFile(configPath, JSON.stringify(config))
   await chmod(configPath, 0o600)
-  const makeClient = () => {
+  const makeClient = (): TrackedStdioClient => {
     const client = new Client({ name: 'local-two-process-test', version: '1.0.0' })
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -235,7 +273,7 @@ test('two stdio clients share one detached workspace owner and retain separate n
     transport.stderr?.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
     return { client, transport, stderr: () => stderr }
   }
-  const clients: Awaited<ReturnType<typeof makeClient>>[] = []
+  const clients: TrackedStdioClient[] = []
   let ownerPid: number | undefined
   let cleanupSafe = true
   try {
@@ -243,9 +281,10 @@ test('two stdio clients share one detached workspace owner and retain separate n
     clients.push(first)
     const second = makeClient()
     clients.push(second)
-    await Promise.all(clients.map(({ client, transport, stderr }) => client.connect(transport).catch((error: unknown) => {
-      throw new Error(`LOCAL_STDIO_CONNECT_FAILED:${stderr()}`, { cause: error })
-    })))
+    const connectResults = await Promise.allSettled(clients.map(({ client, transport }) => client.connect(transport)))
+    const failedConnect = connectResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failedConnect) throw new Error(`LOCAL_STDIO_CONNECT_FAILED:${clients.find((record, index) => connectResults[index]?.status === 'rejected')?.stderr?.() ?? ''}`, { cause: failedConnect.reason })
+    for (const record of clients) record.frontendPid = captureFrontendPid(record.transport)
     const [one, two] = await Promise.all([
       first.client.callTool({ name: 'capabilities', arguments: {}, _meta: callMeta(conversationOne) }),
       second.client.callTool({ name: 'capabilities', arguments: {}, _meta: callMeta(conversationTwo) }),
@@ -281,7 +320,8 @@ test('two stdio clients share one detached workspace owner and retain separate n
     assert.equal(first.transport.pid === second.transport.pid, false)
     assert.equal(first.transport.pid === ownerPid, false)
     assert.equal(second.transport.pid === ownerPid, false)
-    for (const { client } of clients) await client.close()
+    const closeResults = await Promise.allSettled(clients.map(closeTrackedClient))
+    assert.ok(closeResults.every((result) => result.status === 'fulfilled'), 'stdio frontend processes did not all exit after client close')
     clients.length = 0
     const stillReady = await inspectLocalOwner(config, parent)
     assert.equal(stillReady.state, 'ready')
@@ -302,21 +342,32 @@ test('two stdio clients share one detached workspace owner and retain separate n
     const updatedClient = makeClient()
     clients.push(updatedClient)
     await updatedClient.client.connect(updatedClient.transport)
+    updatedClient.frontendPid = captureFrontendPid(updatedClient.transport)
     const restarted = await updatedClient.client.callTool({ name: 'capabilities', arguments: {}, _meta: callMeta(conversationOne) })
     assert.equal(restarted.isError, undefined, updatedClient.stderr())
     const updatedOwner = await inspectLocalOwner(updatedConfig, parent)
     assert.equal(updatedOwner.state, 'ready')
     if (updatedOwner.state === 'ready') ownerPid = updatedOwner.pid
-    await updatedClient.client.close()
+    await closeTrackedClient(updatedClient)
     clients.length = 0
     await stopLocalOwner(configPath)
+    assert.ok(ownerPid !== undefined && await waitForDefinitelyDead(ownerPid, 5_000), 'detached owner PID was not confirmed dead after stop')
     ownerPid = undefined
   } finally {
-    for (const { client } of clients) await client.close().catch(() => undefined)
-    try { await stopLocalOwner(configPath, { timeoutMs: 5_000 }) } catch { cleanupSafe = false }
+    let frontendCleanupConfirmed = true
+    for (const record of clients) {
+      try { await closeTrackedClient(record) }
+      catch { frontendCleanupConfirmed = false }
+    }
+    try {
+      process.chdir(project)
+      await stopLocalOwner(configPath, { timeoutMs: 5_000 })
+      if (ownerPid !== undefined && !await waitForDefinitelyDead(ownerPid, 5_000)) cleanupSafe = false
+    } catch { cleanupSafe = false }
     process.chdir(originalCwd)
+    if (!frontendCleanupConfirmed) cleanupSafe = false
     if (cleanupSafe) await rm(parent, { recursive: true, force: true })
-    else throw new Error(`LOCAL_OWNER_CLEANUP_UNCONFIRMED:${parent}:${ownerPid ?? 'unknown'}`)
+    else throw new Error(`LOCAL_STDIO_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownerPidObserved: ownerPid !== undefined, ownerDead: ownerPid !== undefined && !processIsAlive(ownerPid) })}`)
   }
 })
 
@@ -331,8 +382,8 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
     { dir: join(parent, 'workspace-b'), current: 'export const marker = "B_TRACKED_CURRENT"\n', untracked: 'export const only = "B_UNTRACKED_CURRENT"\n', deleted: 'B_DELETED_OLD' },
   ]
   const config = { schemaVersion: 1, clientId, stateDir, runtime: {} }
-  const clients: Array<{ client: Client; transport: StdioClientTransport }> = []
-  const owners: number[] = []
+  const clients: TrackedStdioClient[] = []
+  const owners = new Map<string, number>()
   const workspaceIds: string[] = []
   let cleanupSafe = true
   try {
@@ -362,8 +413,10 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
       })
       let stderr = ''
       transport.stderr?.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+      const clientRecord: TrackedStdioClient = { client, transport, stderr: () => stderr }
+      clients.push(clientRecord)
       await client.connect(transport).catch((error: unknown) => { throw new Error(`LOCAL_GIT_CONNECT_FAILED:${stderr}`, { cause: error }) })
-      clients.push({ client, transport })
+      clientRecord.frontendPid = captureFrontendPid(transport)
       const threadId = i === 0 ? conversationOne : conversationTwo
       const searched = await client.callTool({
         name: 'search_code',
@@ -400,18 +453,28 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
       workspaceIds.push(localMeta!.workspaceId as string)
       const owner = await inspectLocalOwner(config, parent)
       assert.equal(owner.state, 'ready')
-      if (owner.state === 'ready') owners.push(owner.pid)
+      if (owner.state === 'ready') owners.set(fixture.dir, owner.pid)
     }
     assert.notEqual(workspaceIds[0], workspaceIds[1])
-    assert.notEqual(owners[0], owners[1])
+    assert.equal(owners.size, 2)
+    assert.notEqual(owners.get(fixtures[0]!.dir), owners.get(fixtures[1]!.dir))
   } finally {
-    for (const { client } of clients) await client.close().catch(() => undefined)
+    let frontendCleanupConfirmed = true
+    for (const record of clients) {
+      try { await closeTrackedClient(record) }
+      catch { frontendCleanupConfirmed = false }
+    }
     for (const fixture of fixtures) {
       process.chdir(fixture.dir)
-      try { await stopLocalOwner(configPath, { timeoutMs: 5_000 }) } catch { cleanupSafe = false }
+      try {
+        await stopLocalOwner(configPath, { timeoutMs: 5_000 })
+        const ownerPid = owners.get(fixture.dir)
+        if (ownerPid !== undefined && !await waitForDefinitelyDead(ownerPid, 5_000)) cleanupSafe = false
+      } catch { cleanupSafe = false }
     }
     process.chdir(originalCwd)
+    if (!frontendCleanupConfirmed) cleanupSafe = false
     if (cleanupSafe) await rm(parent, { recursive: true, force: true })
-    else throw new Error(`LOCAL_OWNER_CLEANUP_UNCONFIRMED:${parent}:${owners.join(',') || 'unknown'}`)
+    else throw new Error(`LOCAL_GIT_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownersObserved: owners.size === fixtures.length, ownersDead: owners.size === fixtures.length && [...owners.values()].every((pid) => !processIsAlive(pid)) })}`)
   }
 })
