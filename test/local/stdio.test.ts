@@ -76,9 +76,13 @@ test('stdio facade reports a pre-call cwd change as LOCAL_WORKSPACE_CHANGED', as
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   let handle: Awaited<ReturnType<typeof runLocalMcpStdio>> | undefined
   let ownerMayBeRunning = false
+  let ownerPid: number | undefined
+  let primaryFailure: unknown
+  let primaryFailed = false
   try {
     ownerMayBeRunning = true
     handle = await runLocalMcpStdio(configPath, { transport: serverTransport })
+    ownerPid = handle.ownerPid
     await client.connect(clientTransport)
     process.chdir(other)
     const result = await client.callTool({ name: 'capabilities', arguments: {}, _meta: callMeta(conversationOne) })
@@ -86,14 +90,29 @@ test('stdio facade reports a pre-call cwd change as LOCAL_WORKSPACE_CHANGED', as
     assert.match(result.content[0]?.type === 'text' ? result.content[0].text : '', /LOCAL_WORKSPACE_CHANGED/u)
     const provenance = (result._meta as Record<string, unknown> | undefined)?.['zorya-search/local'] as Record<string, unknown> | undefined
     assert.equal(provenance?.localVerification, 'failed_currentness')
+  } catch (error) {
+    primaryFailed = true
+    primaryFailure = error
   } finally {
     process.chdir(project)
-    await client.close().catch(() => undefined)
-    await handle?.close().catch(() => undefined)
-    if (ownerMayBeRunning) await stopLocalOwner(configPath, { timeoutMs: 5_000 })
+    let clientCloseConfirmed = true
+    let handleCloseConfirmed = true
+    let ownerExitConfirmed = !ownerMayBeRunning
+    try { await client.close() } catch { clientCloseConfirmed = false }
+    try { await handle?.close() } catch { handleCloseConfirmed = false }
+    if (ownerMayBeRunning) {
+      let stopConfirmed = false
+      try { await stopLocalOwner(configPath, { timeoutMs: 5_000 }); stopConfirmed = true }
+      catch { stopConfirmed = false }
+      ownerExitConfirmed = stopConfirmed && ownerPid !== undefined && await waitForDefinitelyDead(ownerPid, 5_000)
+    }
     process.chdir(originalCwd)
-    await rm(parent, { recursive: true, force: true })
+    if (clientCloseConfirmed && handleCloseConfirmed && ownerExitConfirmed) {
+      try { await rm(parent, { recursive: true, force: true }) }
+      catch (error) { throw new AggregateError(primaryFailed ? [primaryFailure, error] : [error], 'LOCAL_CWD_TEST_FIXTURE_REMOVAL_FAILED') }
+    } else throw new Error(`LOCAL_CWD_TEST_CLEANUP_UNCONFIRMED:${JSON.stringify({ clientCloseConfirmed, handleCloseConfirmed, ownerLifecycleMayHaveBegun: ownerMayBeRunning, ownerPidObserved: ownerPid !== undefined, ownerDead: ownerPid !== undefined && !processIsAlive(ownerPid) })}`, { cause: primaryFailure })
   }
+  if (primaryFailed) throw primaryFailure
 })
 
 test('spawned owner exits boundedly after unconfirmed startup cleanup and preserves lock files', async () => {
@@ -275,12 +294,16 @@ test('two stdio clients share one detached workspace owner and retain separate n
   }
   const clients: TrackedStdioClient[] = []
   let ownerPid: number | undefined
+  let ownerLifecycleMayHaveBegun = false
+  let primaryFailure: unknown
+  let primaryFailed = false
   let cleanupSafe = true
   try {
     const first = makeClient()
     clients.push(first)
     const second = makeClient()
     clients.push(second)
+    ownerLifecycleMayHaveBegun = true
     const connectResults = await Promise.allSettled(clients.map(({ client, transport }) => client.connect(transport)))
     const failedConnect = connectResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
     if (failedConnect) throw new Error(`LOCAL_STDIO_CONNECT_FAILED:${clients.find((record, index) => connectResults[index]?.status === 'rejected')?.stderr?.() ?? ''}`, { cause: failedConnect.reason })
@@ -336,11 +359,13 @@ test('two stdio clients share one detached workspace owner and retain separate n
     const stoppingPid = ownerPid
     assert.ok(stoppingPid)
     await stopLocalOwner(configPath)
-    assert.equal(processIsAlive(stoppingPid), false)
+    assert.ok(await waitForDefinitelyDead(stoppingPid, 5_000), 'detached owner PID was not confirmed dead after profile stop')
     ownerPid = undefined
+    ownerLifecycleMayHaveBegun = false
     assert.equal((await inspectLocalOwner(updatedConfig, parent)).state, 'missing')
     const updatedClient = makeClient()
     clients.push(updatedClient)
+    ownerLifecycleMayHaveBegun = true
     await updatedClient.client.connect(updatedClient.transport)
     updatedClient.frontendPid = captureFrontendPid(updatedClient.transport)
     const restarted = await updatedClient.client.callTool({ name: 'capabilities', arguments: {}, _meta: callMeta(conversationOne) })
@@ -353,6 +378,10 @@ test('two stdio clients share one detached workspace owner and retain separate n
     await stopLocalOwner(configPath)
     assert.ok(ownerPid !== undefined && await waitForDefinitelyDead(ownerPid, 5_000), 'detached owner PID was not confirmed dead after stop')
     ownerPid = undefined
+    ownerLifecycleMayHaveBegun = false
+  } catch (error) {
+    primaryFailure = error
+    primaryFailed = true
   } finally {
     let frontendCleanupConfirmed = true
     for (const record of clients) {
@@ -362,13 +391,22 @@ test('two stdio clients share one detached workspace owner and retain separate n
     try {
       process.chdir(project)
       await stopLocalOwner(configPath, { timeoutMs: 5_000 })
-      if (ownerPid !== undefined && !await waitForDefinitelyDead(ownerPid, 5_000)) cleanupSafe = false
+      if (ownerPid !== undefined) {
+        if (!await waitForDefinitelyDead(ownerPid, 5_000)) cleanupSafe = false
+        else {
+          ownerPid = undefined
+          ownerLifecycleMayHaveBegun = false
+        }
+      } else if (ownerLifecycleMayHaveBegun) cleanupSafe = false
     } catch { cleanupSafe = false }
     process.chdir(originalCwd)
     if (!frontendCleanupConfirmed) cleanupSafe = false
-    if (cleanupSafe) await rm(parent, { recursive: true, force: true })
-    else throw new Error(`LOCAL_STDIO_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownerPidObserved: ownerPid !== undefined, ownerDead: ownerPid !== undefined && !processIsAlive(ownerPid) })}`)
+    if (cleanupSafe) {
+      try { await rm(parent, { recursive: true, force: true }) }
+      catch (error) { throw new AggregateError(primaryFailed ? [primaryFailure, error] : [error], 'LOCAL_STDIO_FIXTURE_REMOVAL_FAILED') }
+    } else throw new Error(`LOCAL_STDIO_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownerLifecycleMayHaveBegun, ownerPidObserved: ownerPid !== undefined, ownerDead: ownerPid !== undefined && !processIsAlive(ownerPid) })}`, { cause: primaryFailure })
   }
+  if (primaryFailed) throw primaryFailure
 })
 
 test('same machine identity keeps separate Git workspaces and indexes tracked edits, untracked files, and deletions', async () => {
@@ -385,6 +423,8 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
   const clients: TrackedStdioClient[] = []
   const owners = new Map<string, number>()
   const workspaceIds: string[] = []
+  let primaryFailure: unknown
+  let primaryFailed = false
   let cleanupSafe = true
   try {
     await writeFile(configPath, JSON.stringify(config))
@@ -458,6 +498,9 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
     assert.notEqual(workspaceIds[0], workspaceIds[1])
     assert.equal(owners.size, 2)
     assert.notEqual(owners.get(fixtures[0]!.dir), owners.get(fixtures[1]!.dir))
+  } catch (error) {
+    primaryFailure = error
+    primaryFailed = true
   } finally {
     let frontendCleanupConfirmed = true
     for (const record of clients) {
@@ -475,7 +518,10 @@ test('same machine identity keeps separate Git workspaces and indexes tracked ed
     process.chdir(originalCwd)
     if (owners.size !== fixtures.length) cleanupSafe = false
     if (!frontendCleanupConfirmed) cleanupSafe = false
-    if (cleanupSafe) await rm(parent, { recursive: true, force: true })
-    else throw new Error(`LOCAL_GIT_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownersObserved: owners.size === fixtures.length, ownersDead: owners.size === fixtures.length && [...owners.values()].every((pid) => !processIsAlive(pid)) })}`)
+    if (cleanupSafe) {
+      try { await rm(parent, { recursive: true, force: true }) }
+      catch (error) { throw new AggregateError(primaryFailed ? [primaryFailure, error] : [error], 'LOCAL_GIT_FIXTURE_REMOVAL_FAILED') }
+    } else throw new Error(`LOCAL_GIT_CLEANUP_UNCONFIRMED:${JSON.stringify({ frontendCleanupConfirmed, ownersObserved: owners.size === fixtures.length, ownersDead: owners.size === fixtures.length && [...owners.values()].every((pid) => !processIsAlive(pid)) })}`, { cause: primaryFailure })
   }
+  if (primaryFailed) throw primaryFailure
 })
