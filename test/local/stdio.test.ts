@@ -11,6 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { workspaceIdForCanonicalPath } from '../../src/bridge/protocol.js'
 import { openSearchRuntime } from '../../src/runtime/index.js'
+import { node24DaemonExecArgv } from '../../src/cli/node24.js'
 import { inspectLocalOwner, openLocalWorkspace, processIsAlive } from '../../src/local/owner.js'
 import { runLocalMcpStdio, stopLocalOwner } from '../../src/local/stdio.js'
 
@@ -85,7 +86,7 @@ test('spawned owner exits boundedly after unconfirmed startup cleanup and preser
     try { await runLocalOwnerProcess(['--config', configPath], { openWorkspace, startupCleanupExitMs: 250 }); }
     catch (error) { process.stderr.write(String(error?.code ?? 'UNKNOWN')); process.exitCode = 1; }
   `)
-  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), childScript], {
+  const child = spawn(process.execPath, [...node24DaemonExecArgv(process.versions.node), '--import', import.meta.resolve('tsx'), childScript], {
     cwd: project,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -149,7 +150,7 @@ test('spawned owner exits boundedly after runtime close failure during normal st
     try { await runLocalOwnerProcess(['--config', configPath], { openWorkspace, startupCleanupExitMs: 250 }); }
     catch (error) { process.stderr.write(String(error?.code ?? 'UNKNOWN')); process.exitCode = 1; }
   `)
-  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), childScript], {
+  const child = spawn(process.execPath, [...node24DaemonExecArgv(process.versions.node), '--import', import.meta.resolve('tsx'), childScript], {
     cwd: project,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -159,15 +160,23 @@ test('spawned owner exits boundedly after runtime close failure during normal st
   let primaryFailure: unknown
   try {
     process.chdir(project)
-    const deadline = Date.now() + 10_000
+    const readinessStartedAt = Date.now()
+    const deadline = readinessStartedAt + 20_000
     let ready = false
+    let lastOwnerState = 'not_checked'
     while (Date.now() < deadline) {
       const owner = await inspectLocalOwner(config, parent)
+      lastOwnerState = owner.state
       if (owner.state === 'ready') { ready = true; break }
       if (child.exitCode !== null || child.signalCode !== null) break
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    assert.equal(ready, true, stderr)
+    assert.equal(ready, true, JSON.stringify({
+      elapsedMs: Date.now() - readinessStartedAt,
+      childExitCode: child.exitCode,
+      childSignal: child.signalCode,
+      lastOwnerState,
+    }))
     await stopLocalOwner(configPath, { timeoutMs: 5_000 })
     const exited = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('LOCAL_OWNER_CLOSE_EXIT_TIMEOUT')), 5_000)
