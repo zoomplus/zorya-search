@@ -48,7 +48,7 @@ function asResult(value: unknown): CallToolResult {
   return value as CallToolResult
 }
 
-async function assertWorkspaceIdentity(expected: { path: string; dev: number; ino: number }): Promise<void> {
+async function assertWorkspaceIdentity(expected: { path: string; dev: bigint; ino: bigint }): Promise<void> {
   const actual = await canonicalCurrentWorkspace()
   if (actual.canonicalPath !== expected.path || actual.dev !== expected.dev || actual.ino !== expected.ino)
     throw new Error('LOCAL_WORKSPACE_CHANGED')

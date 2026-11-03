@@ -31,8 +31,10 @@ test('setup creates a private external config once without starting an owner', a
   const f = await fixture()
   const previous = process.cwd()
   const previousStateHome = process.env.XDG_STATE_HOME
+  const previousLocalAppData = process.env.LOCALAPPDATA
   process.chdir(f.project)
-  process.env.XDG_STATE_HOME = join(f.parent, 'private-state-home')
+  if (process.platform === 'win32') process.env.LOCALAPPDATA = join(f.parent, 'private-state-home')
+  else process.env.XDG_STATE_HOME = join(f.parent, 'private-state-home')
   try {
     const output = await captureStdout(() => runLocalEntry(['setup', '--config', f.configPath]))
     assert.match(output, /Создана локальная конфигурация/u)
@@ -43,7 +45,9 @@ test('setup creates a private external config once without starting an owner', a
     assert.equal(config.schemaVersion, 1)
     assert.match(String(config.clientId), /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
     assert.equal(typeof config.stateDir, 'string')
-    assert.equal(config.stateDir, join(f.parent, 'private-state-home', 'zorya-search-local'))
+    assert.equal(config.stateDir, process.platform === 'win32'
+      ? join(f.parent, 'private-state-home', 'Zorya', 'Search', 'state')
+      : join(f.parent, 'private-state-home', 'zorya-search-local'))
     await assert.rejects(() => access(String(config.stateDir)))
     assert.equal(Object.hasOwn(config, 'runtime'), false)
     await assert.rejects(() => runLocalEntry(['setup', '--config', f.configPath]))
@@ -52,6 +56,8 @@ test('setup creates a private external config once without starting an owner', a
     process.chdir(previous)
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
     else process.env.XDG_STATE_HOME = previousStateHome
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA
+    else process.env.LOCALAPPDATA = previousLocalAppData
   }
 })
 

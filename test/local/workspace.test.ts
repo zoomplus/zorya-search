@@ -84,6 +84,21 @@ test('workspace lease prevents a second runtime for the same canonical workspace
   } finally { await first.close() }
 })
 
+test('owner persists exact database-lock identities as decimal strings', async () => {
+  const fixture = await workspaceFixture('local-exact-owner-identity')
+  const workspace = await openLocalWorkspace({ config: fixture.config })
+  try {
+    const owner = JSON.parse(await readFile(join(workspace.statePath, 'owner.json'), 'utf8')) as {
+      databaseLock?: { dev?: unknown; ino?: unknown }
+    }
+    const lock = await lstat(join(workspace.dataPath, '.zorya-search-owner'), { bigint: true })
+    assert.equal(typeof owner.databaseLock?.dev, 'string')
+    assert.equal(typeof owner.databaseLock?.ino, 'string')
+    assert.equal(owner.databaseLock?.dev, lock.dev.toString(10))
+    assert.equal(owner.databaseLock?.ino, lock.ino.toString(10))
+  } finally { await workspace.close() }
+})
+
 test('separate folders get separate private databases and workspace identities', async () => {
   const fixtureA = await workspaceFixture('local-a')
   const workspaceA = await openLocalWorkspace({ config: fixtureA.config })
@@ -675,7 +690,7 @@ test('dead recovery claims are reclaimed only for the same workspace before or a
       startedAt: new Date(0).toISOString(),
     }
     await writeFile(ownerPath, JSON.stringify(staleOwner), { mode: 0o600 })
-    const ownerInfo = await lstat(ownerPath)
+    const ownerInfo = await lstat(ownerPath, { bigint: true })
     const record = {
       schemaVersion: 1,
       nonce: randomUUID(),
@@ -686,7 +701,7 @@ test('dead recovery claims are reclaimed only for the same workspace before or a
       canonicalPath: await realpath(fixture.project),
       statePath: workspace.statePath,
       dataPath: workspace.dataPath,
-      staleOwner: { pid: ownerPid, nonce: staleOwner.nonce, dev: ownerInfo.dev, ino: ownerInfo.ino },
+      staleOwner: { pid: ownerPid, nonce: staleOwner.nonce, dev: ownerInfo.dev.toString(10), ino: ownerInfo.ino.toString(10) },
     }
     await writeFile(recoveryPath, JSON.stringify(record), { mode: 0o600 })
     if (ownerRemoved) await unlink(ownerPath)

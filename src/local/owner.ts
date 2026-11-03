@@ -8,6 +8,7 @@ import { workspaceIdForCanonicalPath } from '../bridge/protocol.js'
 import { canonicalFuturePath, isSameOrDescendantPath } from '../runtime/path.js'
 import { openSearchRuntime, type RuntimeOptions } from '../runtime/index.js'
 import { LocalConfigError, localConfigFingerprint, parseLocalConfig, type ParsedLocalConfig } from './config.js'
+import { fileIdentitySchema, serializeFileIdentity } from './file-identity.js'
 
 const ownerDescriptorSchema = z.object({
   schemaVersion: z.literal(1),
@@ -21,8 +22,7 @@ const ownerDescriptorSchema = z.object({
   dataPath: z.string().min(1).max(4_096),
   startedAt: z.string().datetime(),
   databaseLock: z.object({
-    dev: z.number().int().nonnegative(),
-    ino: z.number().int().nonnegative(),
+    ...fileIdentitySchema.shape,
     nonce: z.string().uuid(),
   }).strict().optional(),
   service: z.object({
@@ -45,7 +45,7 @@ const recoveryDescriptorSchema = z.object({
   statePath: z.string().min(1).max(4_096),
   dataPath: z.string().min(1).max(4_096),
   staleOwner: z.object({
-    pid: z.number().int().positive(), nonce: z.string().uuid(), dev: z.number().int().nonnegative(), ino: z.number().int().nonnegative(),
+    pid: z.number().int().positive(), nonce: z.string().uuid(), ...fileIdentitySchema.shape,
     databaseLock: ownerDescriptorSchema.shape.databaseLock.optional(),
   }).strict(),
 }).strict()
@@ -92,8 +92,8 @@ interface AcquiredLease {
   readonly recoveryPath: string
   readonly identity: Pick<OwnerDescriptor, 'clientId' | 'workspaceId' | 'profileFingerprint' | 'canonicalPath' | 'statePath' | 'dataPath'>
   readonly nonce: string
-  readonly dev: number
-  readonly ino: number
+  readonly dev: bigint
+  readonly ino: bigint
   updateDatabaseLock(): Promise<void>
   updateService(service: LocalOwnerService): Promise<void>
   release(): Promise<void>
@@ -104,6 +104,26 @@ function processIsAlive(pid: number): boolean {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ESRCH') return false
     return true
+  }
+}
+
+function serializeOwnerDescriptor(descriptor: OwnerDescriptor): unknown {
+  return {
+    ...descriptor,
+    ...(descriptor.databaseLock ? { databaseLock: { ...serializeFileIdentity(descriptor.databaseLock), nonce: descriptor.databaseLock.nonce } } : {}),
+  }
+}
+
+function serializeRecoveryDescriptor(descriptor: RecoveryDescriptor): unknown {
+  return {
+    ...descriptor,
+    staleOwner: {
+      ...descriptor.staleOwner,
+      ...serializeFileIdentity(descriptor.staleOwner),
+      ...(descriptor.staleOwner.databaseLock
+        ? { databaseLock: { ...serializeFileIdentity(descriptor.staleOwner.databaseLock), nonce: descriptor.staleOwner.databaseLock.nonce } }
+        : {}),
+    },
   }
 }
 
@@ -140,9 +160,9 @@ async function readBoundedJson(path: string, maxBytes = 8_192): Promise<unknown>
   finally { await handle?.close().catch(() => undefined) }
 }
 
-async function unlinkExact(path: string, dev: number, ino: number): Promise<void> {
+async function unlinkExact(path: string, dev: bigint, ino: bigint): Promise<void> {
   try {
-    const info = await lstat(path)
+    const info = await lstat(path, { bigint: true })
     if (!info.isFile() || info.isSymbolicLink() || info.dev !== dev || info.ino !== ino) throw new Error()
     await unlink(path)
   } catch { throw new LocalWorkspaceError('LOCAL_STATE_INVALID') }
@@ -151,7 +171,7 @@ async function unlinkExact(path: string, dev: number, ino: number): Promise<void
 async function recoverDatabaseLock(stale: OwnerDescriptor): Promise<void> {
   const path = join(stale.dataPath, '.zorya-search-owner')
   let info
-  try { info = await lstat(path) } catch (error) {
+  try { info = await lstat(path, { bigint: true }) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
     throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
   }
@@ -160,7 +180,7 @@ async function recoverDatabaseLock(stale: OwnerDescriptor): Promise<void> {
   const lock = await readBoundedJson(path)
   if (!lock || typeof lock !== 'object' || (lock as { pid?: unknown }).pid !== stale.pid || (lock as { nonce?: unknown }).nonce !== stale.databaseLock.nonce)
     throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
-  const current = await lstat(path)
+  const current = await lstat(path, { bigint: true })
   if (current.dev !== info.dev || current.ino !== info.ino || processIsAlive(stale.pid))
     throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
   await unlinkExact(path, info.dev, info.ino)
@@ -195,7 +215,7 @@ async function reclaimDeadRecoveryClaim(
   identity: AcquiredLease['identity'],
 ): Promise<void> {
   let info
-  try { info = await lstat(recoveryPath) } catch (error) {
+  try { info = await lstat(recoveryPath, { bigint: true }) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
     throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
   }
@@ -204,7 +224,7 @@ async function reclaimDeadRecoveryClaim(
   try { record = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath)) }
   catch { throw new LocalWorkspaceError('LOCAL_STATE_INVALID') }
   if (!recoveryIdentityMatches(record, identity) || processIsAlive(record.pid)) throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
-  const confirmInfo = await lstat(recoveryPath).catch(() => undefined)
+  const confirmInfo = await lstat(recoveryPath, { bigint: true }).catch(() => undefined)
   let confirm: RecoveryDescriptor
   try { confirm = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath)) }
   catch { throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY') }
@@ -213,7 +233,7 @@ async function reclaimDeadRecoveryClaim(
     throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
 
   let ownerInfo
-  try { ownerInfo = await lstat(ownerPath) } catch (error) {
+  try { ownerInfo = await lstat(ownerPath, { bigint: true }) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
   }
   if (ownerInfo) {
@@ -233,7 +253,7 @@ async function reclaimDeadRecoveryClaim(
     await recoverRecordedDatabaseLock(record)
   }
 
-  const finalInfo = await lstat(recoveryPath).catch(() => undefined)
+  const finalInfo = await lstat(recoveryPath, { bigint: true }).catch(() => undefined)
   let finalRecord: RecoveryDescriptor
   try { finalRecord = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath)) }
   catch { throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY') }
@@ -251,10 +271,10 @@ async function acquireLease(
   const path = join(statePath, 'owner.json')
   const recoveryPath = join(statePath, 'recovery.json')
   await reclaimDeadRecoveryClaim(recoveryPath, path, identity)
-  const createOwner = async (recoveryClaim?: { nonce: string; targetOwnerNonce: string; dev: number; ino: number }) => {
+  const createOwner = async (recoveryClaim?: { nonce: string; targetOwnerNonce: string; dev: bigint; ino: bigint }) => {
     if (await exists(recoveryPath)) {
       if (!recoveryClaim) throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
-      const recoveryInfo = await lstat(recoveryPath)
+      const recoveryInfo = await lstat(recoveryPath, { bigint: true })
       const recovery = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath))
       if (recoveryInfo.dev !== recoveryClaim.dev || recoveryInfo.ino !== recoveryClaim.ino || recovery.nonce !== recoveryClaim.nonce ||
         recovery.targetOwnerNonce !== recoveryClaim.targetOwnerNonce || recovery.pid !== process.pid || !recoveryIdentityMatches(recovery, identity))
@@ -273,9 +293,9 @@ async function acquireLease(
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
       throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
     }
-    const info = await handle.stat()
+    const info = await handle.stat({ bigint: true })
     try {
-      await handle.writeFile(JSON.stringify(descriptor))
+      await handle.writeFile(JSON.stringify(serializeOwnerDescriptor(descriptor)))
       await handle.sync()
     } catch (error) {
       await handle.close().catch(() => undefined)
@@ -288,7 +308,7 @@ async function acquireLease(
         await unlinkExact(path, info.dev, info.ino)
         throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
       }
-      const recoveryInfo = await lstat(recoveryPath)
+      const recoveryInfo = await lstat(recoveryPath, { bigint: true })
       const recovery = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath))
       if (recoveryInfo.dev !== recoveryClaim.dev || recoveryInfo.ino !== recoveryClaim.ino || recovery.nonce !== recoveryClaim.nonce ||
         recovery.targetOwnerNonce !== recoveryClaim.targetOwnerNonce || recovery.pid !== process.pid || !recoveryIdentityMatches(recovery, identity)) {
@@ -298,21 +318,21 @@ async function acquireLease(
     }
     let released = false
     const updateDescriptor = async (next: OwnerDescriptor) => {
-      const current = await lstat(path)
+      const current = await lstat(path, { bigint: true })
       if (!current.isFile() || current.isSymbolicLink() || current.dev !== info.dev || current.ino !== info.ino)
         throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
       const handle = await open(path, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0))
       try {
-        const opened = await handle.stat()
+        const opened = await handle.stat({ bigint: true })
         if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
         const existingBytes = await handle.readFile()
         const existing = ownerDescriptorSchema.parse(JSON.parse(existingBytes.toString('utf8')))
         if (existing.nonce !== nonce || existing.pid !== process.pid || existing.clientId !== identity.clientId || existing.workspaceId !== identity.workspaceId || existing.profileFingerprint !== identity.profileFingerprint || existing.canonicalPath !== identity.canonicalPath)
           throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
-        const pathAgain = await lstat(path)
+        const pathAgain = await lstat(path, { bigint: true })
         if (pathAgain.dev !== info.dev || pathAgain.ino !== info.ino) throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
         await handle.truncate(0)
-        const bytes = Buffer.from(JSON.stringify(next))
+        const bytes = Buffer.from(JSON.stringify(serializeOwnerDescriptor(next)))
         await handle.write(bytes, 0, bytes.length, 0)
         await handle.sync()
       } finally { await handle.close() }
@@ -322,7 +342,7 @@ async function acquireLease(
       async updateDatabaseLock() {
         const lockPath = join(dataPath, '.zorya-search-owner')
         let lockInfo
-        try { lockInfo = await lstat(lockPath) } catch { throw new LocalWorkspaceError('LOCAL_STATE_INVALID') }
+        try { lockInfo = await lstat(lockPath, { bigint: true }) } catch { throw new LocalWorkspaceError('LOCAL_STATE_INVALID') }
         if (!lockInfo.isFile() || lockInfo.isSymbolicLink()) throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
         const lock = await readBoundedJson(lockPath)
         if (!lock || typeof lock !== 'object' || (lock as { pid?: unknown }).pid !== process.pid || typeof (lock as { nonce?: unknown }).nonce !== 'string' || !z.string().uuid().safeParse((lock as { nonce: unknown }).nonce).success)
@@ -337,7 +357,7 @@ async function acquireLease(
       },
       async release() {
         if (released) return
-        const currentInfo = await lstat(path).catch(() => undefined)
+        const currentInfo = await lstat(path, { bigint: true }).catch(() => undefined)
         if (!currentInfo || currentInfo.dev !== info.dev || currentInfo.ino !== info.ino) throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
         const current = ownerDescriptorSchema.parse(await readBoundedJson(path))
         if (current.nonce !== nonce || current.pid !== process.pid || current.workspaceId !== identity.workspaceId)
@@ -357,9 +377,9 @@ async function acquireLease(
   let observedInfo
   let observed: OwnerDescriptor
   try {
-    observedInfo = await lstat(path)
+    observedInfo = await lstat(path, { bigint: true })
     observed = ownerDescriptorSchema.parse(await readBoundedJson(path))
-    const confirmInfo = await lstat(path)
+    const confirmInfo = await lstat(path, { bigint: true })
     const confirm = ownerDescriptorSchema.parse(await readBoundedJson(path))
     if (!observedInfo.isFile() || observedInfo.isSymbolicLink() || confirmInfo.dev !== observedInfo.dev || confirmInfo.ino !== observedInfo.ino || confirm.nonce !== observed.nonce || processIsAlive(observed.pid))
       throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
@@ -372,7 +392,7 @@ async function acquireLease(
   const recoveryNonce = randomUUID()
   let recoveryHandle: Awaited<ReturnType<typeof open>>
   try { recoveryHandle = await open(recoveryPath, 'wx', 0o600) } catch { throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY') }
-  const recoveryInfo = await recoveryHandle.stat()
+  const recoveryInfo = await recoveryHandle.stat({ bigint: true })
     const targetOwnerNonce = randomUUID()
     const recoveryRecord: RecoveryDescriptor = {
       schemaVersion: 1, nonce: recoveryNonce, pid: process.pid, targetOwnerNonce,
@@ -383,13 +403,13 @@ async function acquireLease(
         ...(observed.databaseLock ? { databaseLock: observed.databaseLock } : {}),
       },
     }
-    try { await recoveryHandle.writeFile(JSON.stringify(recoveryRecord)); await recoveryHandle.sync() } finally { await recoveryHandle.close() }
+    try { await recoveryHandle.writeFile(JSON.stringify(serializeRecoveryDescriptor(recoveryRecord))); await recoveryHandle.sync() } finally { await recoveryHandle.close() }
   try {
-    const ownerInfo = await lstat(path)
+    const ownerInfo = await lstat(path, { bigint: true })
     const stale = ownerDescriptorSchema.parse(await readBoundedJson(path))
     if (ownerInfo.isSymbolicLink() || !ownerInfo.isFile() || stale.clientId !== identity.clientId || stale.workspaceId !== identity.workspaceId || stale.canonicalPath !== identity.canonicalPath || stale.statePath !== identity.statePath || stale.dataPath !== identity.dataPath || processIsAlive(stale.pid))
       throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
-    const confirmInfo = await lstat(path)
+    const confirmInfo = await lstat(path, { bigint: true })
     const confirm = ownerDescriptorSchema.parse(await readBoundedJson(path))
     if (confirmInfo.dev !== ownerInfo.dev || confirmInfo.ino !== ownerInfo.ino || confirm.nonce !== stale.nonce || processIsAlive(stale.pid))
       throw new LocalWorkspaceError('LOCAL_WORKSPACE_BUSY')
@@ -397,7 +417,7 @@ async function acquireLease(
     await unlinkExact(path, ownerInfo.dev, ownerInfo.ino)
     const lease = await createOwner({ nonce: recoveryNonce, targetOwnerNonce, dev: recoveryInfo.dev, ino: recoveryInfo.ino })
     const activeRecovery = recoveryDescriptorSchema.parse(await readBoundedJson(recoveryPath))
-    const activeRecoveryInfo = await lstat(recoveryPath)
+    const activeRecoveryInfo = await lstat(recoveryPath, { bigint: true })
     if (activeRecovery.nonce !== recoveryNonce || activeRecovery.pid !== process.pid || activeRecoveryInfo.dev !== recoveryInfo.dev || activeRecoveryInfo.ino !== recoveryInfo.ino) {
       await lease.release().catch(() => undefined)
       throw new LocalWorkspaceError('LOCAL_STATE_INVALID')
@@ -418,12 +438,12 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-export async function canonicalCurrentWorkspace(): Promise<{ canonicalPath: string; dev: number; ino: number }> {
+export async function canonicalCurrentWorkspace(): Promise<{ canonicalPath: string; dev: bigint; ino: bigint }> {
   let canonicalPath: string
   let info: Awaited<ReturnType<typeof lstat>>
   try {
     canonicalPath = await realpath(resolve(process.cwd()))
-    info = await lstat(canonicalPath)
+    info = await lstat(canonicalPath, { bigint: true })
   } catch { throw new LocalWorkspaceError('LOCAL_WORKSPACE_UNRESOLVED') }
   if (!info.isDirectory() || info.isSymbolicLink()) throw new LocalWorkspaceError('LOCAL_WORKSPACE_UNRESOLVED')
   return { canonicalPath, dev: info.dev, ino: info.ino }

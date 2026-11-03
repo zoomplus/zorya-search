@@ -20,14 +20,15 @@ export async function loadLocalConfigFile(configPath: string): Promise<LoadedLoc
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     const info = await handle.stat()
+    const identity = await handle.stat({ bigint: true })
     if (!info.isFile() || info.size < 1 || info.size > maxConfigBytes || process.platform !== 'win32' && (info.mode & 0o077) !== 0)
       throw new Error()
     const bytes = await handle.readFile()
     if (bytes.byteLength < 1 || bytes.byteLength > maxConfigBytes) throw new Error()
     const text = bytes.toString('utf8')
     if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error()
-    const after = await lstat(path)
-    if (after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino) throw new Error()
+    const after = await lstat(path, { bigint: true })
+    if (after.isSymbolicLink() || after.dev !== identity.dev || after.ino !== identity.ino) throw new Error()
     const canonicalConfig = await realpath(path)
     if (canonicalConfig !== path) throw new Error()
     return Object.freeze({ path, configDir: dirname(path), value: JSON.parse(text) as unknown })
@@ -63,24 +64,25 @@ export async function createLocalConfigFile(configPath: string, value: unknown):
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8')
   if (bytes.byteLength > maxConfigBytes) throw new LocalConfigError('LOCAL_CONFIG_INVALID')
   let handle: Awaited<ReturnType<typeof open>> | undefined
-  let created: { dev: number; ino: number } | undefined
+  let created: { dev: bigint; ino: bigint } | undefined
   try {
     handle = await open(path, 'wx', 0o600)
     const info = await handle.stat()
+    const identity = await handle.stat({ bigint: true })
     if (!info.isFile() || process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error()
-    created = { dev: info.dev, ino: info.ino }
+    created = { dev: identity.dev, ino: identity.ino }
     await handle.writeFile(bytes)
     await handle.sync()
     await handle.close()
     handle = undefined
-    const after = await lstat(path)
-    if (!after.isFile() || after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino || process.platform !== 'win32' && (after.mode & 0o077) !== 0 || await realpath(path) !== path)
+    const after = await lstat(path, { bigint: true })
+    if (!after.isFile() || after.isSymbolicLink() || after.dev !== identity.dev || after.ino !== identity.ino || process.platform !== 'win32' && (after.mode & 0o077n) !== 0n || await realpath(path) !== path)
       throw new Error()
     return path
   } catch {
     if (created) {
       try {
-        const currentInfo = await lstat(path)
+        const currentInfo = await lstat(path, { bigint: true })
         if (currentInfo.isFile() && !currentInfo.isSymbolicLink() && currentInfo.dev === created.dev && currentInfo.ino === created.ino)
           await unlink(path)
       } catch { /* preserve the path if ownership can no longer be proved */ }

@@ -18,11 +18,11 @@ export async function openEmbeddedDatabase(dataDir: string, options: { maxPendin
   const lockNonce = randomUUID()
   let lockCreated = false
   let lockHandle: Awaited<ReturnType<typeof open>> | undefined
-  let lockIdentity: { dev: number; ino: number } | undefined
+  let lockIdentity: { dev: bigint; ino: bigint } | undefined
   const createLock = async () => {
     lockHandle = await open(lockPath, 'wx', 0o600)
     lockCreated = true
-    const stat = await lockHandle.stat()
+    const stat = await lockHandle.stat({ bigint: true })
     lockIdentity = { dev: stat.dev, ino: stat.ino }
     await lockHandle.writeFile(JSON.stringify({ pid: process.pid, nonce: lockNonce }))
     await lockHandle.close()
@@ -33,7 +33,7 @@ export async function openEmbeddedDatabase(dataDir: string, options: { maxPendin
     lockHandle = undefined
     if (!lockCreated) return true
     try {
-      const [current, text] = await Promise.all([lstat(lockPath), readFile(lockPath, 'utf8').catch(() => '')])
+      const [current, text] = await Promise.all([lstat(lockPath, { bigint: true }), readFile(lockPath, 'utf8').catch(() => '')])
       let recordedNonce: unknown
       try { recordedNonce = (JSON.parse(text) as { nonce?: unknown }).nonce } catch { /* nonce ещё не записался целиком */ }
       const identityMatches = lockIdentity !== undefined && current.dev === lockIdentity.dev && current.ino === lockIdentity.ino
