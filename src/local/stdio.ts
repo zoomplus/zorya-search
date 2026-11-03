@@ -13,7 +13,7 @@ import { buildSearchMcpInstructions } from '../mcp/instructions.js'
 import { SEARCH_MCP_TOOL_CONTRACTS } from '../mcp/contracts.js'
 import { LocalConfigError } from './config.js'
 import { loadLocalConfigFile } from './config-file.js'
-import { canonicalCurrentWorkspace, inspectLocalOwner, type LocalOwnerService } from './owner.js'
+import { canonicalCurrentWorkspace, inspectLocalOwner, processIsAlive, type LocalOwnerService } from './owner.js'
 import { parseLocalConversationIdentity } from './conversation.js'
 
 const maxOwnerStartupMs = 20_000
@@ -242,10 +242,11 @@ export async function stopLocalOwner(configPath: string, options: { timeoutMs?: 
       signal: AbortSignal.timeout(Math.min(5_000, Math.max(100, deadline - Date.now()))),
     }).catch(() => { throw new Error('LOCAL_OWNER_UNAVAILABLE') })
     if (response.status !== 202) throw new Error('LOCAL_OWNER_UNAVAILABLE')
+    const stoppingPid = owner.pid
     await assertWorkspaceIdentity({ path: workspace.canonicalPath, dev: workspace.dev, ino: workspace.ino })
     while (Date.now() < deadline) {
       const current = await inspectLocalOwner(input.value, input.configDir, { allowProfileMismatch: true })
-      if (current.state === 'missing') return
+      if (current.state === 'missing' && !processIsAlive(stoppingPid)) return
       await new Promise((resolveWait) => setTimeout(resolveWait, 50))
     }
     throw new Error('LOCAL_OWNER_STOP_TIMEOUT')

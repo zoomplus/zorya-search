@@ -99,7 +99,7 @@ interface AcquiredLease {
   release(): Promise<void>
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ESRCH') return false

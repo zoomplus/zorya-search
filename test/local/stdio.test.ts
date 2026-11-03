@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { workspaceIdForCanonicalPath } from '../../src/bridge/protocol.js'
 import { openSearchRuntime } from '../../src/runtime/index.js'
-import { inspectLocalOwner, openLocalWorkspace } from '../../src/local/owner.js'
+import { inspectLocalOwner, openLocalWorkspace, processIsAlive } from '../../src/local/owner.js'
 import { runLocalMcpStdio, stopLocalOwner } from '../../src/local/stdio.js'
 
 const entry = fileURLToPath(new URL('../../src/local/entry.ts', import.meta.url))
@@ -284,7 +284,10 @@ test('two stdio clients share one detached workspace owner and retain separate n
       () => runLocalMcpStdio(configPath),
       (error: unknown) => error instanceof Error && 'code' in error && error.code === 'LOCAL_PROFILE_MISMATCH',
     )
+    const stoppingPid = ownerPid
+    assert.ok(stoppingPid)
     await stopLocalOwner(configPath)
+    assert.equal(processIsAlive(stoppingPid), false)
     ownerPid = undefined
     assert.equal((await inspectLocalOwner(updatedConfig, parent)).state, 'missing')
     const updatedClient = makeClient()
