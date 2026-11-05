@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { runLocalEntry } from '../../src/local/entry.js'
+import { PACKAGE_VERSION } from '../../src/package-version.js'
 
 const roots: string[] = []
 
@@ -76,7 +77,7 @@ test('client-config emits pinned registry and installed descriptors without cwd 
     }
     const generic = result.generic.mcpServers['zorya-search-local']!
     assert.equal(generic.command, 'npx')
-    assert.deepEqual(generic.args, ['--yes', '--package', 'zorya-search@0.1.11', 'zorya-search-local', 'mcp', '--config', f.configPath])
+    assert.deepEqual(generic.args, ['--yes', '--package', `zorya-search@${PACKAGE_VERSION}`, 'zorya-search-local', 'mcp', '--config', f.configPath])
     assert.deepEqual(Object.keys(generic).sort(), ['args', 'command'])
     assert.equal(result.installed.command, process.execPath)
     assert.equal(result.installed.args.at(-3), 'mcp')
@@ -86,7 +87,7 @@ test('client-config emits pinned registry and installed descriptors without cwd 
     assert.equal(result.installed.tool_timeout_sec, 900)
     for (const descriptor of [result.generic, result.installed]) assert.equal(Object.hasOwn(descriptor, 'cwd'), false)
     assert.match(result.codexToml, /tool_timeout_sec = 900/u)
-    assert.match(result.codexToml, /zorya-search@0\.1\.11/u)
+    assert.ok(result.codexToml.includes(`zorya-search@${PACKAGE_VERSION}`))
     assert.match(result.codexInstalledToml, /startup_timeout_sec = 30/u)
     assert.doesNotMatch(output, /approval|sandbox|model|auto.?approve/iu)
   } finally { process.chdir(previous) }
