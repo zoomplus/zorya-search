@@ -35,6 +35,39 @@ test('records property/private/namespace/chained calls, injected contracts, cons
   assert.ok(result.references.some((reference) => reference.kind === 'call' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.qualifiedName === 'ns.run')))
 })
 
+test('separates explicit instances and credits direct and immutable alias method uses', async () => {
+  const result = await run([
+    file('service.ts', 'export class Service { run() { return 1 } stop() { return 2 } }\nexport const shared = new Service()\nexport function unrelated() { return 3 }\n'),
+    file('consumer.ts', 'import { Service as ImportedService, shared as importedShared } from "./service.js"\nimport { unrelated } from "./service.js"\nconst first = new ImportedService(); const second = new ImportedService(); const firstAlias = first; const secondAlias = second; const firstAlias2 = firstAlias; first.run(); firstAlias2.stop(); secondAlias.run(); importedShared.run(); unrelated()\nlet mutable = first; mutable.run()\nconst madeByFactory = makeService(); madeByFactory.run()\ndeclare function makeService(): ImportedService\n'),
+  ])
+  const instances = result.symbols.filter((symbol) => symbol.kind === 'instance')
+  assert.deepEqual(instances.map((symbol) => symbol.name).sort(), ['first', 'second', 'shared'])
+  const byName = new Map(instances.map((symbol) => [symbol.name, symbol]))
+  const uses = result.references.filter((reference) => reference.relationKind === 'uses_instance')
+  const instanceName = (reference: typeof uses[number]) => result.symbols.find((symbol) => symbol.id === reference.targetSymbolIds[0])?.name
+  assert.deepEqual(uses.map(instanceName).sort(), [
+    'first', 'first', 'second', 'shared',
+  ].sort())
+  assert.ok(uses.every((reference) => reference.kind === 'reference'))
+  assert.ok(uses.every((reference) => reference.ownerSymbolId && result.symbols.find((symbol) => symbol.id === reference.ownerSymbolId)?.kind === 'module-init'))
+  assert.ok(uses.every((reference) => reference.targetSymbolIds.length === 1 && instances.some((instance) => instance.id === reference.targetSymbolIds[0])))
+  const constructions = result.references.filter((reference) => reference.relationKind === 'instantiates')
+  assert.equal(constructions.length, 3)
+  assert.ok(constructions.every((reference) => reference.kind === 'construct' && instances.some((instance) => instance.id === reference.ownerSymbolId)))
+  assert.ok(constructions.every((reference) => reference.unresolvedReason !== 'dynamic' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.name === 'Service')))
+  assert.ok(result.references.some((reference) => reference.kind === 'call' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.name === 'unrelated')))
+  assert.equal(result.references.filter((reference) => reference.kind === 'call' && reference.from.path === 'consumer.ts').length, 8)
+  assert.equal(uses.length, 4)
+  assert.equal(result.references.filter((reference) => reference.kind === 'call' && reference.from.path === 'consumer.ts' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.name === 'run' || result.symbols.find((symbol) => symbol.id === id)?.name === 'stop')).length, 6)
+})
+
+test('marks explicit class heritage without inferring relationships from ordinary references', async () => {
+  const result = await run([file('heritage.ts', 'interface Contract {}\nclass Base {}\nclass Child extends Base implements Contract {}\n')])
+  const child = result.symbols.find((symbol) => symbol.name === 'Child')!
+  assert.ok(result.references.some((reference) => reference.ownerSymbolId === child.id && reference.relationKind === 'inherits' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.name === 'Base')))
+  assert.ok(result.references.some((reference) => reference.ownerSymbolId === child.id && reference.relationKind === 'implements' && reference.targetSymbolIds.some((id) => result.symbols.find((symbol) => symbol.id === id)?.name === 'Contract')))
+})
+
 test('nested calls with a shared start offset receive distinct stable edge IDs', async () => {
   const result = await run([file('chain.ts', 'function factory() { return () => 1 } export function run() { return factory()() }')])
   const calls = result.references.filter((reference) => reference.kind === 'call')

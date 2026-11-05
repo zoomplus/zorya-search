@@ -1,7 +1,7 @@
 import type { TypeScriptLibraryBundle } from './symbol-libraries.js'
 
 /** Внутренние версионируемые DTO детерминированного извлечения символов. */
-export const CODE_SYMBOL_EXTRACTOR_VERSION = 'ts-symbol-graph-v2'
+export const CODE_SYMBOL_EXTRACTOR_VERSION = 'ts-symbol-graph-v3'
 
 export interface VerifiedSymbolSource {
   path: string
@@ -22,7 +22,7 @@ export interface SymbolLocation {
   lineEnd: number
   fileHash: string
 }
-export type SymbolKind = 'class' | 'interface' | 'type' | 'enum' | 'function' | 'method' | 'constructor' | 'callable' | 'namespace' | 'module-init'
+export type SymbolKind = 'class' | 'interface' | 'type' | 'enum' | 'function' | 'method' | 'constructor' | 'callable' | 'instance' | 'namespace' | 'module-init'
 export type SymbolTargetKind = 'concrete' | 'contract' | 'external' | 'unresolved'
 export type SymbolUnresolvedReason = 'dynamic' | 'external' | 'ambiguous' | 'unresolved' | null
 export type SymbolLanguage = 'typescript' | 'javascript' | 'unsupported'
@@ -51,6 +51,7 @@ export interface CodeSymbolReference {
   targetSymbolIds: string[]
   targetKind: SymbolTargetKind
   unresolvedReason: SymbolUnresolvedReason
+  relationKind?: 'uses_instance' | 'instantiates' | 'inherits' | 'implements'
 }
 export interface SymbolFileCoverage {
   path: string

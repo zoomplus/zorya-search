@@ -30,6 +30,18 @@ function kindOf(node: ts.Node): SymbolKind | null {
 function isCallableInitializer(node: ts.Expression | undefined): node is ts.ArrowFunction | ts.FunctionExpression {
   return Boolean(node && (ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
 }
+function isConstVariable(node: ts.VariableDeclaration): boolean {
+  return ts.isVariableDeclarationList(node.parent) && (node.parent.flags & ts.NodeFlags.Const) !== 0
+}
+function isExplicitClassConstruction(node: ts.VariableDeclaration, checker: ts.TypeChecker): node is ts.VariableDeclaration & { initializer: ts.NewExpression } {
+  if (!ts.isIdentifier(node.name) || !isConstVariable(node) || !node.initializer || !ts.isNewExpression(node.initializer)) return false
+  let symbol = checker.getSymbolAtLocation(node.initializer.expression)
+  if (symbol?.flags && (symbol.flags & ts.SymbolFlags.Alias)) {
+    try { symbol = checker.getAliasedSymbol(symbol) } catch { return false }
+  }
+  return Boolean(symbol?.declarations?.some((declaration) =>
+    ts.isClassLike(declaration) || (ts.isConstructorDeclaration(declaration) && ts.isClassLike(declaration.parent))))
+}
 function makeLocation(path: string, source: ts.SourceFile, fileHash: string, node: ts.Node): SymbolLocation {
   const start = node.getStart(source)
   const end = node.getEnd()
@@ -99,6 +111,7 @@ export async function extractCodeSymbols(
   const symbolById = new Map<string, CodeSymbol>()
   const publishedSymbolIds = new Set<string>()
   const nodeOwners = new WeakMap<ts.Node, string>()
+  const instanceConstructionByNew = new WeakMap<ts.NewExpression, string>()
   const overloadGroups = new Map<string, string>()
   let visited = 0
   let failed = false
@@ -170,7 +183,10 @@ export async function extractCodeSymbols(
       const kind = kindOf(node)
       let symbol: CodeSymbol | null = null
       if (kind) symbol = addSymbol(node, kind, ownerId, ownerName)
-      else if (
+      else if (ts.isVariableDeclaration(node) && isExplicitClassConstruction(node, programResult.checker)) {
+        symbol = addSymbol(node, 'instance', ownerId, ownerName, (node.name as ts.Identifier).text)
+        if (symbol) instanceConstructionByNew.set(node.initializer, symbol.id)
+      } else if (
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
         (isCallableInitializer(node.initializer) ||
@@ -200,12 +216,37 @@ export async function extractCodeSymbols(
     const symbol = namedDeclaration(declaration) ? programResult.checker.getSymbolAtLocation(declaration.name!) : undefined
     return symbol ? symbolIdByCheckerSymbol.get(symbol)?.[0] ?? null : null
   }
+  const resolveInstanceSymbol = (input: ts.Symbol | undefined): string[] => {
+    const seen = new Set<ts.Symbol>()
+    let current = input
+    while (current && !seen.has(current)) {
+      seen.add(current)
+      if (current.flags & ts.SymbolFlags.Alias) {
+        try { current = programResult.checker.getAliasedSymbol(current) } catch { return [] }
+      }
+      const direct = (symbolIdByCheckerSymbol.get(current) ?? []).filter((id) => symbolById.get(id)?.kind === 'instance')
+      if (direct.length) return [...new Set(direct)]
+      const aliases = (current.declarations ?? []).filter((declaration): declaration is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name) && isConstVariable(declaration) &&
+        Boolean(declaration.initializer && ts.isIdentifier(declaration.initializer)))
+      if (aliases.length !== 1) return []
+      current = programResult.checker.getSymbolAtLocation(aliases[0]!.initializer as ts.Identifier)
+    }
+    return []
+  }
+  const heritageRelation = (node: ts.Node): CodeSymbolReference['relationKind'] | undefined => {
+    const expression = node.parent
+    if (!ts.isExpressionWithTypeArguments(expression) || expression.expression !== node) return undefined
+    const clause = expression.parent
+    if (!ts.isHeritageClause(clause)) return undefined
+    return clause.token === ts.SyntaxKind.ExtendsKeyword ? 'inherits' : 'implements'
+  }
   for (const [absolute, entry] of sourceByAbs) {
     options.signal.throwIfAborted()
     const { path, source, hash: fileHash } = entry
     const coverage = coverageByPath.get(path)!
     if (coverage.status === 'parse-error' || coverage.status === 'error') continue
-    const addReference = (node: ts.Node, kind: CodeSymbolReference['kind'], ownerId: string | null, target: ts.Symbol | undefined, directTargetId?: string, forcedDynamic = false): void => {
+    const addReference = (node: ts.Node, kind: CodeSymbolReference['kind'], ownerId: string | null, target: ts.Symbol | undefined, directTargetId?: string, forcedDynamic = false, relationKind?: CodeSymbolReference['relationKind']): void => {
       let targetIds: string[] = directTargetId ? [directTargetId] : []
       let unresolvedReason: CodeSymbolReference['unresolvedReason'] = forcedDynamic ? 'dynamic' : null
       let targetKind: CodeSymbolReference['targetKind'] = 'unresolved'
@@ -243,6 +284,7 @@ export async function extractCodeSymbols(
         targetSymbolIds: publishedTargetIds,
         targetKind,
         unresolvedReason,
+        ...(relationKind ? { relationKind } : {}),
       })
       coverage.references++
     }
@@ -256,11 +298,20 @@ export async function extractCodeSymbols(
         const directId = declaration ? declarationId(declaration) ?? undefined : undefined
         const target = declaration ? programResult.checker.getSymbolAtLocation(namedDeclaration(declaration) ? declaration.name! : declaration) : programResult.checker.getSymbolAtLocation(node.expression)
         const argument = ts.isElementAccessExpression(node.expression) ? node.expression.argumentExpression : undefined
+        const instanceId = ts.isNewExpression(node) ? instanceConstructionByNew.get(node) : undefined
         const dynamic = Boolean(
           (ts.isElementAccessExpression(node.expression) && argument && !ts.isStringLiteralLike(argument) && !ts.isNumericLiteral(argument)) ||
-          (!declaration && !directId),
+          (!declaration && !directId && !instanceId),
         )
-        addReference(node.expression, ts.isNewExpression(node) ? 'construct' : 'call', currentOwner, target, directId, dynamic)
+        addReference(node.expression, ts.isNewExpression(node) ? 'construct' : 'call', instanceId ?? currentOwner, target, directId, dynamic,
+          instanceId ? 'instantiates' : undefined)
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const instanceIds = resolveInstanceSymbol(programResult.checker.getSymbolAtLocation(node.expression.expression))
+          if (instanceIds.length === 1) {
+            const receiverId = instanceIds[0]!
+            addReference(node.expression.expression, 'reference', currentOwner, undefined, receiverId, false, 'uses_instance')
+          }
+        }
       } else if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
         const parent = node.parent
         const isName = namedDeclaration(parent) && parent.name === node
@@ -268,7 +319,7 @@ export async function extractCodeSymbols(
         const memberCallee = callLike(parent.parent) && parent.parent.expression.getStart(source) <= node.getStart(source) && parent.parent.expression.end >= node.end
         if (!isName && !callCallee && !memberCallee) {
           const kind = ts.isExportSpecifier(parent) ? 'export' : 'reference'
-          addReference(node, kind, currentOwner, programResult.checker.getSymbolAtLocation(node))
+          addReference(node, kind, currentOwner, programResult.checker.getSymbolAtLocation(node), undefined, false, heritageRelation(node))
         }
       }
       const children: ts.Node[] = []
