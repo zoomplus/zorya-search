@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12 — Instance usage relationships
+
+The code symbol extractor now records explicit class instances and links their construction and method use to the instance. It also records class `extends` and `implements` relationships. The extractor version advances to `ts-symbol-graph-v3` so existing symbol snapshots are refreshed for the expanded graph. Other code-search behavior and APIs are unchanged.
+
 ## 0.1.11 — Local workspace MCP
 
 This version adds `zorya-search-local` for an existing local MCP client. It binds the canonical current working directory, keeps the database in per-user state outside the project, and uses one local owner per workspace. Setup and MCP initialization do not scan files; source queries check snapshot freshness and use the existing incremental indexer when needed. `watch` is disabled. The keyless lexical default makes no provider or model calls. Existing MCP tools and result contracts remain in use; Search does not write or edit project files.
